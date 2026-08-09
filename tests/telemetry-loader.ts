@@ -16,10 +16,13 @@
  *
  * The "hope-shaped patch" is not enough. These tests prove the try/catch
  * and export validation work correctly under each failure mode.
+ * ABI compatibility cases additionally prove a stale telemetry.js is rejected
+ * before its installer can run.
  */
 
 import { loadTelemetryBundle } from "../src/telemetry/telemetryLoader";
 import type { TelemetryLoaderDeps } from "../src/telemetry/telemetryLoader";
+import { TELEMETRY_RUNTIME_ABI_VERSION } from "../src/telemetry/telemetryRuntimeAbi";
 
 let passed = 0;
 let failed = 0;
@@ -117,14 +120,67 @@ console.log("\n--- Scenario 3: wrong export shape (installTelemetryRuntime not e
 }
 
 // -----------------------------------------------------------------------
-// Scenario 4: installTelemetryRuntime throws during initialization
+// Scenario 4: telemetry ABI is stale or absent (installer must not run)
 // -----------------------------------------------------------------------
 
-console.log("\n--- Scenario 4: installTelemetryRuntime throws at runtime ---");
+console.log("\n--- Scenario 4: telemetry ABI mismatch ---");
+{
+	const host = { installerCalled: false };
+	const deps = makeBaseDeps({
+		host,
+		readFileFn: (_path: string) => `
+			exports.telemetryRuntimeAbiVersion = ${TELEMETRY_RUNTIME_ABI_VERSION + 1};
+			exports.installTelemetryRuntime = async function(runtimeHost) {
+				runtimeHost.installerCalled = true;
+				return {};
+			};
+		`,
+	});
+
+	const result = await loadTelemetryBundle(deps);
+
+	assert(result.kind === "failed", "returns failed result (does not throw)");
+	if (result.kind === "failed") {
+		assert(result.reason === "abi-mismatch", "reason is abi-mismatch");
+		assert(result.error.includes(`expected ${TELEMETRY_RUNTIME_ABI_VERSION}`), "error includes expected ABI version");
+		assert(result.error.includes(`got ${TELEMETRY_RUNTIME_ABI_VERSION + 1}`), "error includes bundle ABI version");
+	}
+	assert(!host.installerCalled, "does not invoke an incompatible telemetry installer");
+}
+
+console.log("\n--- Scenario 4b: telemetry ABI missing ---");
+{
+	const host = { installerCalled: false };
+	const deps = makeBaseDeps({
+		host,
+		readFileFn: (_path: string) => `
+			exports.installTelemetryRuntime = async function(runtimeHost) {
+				runtimeHost.installerCalled = true;
+				return {};
+			};
+		`,
+	});
+
+	const result = await loadTelemetryBundle(deps);
+
+	assert(result.kind === "failed", "returns failed result (does not throw)");
+	if (result.kind === "failed") {
+		assert(result.reason === "abi-mismatch", "reason is abi-mismatch when version is missing");
+		assert(result.error.includes("got missing"), "error identifies the missing ABI version");
+	}
+	assert(!host.installerCalled, "does not invoke a telemetry installer without an ABI version");
+}
+
+// -----------------------------------------------------------------------
+// Scenario 5: installTelemetryRuntime throws during initialization
+// -----------------------------------------------------------------------
+
+console.log("\n--- Scenario 5: installTelemetryRuntime throws at runtime ---");
 {
 	// Valid export but the function throws
 	const deps = makeBaseDeps({
 		readFileFn: (_path: string) => `
+			exports.telemetryRuntimeAbiVersion = ${TELEMETRY_RUNTIME_ABI_VERSION};
 			exports.installTelemetryRuntime = async function(host) {
 				throw new Error("Simulated initialization failure: incompatible plugin version");
 			};
@@ -141,10 +197,10 @@ console.log("\n--- Scenario 4: installTelemetryRuntime throws at runtime ---");
 }
 
 // -----------------------------------------------------------------------
-// Scenario 5: successful load
+// Scenario 6: successful load
 // -----------------------------------------------------------------------
 
-console.log("\n--- Scenario 5: successful load returns runtime handle ---");
+console.log("\n--- Scenario 6: successful load returns runtime handle ---");
 {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const fakeRuntime: any = {
@@ -157,6 +213,7 @@ console.log("\n--- Scenario 5: successful load returns runtime handle ---");
 
 	const deps = makeBaseDeps({
 		readFileFn: (_path: string) => `
+			exports.telemetryRuntimeAbiVersion = ${TELEMETRY_RUNTIME_ABI_VERSION};
 			exports.installTelemetryRuntime = async function(host) {
 				// Minimal valid runtime — enough to satisfy the loader contract
 				return {
@@ -182,10 +239,10 @@ console.log("\n--- Scenario 5: successful load returns runtime handle ---");
 }
 
 // -----------------------------------------------------------------------
-// Scenario 6: installTelemetryRuntime export is null (edge case of bad-export)
+// Scenario 7: installTelemetryRuntime export is null (edge case of bad-export)
 // -----------------------------------------------------------------------
 
-console.log("\n--- Scenario 6: installTelemetryRuntime exported as null ---");
+console.log("\n--- Scenario 7: installTelemetryRuntime exported as null ---");
 {
 	const deps = makeBaseDeps({
 		readFileFn: (_path: string) => `
@@ -202,10 +259,10 @@ console.log("\n--- Scenario 6: installTelemetryRuntime exported as null ---");
 }
 
 // -----------------------------------------------------------------------
-// Scenario 7: installTelemetryRuntime exported as a number (type mismatch)
+// Scenario 8: installTelemetryRuntime exported as a number (type mismatch)
 // -----------------------------------------------------------------------
 
-console.log("\n--- Scenario 7: installTelemetryRuntime exported as wrong type (number) ---");
+console.log("\n--- Scenario 8: installTelemetryRuntime exported as wrong type (number) ---");
 {
 	const deps = makeBaseDeps({
 		readFileFn: (_path: string) => `

@@ -17,6 +17,7 @@ import {
 import { isMarkdownSyncable, isBlobSyncable } from "./types";
 import { planCategoryRenameAction } from "./sync/policy/renameAdmissionPolicy";
 import { classifySyncPath } from "./paths/pathCategory";
+import { isCanonicalPathFileIdCollision } from "./paths/pathCollision";
 import type { TraceSink, ProductFlightPathEventInput } from "./observability/traceSink";
 import { NoopTraceSink } from "./observability/noopTraceSink";
 import { PRODUCT_EVENT_KIND } from "./observability/productEventKinds";
@@ -1265,9 +1266,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 						// This does NOT resolve the collision — resolution is future work.
 						if (this.vaultSync) {
 							const vs = this.vaultSync;
-							const oldHasEntry = vs.getTextForPath(oldPath) !== null;
-							const newHasEntry = vs.getTextForPath(file.path) !== null;
-							if (oldHasEntry && newHasEntry && oldPath !== file.path) {
+							const oldFileId = vs.getFileId(oldPath);
+							const newFileId = vs.getFileId(file.path);
+							if (isCanonicalPathFileIdCollision({
+								oldCanonicalKey: oldCategory.path.canonicalKey,
+								newCanonicalKey: newCategory.path.canonicalKey,
+								oldFileId,
+								newFileId,
+							})) {
 								this.recordFlightPathEvent({
 									priority: "important",
 									kind: PRODUCT_EVENT_KIND.renameAdmissionCanonicalCollision,

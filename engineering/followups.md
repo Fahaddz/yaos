@@ -187,6 +187,35 @@ If `y-partyserver` or `y-indexeddb` are upgraded, re-check the origin contract.
 Older phase-specific followup ledgers also contained many addressed items. Those were
 not copied here verbatim; this file is intentionally for live followups.
 
+## Autophagy remediation tracked debt
+
+### TraceSink coverage is incomplete
+
+`src/telemetry/debug/flightTraceSink.ts` currently maps the explicitly supported
+product-domain kinds, but DiskMirror, provider, and recovery code paths still emit
+outside that adapter. `tests/trace-sink.ts` documents the boundary and the known
+bypasses. Do not represent telemetry as fully dependency-inverted until those paths
+are migrated or deliberately retired; add a mapped kind and regression coverage for
+each migration.
+
+### Mutable observer handles need read ports
+
+`TelemetryRuntimeHost` still provides concrete mutable `DiskMirror` and
+`BlobSyncManager` handles. Define narrow `DiskMirrorReadPort` and `BlobSyncReadPort`
+interfaces, migrate telemetry consumers to them, and add compile-time/runtime tests
+that forbid mutation-capable members from the telemetry boundary. This is tracked
+debt, not a release blocker for the current controller fix.
+
+### Real Obsidian Node-FS/CDP proof remains required
+
+The registered `open-bound-closed-only-deferral` scenario establishes the harness
+flow using `writeAdapterFile`, and `tests/open-bound-reconcile-deferral.ts` proves
+the controller plus tab-close lifecycle. Before release, run the scenario against a
+real debug-enabled Obsidian instance using a Node filesystem write
+(`qa/controllers/obsidian-client.ts::writeNodeFileAndWait`) to prove the OS-watcher
+path, preserve its trace/artifacts, and link the result here. Do not treat an
+adapter-write run as OS-watcher evidence.
+
 ### Bound-path conflict-artifact gap on re-enable while file is open
 
 `handleBoundFileSyncGap` does not have a `both-changed` analog. When YAOS is

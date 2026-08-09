@@ -30,6 +30,7 @@ import type { FlightMode, FlightPathEventInput, FlightEventInput } from "./debug
 import type { ProductFlightPathEventInput } from "../observability/traceSink";
 import { PersistentTraceLogger } from "./debug/trace";
 import type { TraceLoggerPort, TraceLoggerConfig } from "../observability/traceLogger";
+export { TELEMETRY_RUNTIME_ABI_VERSION as telemetryRuntimeAbiVersion } from "./telemetryRuntimeAbi";
 
 /**
  * Handle returned to main.ts after telemetry runtime is installed.

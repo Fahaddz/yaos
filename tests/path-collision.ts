@@ -2,7 +2,10 @@
  * Tests for path collision detection.
  */
 
-import { findCanonicalPathCollisions } from "../src/paths/pathCollision";
+import {
+	findCanonicalPathCollisions,
+	isCanonicalPathFileIdCollision,
+} from "../src/paths/pathCollision";
 
 let passed = 0;
 let failed = 0;
@@ -71,12 +74,55 @@ console.log("\n--- Test 7: multiple collisions detected independently ---");
 	assert(collisions.length === 2, "two independent collisions found");
 }
 
-console.log("\n--- Test 8: empty input produces no collisions ---");
+console.log("\n--- Test 8: file-ID-aware canonical collision diagnostics ---");
+{
+	const oldCanonicalKey = "notes/\u00C0.md";
+	const newCanonicalKey = "notes/\u00C0.md";
+
+	assert(
+		isCanonicalPathFileIdCollision({
+			oldCanonicalKey,
+			newCanonicalKey,
+			oldFileId: "file-id-a",
+			newFileId: "file-id-b",
+		}),
+		"same canonical key with distinct file IDs is a collision",
+	);
+	assert(
+		!isCanonicalPathFileIdCollision({
+			oldCanonicalKey,
+			newCanonicalKey,
+			oldFileId: "file-id-a",
+			newFileId: "file-id-a",
+		}),
+		"same file ID through equivalent paths is not a collision",
+	);
+	assert(
+		!isCanonicalPathFileIdCollision({
+			oldCanonicalKey,
+			newCanonicalKey: "notes/other.md",
+			oldFileId: "file-id-a",
+			newFileId: "file-id-b",
+		}),
+		"distinct file IDs without a matching canonical key are not a collision",
+	);
+	assert(
+		!isCanonicalPathFileIdCollision({
+			oldCanonicalKey,
+			newCanonicalKey,
+			oldFileId: undefined,
+			newFileId: "file-id-b",
+		}),
+		"unresolved path entries are not a collision",
+	);
+}
+
+console.log("\n--- Test 9: empty input produces no collisions ---");
 {
 	assert(findCanonicalPathCollisions([]).length === 0, "empty input: no collisions");
 }
 
-console.log("\n--- Test 9: single path produces no collisions ---");
+console.log("\n--- Test 10: single path produces no collisions ---");
 {
 	assert(findCanonicalPathCollisions(["notes/a.md"]).length === 0, "single path: no collision");
 }

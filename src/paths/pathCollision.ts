@@ -24,6 +24,25 @@ export interface PathCollision {
 }
 
 /**
+ * Whether two path entries represent a canonical collision in sync state.
+ *
+ * Canonical-equivalent display paths are only a collision when they resolve
+ * to separate CRDT file identities. A single file can be observed through
+ * equivalent path spellings during a rename and must not be diagnosed.
+ */
+export function isCanonicalPathFileIdCollision(input: {
+	oldCanonicalKey: string;
+	newCanonicalKey: string;
+	oldFileId: string | undefined;
+	newFileId: string | undefined;
+}): boolean {
+	return input.oldCanonicalKey === input.newCanonicalKey
+		&& input.oldFileId !== undefined
+		&& input.newFileId !== undefined
+		&& input.oldFileId !== input.newFileId;
+}
+
+/**
  * Find all canonical path collisions in a set of vault paths.
  *
  * Returns collisions where 2+ distinct display paths share the same

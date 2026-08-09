@@ -17,10 +17,11 @@
 
 import type { TelemetryRuntimeHost } from "./telemetryRuntimeHost";
 import type { TelemetryRuntimeHandle } from "./installTelemetryRuntime";
+import { TELEMETRY_RUNTIME_ABI_VERSION } from "./telemetryRuntimeAbi";
 
 export type TelemetryLoadResult =
 	| { kind: "loaded"; runtime: TelemetryRuntimeHandle }
-	| { kind: "failed"; reason: "platform-mobile" | "file-missing" | "eval-error" | "bad-export" | "runtime-error"; error: string };
+	| { kind: "failed"; reason: "platform-mobile" | "file-missing" | "eval-error" | "bad-export" | "abi-mismatch" | "runtime-error"; error: string };
 
 export interface TelemetryLoaderDeps {
 	/** Full path to the plugin directory (e.g. .obsidian/plugins/yaos). */
@@ -78,12 +79,14 @@ export async function loadTelemetryBundle(deps: TelemetryLoaderDeps): Promise<Te
 
 	// Step 2: evaluate the bundle via new Function (CommonJS wrapper)
 	let installTelemetryRuntime: unknown;
+	let telemetryRuntimeAbiVersion: unknown;
 	try {
 		const telemetryModule = { exports: {} as Record<string, unknown> };
 		// eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
 		const telemetryFn = new Function("require", "module", "exports", "__filename", "__dirname", telemetryCode);
 		telemetryFn(pluginRequire, telemetryModule, telemetryModule.exports, telemetryBundlePath, pluginDir);
-		installTelemetryRuntime = (telemetryModule.exports as Record<string, unknown>).installTelemetryRuntime;
+		installTelemetryRuntime = telemetryModule.exports.installTelemetryRuntime;
+		telemetryRuntimeAbiVersion = telemetryModule.exports.telemetryRuntimeAbiVersion;
 	} catch (err) {
 		const msg = `[yaos/telemetry-loader] telemetry.js eval failed: ${String(err)}`;
 		log?.(msg);
@@ -101,7 +104,20 @@ export async function loadTelemetryBundle(deps: TelemetryLoaderDeps): Promise<Te
 		return { kind: "failed", reason: "bad-export", error: msg };
 	}
 
-	// Step 4: call installTelemetryRuntime with the host
+	// Step 4: reject a stale or incompatible telemetry.js before it can run.
+	if (telemetryRuntimeAbiVersion !== TELEMETRY_RUNTIME_ABI_VERSION) {
+		const actualVersion = typeof telemetryRuntimeAbiVersion === "number"
+			? String(telemetryRuntimeAbiVersion)
+			: telemetryRuntimeAbiVersion === undefined ? "missing" : typeof telemetryRuntimeAbiVersion;
+		const msg =
+			`[yaos/telemetry-loader] telemetry.js ABI mismatch: expected ${TELEMETRY_RUNTIME_ABI_VERSION}, ` +
+			`got ${actualVersion}. Sync will continue without telemetry.`;
+		log?.(msg);
+		console.error(msg);
+		return { kind: "failed", reason: "abi-mismatch", error: msg };
+	}
+
+	// Step 5: call installTelemetryRuntime with the host
 	try {
 		const runtime = await (installTelemetryRuntime as (host: TelemetryRuntimeHost) => Promise<TelemetryRuntimeHandle>)(host);
 		return { kind: "loaded", runtime };

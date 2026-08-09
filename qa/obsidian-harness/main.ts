@@ -32,6 +32,7 @@ import {
 	s06aIssue25ForcedRecoveryLocalOnly,
 } from "./scenarios/s06a-issue-25-forced-recovery";
 import { s06bIssue25Natural } from "./scenarios/s06b-issue-25-natural";
+import { s06cClosedOnlyOpenBoundDeferral } from "./scenarios/s06c-closed-only-open-bound-deferral";
 import {
 	s07gRenameAfterCreate,
 	s07gRenameBeforeCrdtRegistration,

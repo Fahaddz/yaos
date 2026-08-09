@@ -149,6 +149,7 @@ const suites = [
 	[JITI, "tests/qa-port-fencing.ts"],
 	// Autophagy: ReconciliationController planner/executor
 	[JITI, "tests/closed-file-planner.ts"],
+	[JITI, "tests/open-bound-reconcile-deferral.ts"],
 	// Autophagy: Baseline advancement policy
 	[JITI, "tests/baseline-advancement-policy.ts"],
 	// Autophagy: Safety brake policy
