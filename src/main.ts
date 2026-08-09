@@ -489,8 +489,33 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					},
 					getTraceSink: () => this.traceSink,
 					getTraceHttpContext: () => this.getTraceHttpContext(),
-					getDiskMirror: () => this.diskMirror,
-					getBlobSync: () => this.getBlobSync(),
+					getDiskMirrorSnapshot: () => {
+						const diskMirror = this.diskMirror;
+						return diskMirror ? { activeObserverCount: diskMirror.activeObserverCount } : null;
+					},
+					getBlobSyncSnapshot: () => {
+						const blobSync = this.getBlobSync();
+						return blobSync
+							? {
+								pendingUploads: blobSync.pendingUploads,
+								pendingDownloads: blobSync.pendingDownloads,
+							}
+							: null;
+					},
+					getEditorSample: (path) => {
+						try {
+							const leaf = this.app.workspace.getLeavesOfType("markdown").find(
+								(candidate) => (candidate.view as MarkdownView).file?.path === path,
+							);
+							if (!leaf) return { kind: "not_open" as const, content: null };
+							return {
+								kind: "healthy_sampled" as const,
+								content: (leaf.view as MarkdownView).editor?.getValue() ?? null,
+							};
+						} catch {
+							return { kind: "not_open" as const, content: null };
+						}
+					},
 					getEventRing: () => this.eventRing,
 					getRecentServerTrace: () => this.traceRuntime?.getRecentServerTrace() ?? [],
 					getFrontmatterQuarantineEntries: () => this.frontmatterQuarantineEntries,

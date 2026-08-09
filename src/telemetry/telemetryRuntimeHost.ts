@@ -21,8 +21,6 @@ import type { App } from "obsidian";
 import type { VaultSyncSettings } from "../settings";
 import type { TraceSink } from "../observability/traceSink";
 import type { TraceHttpContext } from "../observability/traceContext";
-import type { DiskMirror } from "../sync/diskMirror";
-import type { BlobSyncManager } from "../sync/blobSync";
 import type { FrontmatterQuarantineEntry } from "../sync/frontmatterQuarantine";
 
 /**
@@ -163,7 +161,23 @@ export interface SyncReadPort {
 	observePathContentChanges(callback: (path: string, isLocal: boolean) => void): () => void;
 }
 
+export interface DiskMirrorSnapshot {
+	readonly activeObserverCount: number;
+}
+
+export interface BlobSyncSnapshot {
+	readonly pendingUploads: number;
+	readonly pendingDownloads: number;
+}
+
+export interface EditorSampleSnapshot {
+	readonly kind: "not_open" | "healthy_sampled" | "settling" | "unhealthy";
+	readonly content: string | null;
+}
+
 export interface TelemetryRuntimeHost {
+	// Telemetry is an Obsidian module and may use App for UI, diagnostics export,
+	// and trace persistence. Domain state must still cross this boundary as values.
 	readonly app: App;
 	getSettings(): VaultSyncSettings;
 
@@ -179,14 +193,11 @@ export interface TelemetryRuntimeHost {
 	getTraceSink(): TraceSink;
 	getTraceHttpContext(): TraceHttpContext | undefined;
 
-	// ---------------------------------------------------------------------------
-	// Real product state — fed into DiagnosticsService.
-	// These are read-only accessors; callers must not mutate via the returned
-	// objects. The DiskMirror and BlobSyncManager handles are needed because
-	// DiagnosticsService calls their read-only .getDebugSnapshot() methods.
-	// ---------------------------------------------------------------------------
-	getDiskMirror(): DiskMirror | null;
-	getBlobSync(): BlobSyncManager | null;
+	// Domain diagnostics cross this boundary as scalar snapshots, never manager instances.
+	getDiskMirrorSnapshot(): DiskMirrorSnapshot | null;
+	getBlobSyncSnapshot(): BlobSyncSnapshot | null;
+	/** Host-owned editor lookup; telemetry receives only a value sample. */
+	getEditorSample(path: string): EditorSampleSnapshot;
 	getEventRing(): ReadonlyArray<{ ts: string; msg: string }>;
 	getRecentServerTrace(): readonly unknown[];
 	getFrontmatterQuarantineEntries(): readonly FrontmatterQuarantineEntry[];

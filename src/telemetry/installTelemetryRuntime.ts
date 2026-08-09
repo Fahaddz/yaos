@@ -19,7 +19,7 @@
  * Mutation harness (Puppeteer) lives in qa/ and is never imported from here.
  */
 
-import type { App, MarkdownView, Plugin } from "obsidian";
+import type { App, Plugin } from "obsidian";
 import { Notice } from "obsidian";
 import type { TelemetryRuntimeHost } from "./telemetryRuntimeHost";
 import { FlightTraceController } from "./debug/flightTraceController";
@@ -125,8 +125,8 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 		app: host.app,
 		getSettings: () => host.getSettings(),
 		getSyncState: () => host.getSyncState(),
-		getDiskMirror: () => host.getDiskMirror(),
-		getBlobSync: () => host.getBlobSync(),
+		getDiskMirrorSnapshot: () => host.getDiskMirrorSnapshot(),
+		getBlobSyncSnapshot: () => host.getBlobSyncSnapshot(),
 		getTraceHttpContext: () => host.getTraceHttpContext(),
 		getEventRing: () => host.getEventRing() as Array<{ ts: string; msg: string }>,
 		getRecentServerTrace: () => host.getRecentServerTrace() as unknown[],
@@ -244,18 +244,7 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			getFileId: (path: string) => {
 				return host.getSyncState()?.getFileIdForPath(path);
 			},
-			sampleEditor: (path: string) => {
-				try {
-					const leaf = host.app.workspace.getLeavesOfType("markdown").find(
-						(l) => (l.view as MarkdownView).file?.path === path
-					);
-					if (!leaf) return { kind: "not_open" as const, content: null };
-					const content = (leaf.view as MarkdownView).editor?.getValue() ?? null;
-					return { kind: "healthy_sampled" as const, content };
-				} catch {
-					return { kind: "not_open" as const, content: null };
-				}
-			},
+			sampleEditor: (path: string) => host.getEditorSample(path),
 		});
 
 		// Wire passive Engine subscriptions. The Engine owns all Y.Text handles;
