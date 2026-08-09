@@ -71,6 +71,8 @@ const suites = [
 	[JITI, "tests/controller-recovery-orchestration.ts"],
 	[JITI, "tests/controller-recovery-orchestration-amplifier.ts"],
 	[JITI, "tests/blob-download-conflicts.ts"],
+	[JITI, "tests/attachment-orchestrator-queue-lifecycle.ts"],
+	[JITI, "tests/teardown-lifecycle.ts"],
 	[JITI, "tests/markdown-remote-delete-trash-preference.ts"],
 	[JITI, "tests/closed-file-conflict.ts"],
 	[JITI, "tests/preserved-unresolved-registry.ts"],
@@ -83,6 +85,7 @@ const suites = [
 	[JITI, "tests/sql-oversized-delta-e2e.ts"],
 	[JITI, "tests/admin-route-gating.ts"],
 	[JITI, "tests/meta-v3-schema-gate-and-stats.ts"],
+	[NODE, "tests/schema-version-guard.mjs"],
 	[JITI, "tests/meta-observer-integration.ts"],
 	[JITI, "tests/release-compatibility-matrix.ts"],
 	[JITI, "tests/trace-store.ts"],
@@ -98,6 +101,7 @@ const suites = [
 	[JITI, "tests/disk-mirror-observer.ts"],
 	[JITI, "tests/meta-diskmirror-integration.ts"],
 	[JITI, "tests/server-pre-auth-runtime.ts"],
+	[JITI, "tests/setup-page-qr.ts"],
 	[JITI, "tests/server-route-classification-runtime.ts"],
 	[JITI, "tests/server-sync-message-classifier.ts"],
 	[JITI, "tests/server-sv-echo.ts"],
@@ -108,6 +112,7 @@ const suites = [
 	[JITI, "tests/sv-echo-message.ts"],
 	[JITI, "tests/sv-echo-client-receiver.ts"],
 	[JITI, "tests/server-ack-tracker.ts"],
+	[JITI, "tests/receipt-wait-readiness.ts"],
 	[JITI, "tests/indexed-db-candidate-store.ts"],
 	[JITI, "tests/tombstone-revive.ts"],
 	[JITI, "tests/flight-recorder.ts"],
@@ -160,6 +165,8 @@ const suites = [
 	[JITI, "tests/amplification-quarantine-policy.ts"],
 	// Telemetry loader failure-mode tests (no Obsidian, no fs, injected readFileFn)
 	[JITI, "tests/telemetry-loader.ts"],
+	// QA vault preparation safety and deterministic workspace contract
+	[JITI, "tests/prepare-vault.ts"],
 ];
 
 let totalPassed = 0;
