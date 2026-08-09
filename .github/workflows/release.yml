@@ -23,6 +23,7 @@ jobs:
       - run: npm ci --prefix server
       - run: npm run build
       - run: npm run guard:production-bundles:strict
+      - run: npm run guard:no-tracked-generated-artifacts
       - run: npm run guard:qa-isolation
       - run: npm run build:server-release
       - run: npm run test:ci

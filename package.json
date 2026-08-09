@@ -38,6 +38,7 @@
 		"guard:production-bundles:strict": "node scripts/guard-production-bundles.mjs",
 		"guard:production-bundles:transitional": "node scripts/guard-production-bundles.mjs --transitional",
 		"guard:no-src-js-artifacts": "node scripts/guard-no-src-js-artifacts.mjs",
+		"guard:no-tracked-generated-artifacts": "node scripts/guard-no-tracked-generated-artifacts.mjs",
 		"guard:concurrency-drift": "node scripts/guard-concurrency-drift.mjs",
 		"guard:qa-isolation": "node scripts/guard-qa-isolation.mjs",
 		"guard:schema-version": "node scripts/guard-schema-version.mjs",
