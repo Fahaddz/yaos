@@ -1,4 +1,5 @@
 import { sha256Hex } from "../hex";
+import { buildMobileSetupUrl, renderSetupQrDataUrl } from "../setupQr";
 import type { StoredServerConfig } from "../config";
 import {
 	SERVER_MAX_SCHEMA_VERSION,
@@ -291,6 +292,17 @@ export async function handleClaimRoute(req: Request, env: Env, authState: AuthSt
 
 	const token = body.token.trim();
 	const vaultId = typeof body.vaultId === "string" ? body.vaultId.trim() : "";
+	let mobileSetupQrDataUrl: string;
+	try {
+		// Render before the durable claim write. A renderer failure must not leave
+		// an otherwise functional server irreversibly claimed with a failed setup UI.
+		mobileSetupQrDataUrl = await renderSetupQrDataUrl(
+			buildMobileSetupUrl(url.origin, token, vaultId),
+		);
+	} catch {
+		return json({ error: "setup QR generation failed" }, 500);
+	}
+
 	const tokenHash = await hashToken(token);
 	const claimed = await claimServerConfig(env, tokenHash);
 	if (!claimed) {
@@ -311,6 +323,7 @@ export async function handleClaimRoute(req: Request, env: Env, authState: AuthSt
 		ok: true,
 		host: url.origin,
 		obsidianUrl: buildObsidianSetupUrl(url.origin, token, vaultId || undefined),
+		mobileSetupQrDataUrl,
 		capabilities: getCapabilities(
 			{ mode: "claim", claimed: true, tokenHash },
 			env,
