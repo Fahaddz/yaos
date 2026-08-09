@@ -31,6 +31,12 @@ export class AttachmentOrchestrator {
 	private shownAttachmentNudge = false;
 	private downloadGateLayoutReady: boolean;
 	private downloadGateStartupReady = false;
+	/**
+	 * Serializes periodic queue checkpoints with terminal stop/destroy state.
+	 * A terminal clear must run after any earlier status-tick save so a delayed
+	 * checkpoint cannot resurrect a queue that has already drained.
+	 */
+	private queuePersistence = Promise.resolve();
 
 	constructor(private readonly deps: AttachmentOrchestratorDeps) {
 		this.downloadGateLayoutReady = deps.app.workspace.layoutReady;
@@ -106,26 +112,32 @@ export class AttachmentOrchestrator {
 
 	async stop(reason: string): Promise<void> {
 		if (!this.blobSync) return;
-		const snapshot = this.blobSync.exportQueue();
-		if (snapshot.uploads.length > 0 || snapshot.downloads.length > 0) {
-			await this.deps.persistBlobQueue(snapshot);
-		}
-		this.blobSync.destroy();
-		this.blobSync = null;
+		await this.stopActiveManager();
 		this.deps.log(`Attachment sync engine stopped (${reason})`);
 	}
 
-	destroy(): void {
-		if (this.blobSync) {
-			const snapshot = this.blobSync.exportQueue();
-			if (snapshot.uploads.length > 0 || snapshot.downloads.length > 0) {
-				void this.deps.persistBlobQueue(snapshot);
-			}
+	async destroy(): Promise<void> {
+		try {
+			await this.stopActiveManager();
+		} finally {
+			this.shownAttachmentNudge = false;
+			this.downloadGateStartupReady = false;
 		}
-		this.blobSync?.destroy();
+	}
+
+	private async stopActiveManager(): Promise<void> {
+		const blobSync = this.blobSync;
+		if (!blobSync) return;
+
+		// Clear the public handle before the first await. This prevents a status
+		// tick from appending a stale checkpoint after terminal persistence has
+		// been queued for this manager.
 		this.blobSync = null;
-		this.shownAttachmentNudge = false;
-		this.downloadGateStartupReady = false;
+		try {
+			await this.persistQueueSnapshot(blobSync.exportQueue());
+		} finally {
+			blobSync.destroy();
+		}
 	}
 
 	async refresh(reason = "settings-change"): Promise<void> {
@@ -140,12 +152,23 @@ export class AttachmentOrchestrator {
 	}
 
 	handleStatusTick(): void {
-		if (!this.blobSync) return;
-		if (this.blobSync.pendingUploads > 0 || this.blobSync.pendingDownloads > 0) {
-			void this.deps.persistBlobQueue(this.blobSync.exportQueue());
-		} else {
-			void this.deps.clearPersistedBlobQueue();
-		}
+		const blobSync = this.blobSync;
+		if (!blobSync) return;
+		void this.persistQueueSnapshot(blobSync.exportQueue());
+	}
+
+	private persistQueueSnapshot(snapshot: BlobQueueSnapshot): Promise<void> {
+		const persist = snapshot.uploads.length > 0 || snapshot.downloads.length > 0
+			? () => this.deps.persistBlobQueue(snapshot)
+			: () => this.deps.clearPersistedBlobQueue();
+		const queued = this.queuePersistence.then(persist, persist);
+
+		// Keep the lane live after a failed periodic checkpoint while ensuring
+		// failures are observable instead of becoming unhandled rejections.
+		this.queuePersistence = queued.catch((error) => {
+			this.deps.log(`Attachment queue persistence failed: ${formatUnknown(error)}`);
+		});
+		return queued;
 	}
 
 	markStartupReady(reason: string): void {
