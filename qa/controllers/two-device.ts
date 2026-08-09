@@ -1217,7 +1217,7 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 	//     missing-baseline path now uses diskMtime evidence:
 	//     if diskMtime > lastDiskIndexPersistedAt → disk wins.
 	//     Repro: qa/scripts/repro-missing-baseline-kill.ts
-	//     See also: engineering/bug-rca-ledger.md Issue #22-B cold-relaunch variant
+	//     See also: docs/engineering/bug-rca-ledger.md Issue #22-B cold-relaunch variant
 	// ───────────────────────────────────────────────────────────────────
 
 	// s10e-1: B edits while YAOS disabled, A makes NO changes.
