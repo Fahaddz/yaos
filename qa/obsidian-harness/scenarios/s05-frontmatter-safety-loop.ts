@@ -70,21 +70,22 @@ export const s05aFrontmatterClosedFile: QaScenario = {
 	},
 
 	async run(ctx: QaContext): Promise<void> {
-		// Create and sync
+		const createTs = Date.now();
 		await ctx.createFile(SCRATCH_CLOSED, INITIAL_FM);
 		await ctx.waitForIdle(8000);
-		await ctx.yaos.waitForReceiptAfter(Date.now(), 20_000);
+		await ctx.yaos.waitForReceiptAfter(createTs, 20_000);
 
-		// First external frontmatter edit
+		// Each mutation gets its own candidate-bound receipt proof. The second
+		// wait cannot be satisfied by confirmation of the first external edit.
+		const firstEditTs = Date.now();
 		await ctx.writeAdapterFile(SCRATCH_CLOSED, FM_EDIT_1);
-		await new Promise((r) => setTimeout(r, 1500));
-
-		// Second external frontmatter edit
-		await ctx.writeAdapterFile(SCRATCH_CLOSED, FM_EDIT_2);
-		await new Promise((r) => setTimeout(r, 1500));
-
 		await ctx.waitForIdle(15_000);
-		await ctx.yaos.waitForReceiptAfter(Date.now(), 20_000);
+		await ctx.yaos.waitForReceiptAfter(firstEditTs, 20_000);
+
+		const finalEditTs = Date.now();
+		await ctx.writeAdapterFile(SCRATCH_CLOSED, FM_EDIT_2);
+		await ctx.waitForIdle(15_000);
+		await ctx.yaos.waitForReceiptAfter(finalEditTs, 20_000);
 	},
 
 	async assert(ctx: QaContext): Promise<void> {
@@ -101,14 +102,6 @@ export const s05aFrontmatterClosedFile: QaScenario = {
 
 // -----------------------------------------------------------------------
 // S05b — open editor variant (the nasty historical failure case)
-//
-// Steps:
-//   1. Create and open file in editor
-//   2. Type into body (binds editor to CRDT)
-//   3. External frontmatter write while editor is OPEN → test guard
-//   4. Second external frontmatter write while editor is OPEN
-//   5. Wait for idle
-//   6. Assert: no duplication, no stale heal, disk == CRDT
 // -----------------------------------------------------------------------
 
 export const s05bFrontmatterOpenEditor: QaScenario = {
@@ -122,28 +115,23 @@ export const s05bFrontmatterOpenEditor: QaScenario = {
 	},
 
 	async run(ctx: QaContext): Promise<void> {
-		// 1. Create and open in editor
 		await ctx.createFile(SCRATCH_OPEN, INITIAL_FM);
 		await ctx.waitForIdle(8000);
 		await ctx.openFile(SCRATCH_OPEN);
 
-		// 2. Type in body to bind the editor to CRDT
 		await ctx.typeIntoFile(SCRATCH_OPEN, "\n\nTyped while editor open.");
 		await ctx.waitForIdle(5000);
 
-		// 3. External frontmatter write WHILE editor is open
+		const firstEditTs = Date.now();
 		await ctx.writeAdapterFile(SCRATCH_OPEN, FM_EDIT_1 + "\n\nTyped while editor open.");
-		await new Promise((r) => setTimeout(r, 1500));
-
-		// 4. Second external frontmatter write WHILE editor is still open
-		await ctx.writeAdapterFile(SCRATCH_OPEN, FM_EDIT_2 + "\n\nTyped while editor open.");
-		await new Promise((r) => setTimeout(r, 1500));
-
-		// 5. Wait for full convergence
 		await ctx.waitForIdle(20_000);
-		await ctx.yaos.waitForReceiptAfter(Date.now(), 20_000);
+		await ctx.yaos.waitForReceiptAfter(firstEditTs, 20_000);
 
-		// 6. Close
+		const finalEditTs = Date.now();
+		await ctx.writeAdapterFile(SCRATCH_OPEN, FM_EDIT_2 + "\n\nTyped while editor open.");
+		await ctx.waitForIdle(20_000);
+		await ctx.yaos.waitForReceiptAfter(finalEditTs, 20_000);
+
 		await ctx.closeFile(SCRATCH_OPEN);
 		await ctx.waitForIdle(8000);
 	},
@@ -151,7 +139,6 @@ export const s05bFrontmatterOpenEditor: QaScenario = {
 	async assert(ctx: QaContext): Promise<void> {
 		await ctx.assert.fileExists(SCRATCH_OPEN);
 		await ctx.assert.diskEqualsCrdt(SCRATCH_OPEN);
-		// File should have exactly ONE frontmatter block (not duplicated)
 		const content = await (async () => {
 			const file = (ctx as unknown as { app: { vault: { read: (f: object) => Promise<string> }; getFileByPath: (p: string) => object | null } }).app.vault.getFileByPath(SCRATCH_OPEN);
 			if (!file) throw new Error(`File not found: ${SCRATCH_OPEN}`);

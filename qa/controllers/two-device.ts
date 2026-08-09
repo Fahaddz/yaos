@@ -28,12 +28,49 @@ import { analyzeTrace } from "../analyzers/analyzer";
 import { formatReport } from "../analyzers/report";
 import { runS11a } from "../obsidian-harness/scenarios/s11a-passive-stale-echo-witness";
 import { runS11b } from "../obsidian-harness/scenarios/s11b-disable-reenable-witness";
-import type { DeviceHandle } from "../obsidian-harness/witness-primitives";
-import type { YaosQaDebugApi } from "../../src/qaDebugApi";
+import type { DeviceHandle, WitnessDeviceApi } from "../obsidian-harness/witness-primitives";
+import type {
+	ReceiptSnapshot,
+	ReceiptWaitCheckpoint,
+	YaosQaDebugApi,
+} from "../harness/qaDebugApi";
 import type { WitnessBufferEntry } from "../../src/diagnostics/deviceWitnessTracker";
 
 /** Union type for either client implementation. */
 type AnyObsidianClient = ObsidianClient | RawCdpObsidianClient;
+
+/**
+ * Controller-side transport API for a CDP-connected device.
+ *
+ * This is deliberately distinct from the synchronous renderer API: a checkpoint
+ * crosses the CDP boundary, so callers must await it before passing it to the
+ * checkpoint wait method.
+ */
+type CdpDeviceBridge = Partial<
+	Omit<YaosQaDebugApi, "captureReceiptCheckpoint" | "getReceiptSnapshot">
+> & WitnessDeviceApi & {
+	captureReceiptCheckpoint(): Promise<ReceiptWaitCheckpoint>;
+	waitForReceiptAfterCheckpoint(
+		checkpoint: ReceiptWaitCheckpoint,
+		timeoutMs: number,
+	): Promise<void>;
+	getReceiptSnapshot(): Promise<ReceiptSnapshot>;
+	computeWitnessStateHash(content: string): Promise<string>;
+	ingestDiskFileNow(path: string, reason?: "create" | "modify"): Promise<void>;
+	pauseEditorPropagation(path: string): Promise<boolean>;
+	resumeEditorPropagation(path: string): Promise<boolean>;
+	setExternalEditPolicyOverride(
+		policy: "always" | "closed-only" | "never" | null,
+	): Promise<{ previous: "always" | "closed-only" | "never" }>;
+	[key: string]: unknown;
+};
+
+type Assert<T extends true> = T;
+type _CdpCheckpointCaptureIsAsync = Assert<
+	ReturnType<CdpDeviceBridge["captureReceiptCheckpoint"]> extends Promise<ReceiptWaitCheckpoint>
+		? true
+		: false
+>;
 
 function createClient(driver: string, port: number): AnyObsidianClient {
 	if (driver === "raw-cdp") {
@@ -324,10 +361,13 @@ async function s10fConvergence(
 
 /**
  * Wrap a CDP client as a DeviceHandle for Phase 2 witness primitives.
- * All YaosQaDebugApi calls are proxied through evalRaw into the Obsidian renderer.
+ * All renderer debug operations are proxied through evalRaw into Obsidian.
  */
-function makeCdpDeviceHandle(client: AnyObsidianClient, deviceId: string): DeviceHandle {
-	const api: YaosQaDebugApi = {
+function makeCdpDeviceHandle(
+	client: AnyObsidianClient,
+	deviceId: string,
+): DeviceHandle<CdpDeviceBridge> {
+	const api: CdpDeviceBridge = {
 		// Readiness
 		isLocalReady: () => false,
 		isProviderSynced: () => false,
@@ -343,9 +383,17 @@ function makeCdpDeviceHandle(client: AnyObsidianClient, deviceId: string): Devic
 		waitForReconciled: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForReconciled(${t})`),
 		waitForIdle: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(${t})`),
 		waitForReceiptAfter: (ts, t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForReceiptAfter(${ts}, ${t})`),
+		// Keep the transport asynchronous: consumers must await this snapshot
+		// before starting the checkpoint wait, rather than serializing a Promise.
+		captureReceiptCheckpoint: (): Promise<ReceiptWaitCheckpoint> =>
+			client.evalRaw<ReceiptWaitCheckpoint>(`window.__YAOS_DEBUG__?.captureReceiptCheckpoint()`),
+		waitForReceiptAfterCheckpoint: (checkpoint, t): Promise<void> => client.evalRaw(
+			`window.__YAOS_DEBUG__?.waitForReceiptAfterCheckpoint(${JSON.stringify(checkpoint)}, ${t})`,
+		),
 		waitForMemoryReceipt: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForMemoryReceipt(${t})`),
 		waitForFile: (p, t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForFile(${JSON.stringify(p)}, ${t})`),
-		getReceiptSnapshot: () => ({ candidateId: null, capturedAt: null, lastConfirmedCandidateId: null, lastConfirmedAt: null }),
+		getReceiptSnapshot: (): Promise<ReceiptSnapshot> =>
+			client.evalRaw<ReceiptSnapshot>(`window.__YAOS_DEBUG__?.getReceiptSnapshot()`),
 		getDiskHash: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.getDiskHash(${JSON.stringify(p)})`),
 		getCrdtHash: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.getCrdtHash(${JSON.stringify(p)})`),
 		getEditorHash: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.getEditorHash(${JSON.stringify(p)})`),
@@ -438,14 +486,14 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		await b.evalRaw(`window.__YAOS_DEBUG__?.waitForProviderDisconnected(10000)`);
 		log("Device B: provider disconnected.");
 
-		// 2. A creates the file and waits for server receipt
+		// 2. A creates the file and waits for its action-relative server receipt
 		log("Device A: creating file...");
+		const actionTs = await a.evalRaw<number>("Date.now()");
 		await a.evalRaw(
 			`window.__YAOS_QA__?.createFile(${JSON.stringify(scratch)}, "# Offline Handoff\\n\\nCreated on A while B offline.\\n")`
 		);
 		log("Device A: waiting for server receipt...");
 		try {
-			const actionTs = Date.now();
 			await a.evalRaw(`
 				(async () => {
 					const d = window.__YAOS_DEBUG__;
@@ -510,12 +558,14 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		const errors: string[] = [];
 		const scratch = "QA-scratch/s03-two-device-delete.md";
 
-		// Setup: create on A, wait for sync to both
+		// Setup: create on A, wait for sync to both. The timestamp is captured
+		// in A's renderer immediately before the direct mutation, preserving the
+		// intentionally strict waitForReceiptAfter contract.
 		log("Device A: creating test file...");
+		const actionTs = await a.evalRaw<number>("Date.now()");
 		await a.evalRaw(
 			`window.__YAOS_QA__?.createFile(${JSON.stringify(scratch)}, "# S03 Two-Device Delete\\n")`
 		);
-		const actionTs = Date.now();
 		await a.evalRaw(`window.__YAOS_DEBUG__?.waitForReceiptAfter(${actionTs}, 30000)`);
 		await b.evalRaw(`window.__YAOS_DEBUG__?.waitForFile(${JSON.stringify(scratch)}, 20000)`);
 
