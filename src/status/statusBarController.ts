@@ -85,6 +85,9 @@ function shouldShowReceiptStatus(state: ConnectionState): boolean {
 	return state.kind === "online" || state.kind === "offline";
 }
 
+export const SERVER_RECEIPT_STATUS_TITLE =
+	"Server receipt means this device’s latest local CRDT state was applied to the server Y.Doc in memory. It does not prove durable storage or that another device received the change.";
+
 function fmtTime(ms: number): string {
 	return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -95,22 +98,22 @@ export function getServerReceiptStatusLabel(
 ): string {
 	let label: string;
 	if (receipt.serverAppliedLocalState === true && connected) {
-		label = "Receipt: received";
+		label = "Receipt: server received latest local state";
 	} else if (receipt.serverAppliedLocalState === false && connected) {
-		label = "Receipt: waiting";
+		label = "Receipt: local state not yet received by server";
 	} else if (receipt.serverAppliedLocalState === false && !connected) {
-		label = "Receipt: offline, waiting";
+		label = "Receipt: offline — local state not yet received by server";
 	} else if (receipt.serverAppliedLocalState === true && !connected && receipt.lastServerReceiptEchoAt !== null) {
-		label = `Receipt: offline, last echo ${fmtTime(receipt.lastServerReceiptEchoAt)}`;
+		label = `Receipt: offline — server receipt at ${fmtTime(receipt.lastServerReceiptEchoAt)}`;
 	} else if (receipt.serverReceiptStartupValidation === "skipped_local_yjs_timeout") {
-		label = "Receipt: restart unchecked";
+		label = "Receipt: unchecked — local cache still loading";
 	} else if (receipt.lastKnownServerReceiptEchoAt !== null && receipt.lastServerReceiptEchoAt === null) {
-		label = "Receipt: checking";
+		label = `Receipt: last known server receipt at ${fmtTime(receipt.lastKnownServerReceiptEchoAt)} — checking…`;
 	} else {
-		label = "Receipt: not tracked";
+		label = "Receipt: not tracked yet";
 	}
 	if (receipt.candidatePersistenceHealthy === false) {
-		label += " (persistence degraded)";
+		label += " — receipt history not saved locally";
 	}
 	return label;
 }
@@ -144,7 +147,7 @@ export function renderConnectionState(
 ): void {
 	statusBarEl.setText(getLabelFromConnectionState(state, transferStatus, serverReceipt, attentionCount));
 	const title = serverReceipt && shouldShowReceiptStatus(state)
-		? "Server receipt means the server Y.Doc received this device's latest local CRDT state. It is not durable and does not mean other devices have applied it."
+		? SERVER_RECEIPT_STATUS_TITLE
 		: "";
 	statusBarEl.setAttr("title", title);
 }

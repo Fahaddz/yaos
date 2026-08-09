@@ -49,6 +49,11 @@ console.log("\n--- Test 1: custom-message receiver counters and tracker path ---
 	const provider = {};
 	const tracker = new ServerAckTracker();
 	const counters = createSvEchoCounters();
+	let acceptedReceiptChangeNotifications = 0;
+	const recordAcceptedEcho = (sv: Uint8Array) => {
+		tracker.recordServerSvEcho(sv);
+		acceptedReceiptChangeNotifications++;
+	};
 	tracker.attach(doc, () => Y.encodeStateVector(doc), provider, null);
 	await tracker.onStartup(new InMemoryCandidateStore(), SCOPE);
 
@@ -56,33 +61,29 @@ console.log("\n--- Test 1: custom-message receiver counters and tracker path ---
 	await flushMicrotasks();
 	assert(tracker.serverAppliedLocalState === false, "local candidate starts pending");
 
-	handleSvEchoCustomMessage(JSON.stringify({ type: "other/message", schema: 1 }), counters, (sv) => {
-		tracker.recordServerSvEcho(sv);
-	});
+	handleSvEchoCustomMessage(JSON.stringify({ type: "other/message", schema: 1 }), counters, recordAcceptedEcho);
 	assert(counters.customMessageSeenCount === 1, "unrelated custom message counted as custom-message seen");
 	assert(counters.svEchoSeenCount === 0, "unrelated custom message does not count as sv-echo seen");
 	assert(counters.rejectedCount === 0, "unrelated custom message does not count as rejected sv-echo");
+	assert(acceptedReceiptChangeNotifications === 0, "unrelated custom message does not request a receipt-status refresh");
 	assert(tracker.serverAppliedLocalState === false, "unrelated custom message leaves tracker unchanged");
 
-	handleSvEchoCustomMessage(JSON.stringify({ type: "yaos/sv-echo", schema: 2, sv: "AA==" }), counters, (sv) => {
-		tracker.recordServerSvEcho(sv);
-	});
+	handleSvEchoCustomMessage(JSON.stringify({ type: "yaos/sv-echo", schema: 2, sv: "AA==" }), counters, recordAcceptedEcho);
 	assert(counters.svEchoSeenCount === 1, "invalid typed echo counts as sv-echo seen");
 	assert(counters.rejectedCount === 1, "invalid typed echo increments rejected count");
 	assert(counters.rejectedInvalidCount === 1, "invalid typed echo increments invalid count");
+	assert(acceptedReceiptChangeNotifications === 0, "invalid typed echo does not request a receipt-status refresh");
 	assert(tracker.serverAppliedLocalState === false, "invalid typed echo leaves tracker unchanged");
 
-	handleSvEchoCustomMessage(makeSvEchoMessage(Y.encodeStateVector(serverDoc)), counters, (sv) => {
-		tracker.recordServerSvEcho(sv);
-	});
+	handleSvEchoCustomMessage(makeSvEchoMessage(Y.encodeStateVector(serverDoc)), counters, recordAcceptedEcho);
 	assert(counters.acceptedCount === 1, "valid non-dominating echo accepted");
+	assert(acceptedReceiptChangeNotifications === 1, "valid non-dominating echo requests a receipt-status refresh");
 	assert(tracker.serverAppliedLocalState === false, "valid non-dominating echo leaves candidate pending");
 
 	Y.applyUpdate(serverDoc, Y.encodeStateAsUpdate(doc));
-	handleSvEchoCustomMessage(makeSvEchoMessage(Y.encodeStateVector(serverDoc)), counters, (sv) => {
-		tracker.recordServerSvEcho(sv);
-	});
+	handleSvEchoCustomMessage(makeSvEchoMessage(Y.encodeStateVector(serverDoc)), counters, recordAcceptedEcho);
 	assert(counters.acceptedCount === 2, "valid dominating echo accepted");
+	assert(acceptedReceiptChangeNotifications === 2, "each accepted echo requests one receipt-status refresh");
 	assert(tracker.serverAppliedLocalState === true, "valid dominating echo confirms candidate");
 
 	doc.destroy();

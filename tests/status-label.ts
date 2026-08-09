@@ -11,7 +11,11 @@
 //   - server_update_required is "Update required", not "Error"
 //   - transferStatus is appended when present
 
-import { getLabelFromConnectionState, getServerReceiptStatusLabel } from "../src/status/statusBarController";
+import {
+	getLabelFromConnectionState,
+	getServerReceiptStatusLabel,
+	SERVER_RECEIPT_STATUS_TITLE,
+} from "../src/status/statusBarController";
 import type { ConnectionState } from "../src/runtime/connectionController";
 
 let passed = 0;
@@ -84,52 +88,59 @@ assert(withTransfer.includes("Connected"), "base label present with transfer");
 const withoutTransfer = label({ kind: "online", generation: 1 }, null);
 assert(!withoutTransfer.includes("null"), "null transferStatus not rendered");
 
-console.log("\n--- Test 4b: server receipt status labels stay conservative ---");
+console.log("\n--- Test 4b: server receipt status labels distinguish current and historical facts ---");
 const receiptBase = {
 	lastServerReceiptEchoAt: null,
 	lastKnownServerReceiptEchoAt: null,
 	candidatePersistenceHealthy: true,
 	serverReceiptStartupValidation: "validated",
 };
+const observedAt = Date.UTC(2026, 4, 10, 12, 34);
+const observedTime = new Date(observedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 assert(
-	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: true }, true)
-		.includes("Receipt: received"),
-	"connected + true says received",
+	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: true }, true) ===
+		"Receipt: server received latest local state",
+	"connected + true identifies the latest local state as received by the server",
 );
 assert(
-	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: false }, true)
-		.includes("Receipt: waiting"),
-	"connected + false waits",
+	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: false }, true) ===
+		"Receipt: local state not yet received by server",
+	"connected + false identifies the local state as not yet received",
 );
 assert(
-	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: null }, true)
-		.includes("Receipt: not tracked"),
-	"connected + null is not tracked yet",
+	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: false }, false) ===
+		"Receipt: offline — local state not yet received by server",
+	"offline + false retains the current local-state warning",
 );
 assert(
-	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: true, lastServerReceiptEchoAt: Date.UTC(2026, 4, 10, 12, 34) }, false)
-		.includes("Receipt: offline, last echo"),
-	"offline + fresh echo reports last echo observed",
+	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: true, lastServerReceiptEchoAt: observedAt }, false) ===
+		`Receipt: offline — server receipt at ${observedTime}`,
+	"offline + current-session echo identifies when the server receipt was observed",
 );
 assert(
-	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: null, serverReceiptStartupValidation: "skipped_local_yjs_timeout" }, true)
-		.includes("Receipt: restart unchecked"),
-	"startup skipped local Yjs timeout is visible when active state is unknown",
+	getServerReceiptStatusLabel({
+		...receiptBase,
+		serverAppliedLocalState: null,
+		lastKnownServerReceiptEchoAt: observedAt,
+	}, true) === `Receipt: last known server receipt at ${observedTime} — checking…`,
+	"historical receipt is explicitly marked as last known while current state is checked",
 );
 assert(
-	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: true, serverReceiptStartupValidation: "skipped_local_yjs_timeout" }, true)
-		.includes("Receipt: received"),
-	"fresh true receipt beats stale startup skipped warning",
+	getServerReceiptStatusLabel({
+		...receiptBase,
+		serverAppliedLocalState: null,
+		serverReceiptStartupValidation: "skipped_local_yjs_timeout",
+	}, true) === "Receipt: unchecked — local cache still loading",
+	"startup validation skip is stated without claiming a server result",
 );
 assert(
-	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: false, serverReceiptStartupValidation: "skipped_local_yjs_timeout" }, true)
-		.includes("Receipt: waiting"),
-	"fresh false receipt beats stale startup skipped warning",
+	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: null }, true) === "Receipt: not tracked yet",
+	"unknown receipt without history is not tracked yet",
 );
 assert(
-	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: true, candidatePersistenceHealthy: false }, true)
-		.includes("persistence degraded"),
-	"persistence unavailable/degraded is visible",
+	getServerReceiptStatusLabel({ ...receiptBase, serverAppliedLocalState: true, candidatePersistenceHealthy: false }, true) ===
+		"Receipt: server received latest local state — receipt history not saved locally",
+	"receipt-history persistence degradation is stated precisely",
 );
 const receiptStatus = getLabelFromConnectionState(
 	{ kind: "online", generation: 1 },
@@ -137,7 +148,12 @@ const receiptStatus = getLabelFromConnectionState(
 	{ ...receiptBase, serverAppliedLocalState: true },
 );
 assert(receiptStatus.includes("Receipt:"), "connection label includes receipt label when facts are provided");
-assert(!/Synced|Saved|Confirmed|Durable/.test(receiptStatus), "receipt label avoids forbidden claims");
+assert(!/Synced|Saved|Confirmed|Durable|Acked|all devices/i.test(receiptStatus), "receipt label avoids stronger claims");
+assert(
+	SERVER_RECEIPT_STATUS_TITLE ===
+		"Server receipt means this device’s latest local CRDT state was applied to the server Y.Doc in memory. It does not prove durable storage or that another device received the change.",
+	"receipt tooltip distinguishes in-memory server application from durability and delivery",
+);
 const errorWithReceipt = getLabelFromConnectionState(
 	{ kind: "auth_failed", code: "unauthorized" },
 	null,

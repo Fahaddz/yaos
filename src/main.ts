@@ -83,6 +83,7 @@ import {
 	renderSyncStatus,
 	type SyncStatus,
 } from "./status/statusBarController";
+import { CoalescedStatusRefresh } from "./status/coalescedStatusRefresh";
 import { formatUnknown, yTextToString } from "./utils/format";
 import { randomBase64Url } from "./utils/base64url";
 import { ConfirmModal } from "./ui/ConfirmModal";
@@ -166,6 +167,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private traceSink: TraceSink = new NoopTraceSink();
 	private statusBarEl: HTMLElement | null = null;
 	private statusInterval: ReturnType<typeof setInterval> | null = null;
+	private readonly receiptStatusRefresh = new CoalescedStatusRefresh(() => {
+		if (!this.teardownLifecycle.isClosing) this.refreshStatusBar();
+	});
 
 	/** Parsed exclude patterns from settings. */
 	private excludePatterns: string[] = [];
@@ -695,7 +699,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				trace: (source, msg, details) => this.trace(source, msg, details),
 				onFlightEvent: (event) => this.recordFlightEvent(event as import("./telemetry/debug/flightEvents").FlightEventInput),
 				onFlightPathEvent: (event) => this.recordFlightPathEvent(event),
-			getSocketTicket: (() => {
+				onServerReceiptStatusChanged: () => this.queueReceiptStatusRefresh(),
+				getSocketTicket: (() => {
 				// Each VaultSync instance gets its own ticket cache.  The cache
 				// is discarded when VaultSync is torn down and recreated.
 				const ticketCache = createSocketTicketCache();
@@ -917,6 +922,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			}, 3000);
 			this.register(() => {
 				if (this.statusInterval) clearInterval(this.statusInterval);
+				this.receiptStatusRefresh.cancel();
 			});
 
 			// 6. Vault events (gated by reconciliation state)
@@ -1476,6 +1482,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				run: () => {
 					if (this.statusInterval) clearInterval(this.statusInterval);
 					this.statusInterval = null;
+					this.receiptStatusRefresh.cancel();
 				},
 			},
 			{
@@ -1713,6 +1720,15 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			this.handleIndexedDbDegraded("status-check");
 		}
 		this.updateStatusBar(state);
+	}
+
+	/**
+	 * Batch receipt echoes delivered in the same provider turn into one redraw.
+	 * The accepted-echo callback runs after ServerAckTracker updates its facts,
+	 * so this always renders the current receipt state rather than stale data.
+	 */
+	private queueReceiptStatusRefresh(): void {
+		this.receiptStatusRefresh.request();
 	}
 
 	private computeSyncStatus(): SyncStatus {

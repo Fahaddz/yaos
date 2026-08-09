@@ -97,6 +97,7 @@ const suites = [
 	[JITI, "tests/sync-facts.ts"],
 	[JITI, "tests/offline-handoff.ts"],
 	[JITI, "tests/status-label.ts"],
+	[JITI, "tests/coalesced-status-refresh.ts"],
 	[JITI, "tests/recovery-amplifier.ts"],
 	[JITI, "tests/disk-mirror-observer.ts"],
 	[JITI, "tests/meta-diskmirror-integration.ts"],

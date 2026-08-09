@@ -317,6 +317,12 @@ export class VaultSync {
 					localExpiresAt: number;
 					ttlMs: number;
 				} | null>;
+			/**
+			 * Invoked after a validated server receipt echo updates receipt facts.
+			 * This is notification-only: ServerAckTracker remains the sole
+			 * state-vector truth and persistence authority.
+			 */
+			onServerReceiptStatusChanged?: () => void;
 		},
 	) {
 		this.debug = settings.debug;
@@ -471,6 +477,7 @@ export class VaultSync {
 				// ServerAckTracker's state-vector dominance check remains the truth gate.
 				handleSvEchoCustomMessage(payload, this._svEchoCounters, (sv) => {
 					this.serverAckTracker.recordServerSvEcho(sv);
+					options?.onServerReceiptStatusChanged?.();
 				});
 			});
 		// Fallback for servers that still send plain text JSON frames.
