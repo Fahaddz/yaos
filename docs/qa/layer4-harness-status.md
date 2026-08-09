@@ -20,11 +20,12 @@ behavior to answer.
 | s13 desktop | 2x desktop CDP | PASS | Open-editor remote edit converges without duplication; transient disk lag classified as diagnostic |
 | s13 Linux+Android | Linux + real Android | PASS | Android open-editor remote edit converges; editorHash==crdtHash==diskHash; zero transient lag |
 | s12a-with-edit desktop | 2x desktop CDP | PASS | Real edit propagates without duplication; BASELINEx1, EDIT_FROM_Ax1 |
+| s12a-three-device-active-edit | Linux + real Android + real iPad | QUEUED | Manual strict-foreground active-edit scenario is implemented; real-device execution and evidence are still required |
 
 ## What is not proven
 
 - True mobile background behavior (s12b is partial — background unavailable event not in segments)
-- Three-device quorum after an actual edit (s12a three-device used pre-existing hash)
+- Three-device quorum after an actual edit (`s12a-three-device-active-edit` is implemented but awaits a real Linux+iPad+Android run and evidence bundle)
 - Real-device s12c conflict artifact
 - Soak/stress behavior
 
@@ -35,6 +36,7 @@ behavior to answer.
 | s11a | Suspecting stale hash resurrection after passive device lag |
 | s11b | Suspecting conflict artifact policy regression |
 | s12a-with-edit | Suspecting basic two-device edit convergence failure |
+| s12a-three-device-active-edit | Need the deferred strict-foreground Linux+iPad+Android proof that a real editor edit converges |
 | s13 | Suspecting open-editor remote edit duplication or stale echo |
 | s12c | Suspecting conflict artifact locality regression |
 | s12b | Suspecting mobile background/foreground lifecycle affecting witness |

@@ -20,7 +20,7 @@
  */
 
 import type { App, Plugin } from "obsidian";
-import { Notice } from "obsidian";
+import { Notice, Platform } from "obsidian";
 import type { TelemetryRuntimeHost } from "./telemetryRuntimeHost";
 import { FlightTraceController } from "./debug/flightTraceController";
 import { FlightTraceSink } from "./debug/flightTraceSink";
@@ -113,6 +113,12 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	let flightTrace: FlightTraceController | null = null;
 	let deviceWitnessTracker: DeviceWitnessTracker | null = null;
 	let _qaTraceSecretHash: string | null = null;
+
+	function getSafeBundlePlatform(): "desktop" | "ios" | "android" | "unknown" {
+		if (Platform.isIosApp) return "ios";
+		if (Platform.isAndroidApp) return "android";
+		return Platform.isMobile ? "unknown" : "desktop";
+	}
 
 	// Witness observer refs for cleanup
 	let _witnessContentUnsubscribe: (() => void) | null = null;
@@ -216,7 +222,7 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			sink,
 			qaTraceSecret: host.getSettings().qaTraceSecret || null,
 			stateSecret: ctx.deviceId,
-			platform: "desktop",
+			platform: Platform.isMobile ? "mobile" : "desktop",
 			getPathId: async (path: string) => {
 				try {
 					const result = await flightTrace?.getPathId(path);
@@ -366,14 +372,17 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 		try {
 			const { buildSafeWitnessBundle, copyWitnessBundleToClipboard } = await import("./diagnostics/witnessBundleFormat");
 			const ctx = ftc.context;
+			const scenario = tracker.getScenarioContext();
 			const result = buildSafeWitnessBundle({
 				pluginVersion: host.getPluginVersion(),
 				deviceId: ctx?.deviceId ?? "unavailable",
 				localTraceId: ctx?.traceId ?? "unavailable",
-				platform: "unknown",
+				platform: getSafeBundlePlatform(),
 				runtimeState: tracker.getRuntimeState(),
 				flightMode: tracker.getFlightMode(),
 				qaTraceSecretHash: _qaTraceSecretHash ?? "not-configured",
+				scenarioRunId: scenario?.scenarioRunId ?? null,
+				scenarioId: scenario?.scenarioId ?? null,
 				segments: tracker.getCheckpointSegments(),
 			});
 

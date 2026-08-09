@@ -7,7 +7,7 @@ export type SafeWitnessBundleInput = {
 	pluginVersion: string;
 	deviceId: string;
 	localTraceId: string;
-	platform: "desktop" | "mobile" | "unknown";
+	platform: "desktop" | "ios" | "android" | "unknown";
 	runtimeState: string;
 	flightMode: string;
 	qaTraceSecretHash: string;

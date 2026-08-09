@@ -26,7 +26,7 @@ Primary docs:
 
 These are the remaining externally meaningful gaps:
 - original reporter validation is still not evidenced in-repo
-- iPad / three-device convergence after an actual edit is still not proven
+- iPad / three-device convergence after an actual edit is still not proven; the manual `s12a-three-device-active-edit` setup is ready but its real-device pass/fail bundle run remains queued
 - real-device `s12c` conflict-artifact behavior is still not proven
 
 Primary evidence:

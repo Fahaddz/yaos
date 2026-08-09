@@ -195,6 +195,73 @@ Validation:
 
 ---
 
+## Scenario s12a-three-device-active-edit — Deferred real-device proof
+
+**Status**: implemented and queued; **not yet executed**. This is manual-only. CDP,
+iOS simulators, browser emulation, shell writes, adapter writes, `app.vault.modify`,
+and test-helper direct writes are prohibited.
+
+**Devices**: Linux desktop (Device A, producer), real foreground iPad (Device B),
+real foreground Android (Device C).
+**Target**: `QA-scratch/s12a-active-edit-witness.md`
+**Canonical evidence**: `qa-runs/s12a-three-device-active-edit-pass/` on success or
+`qa-runs/s12a-three-device-active-edit-fail/` on failure. Do not create a placeholder
+pass directory before the real run.
+
+### Required setup
+
+1. Install the QA harness beside a QA product build on every device, enable
+   `qaDebugMode`, and configure the same `qaTraceSecret`. The QA harness—not the
+   product plugin—provides the manual scenario controls.
+2. Keep iPad and Android foreground for the entire trace. Any mobile witness event
+   whose `runtimeState` is not `foreground` invalidates a pass artifact.
+3. Use `YAOS QA: Set scenario run ID` on all three devices with the same non-empty
+   run ID and scenario ID `s12a-three-device-active-edit`, then start the QA flight
+   trace in `qa-safe` mode on all three.
+4. Seed the target note with non-empty baseline content of at least 32 bytes, for
+   example `S12A-AE-BASELINE-CONTENT-MUST-BE-NONEMPTY\n`. Open it on every device.
+
+### Manual sequence
+
+1. Advance all devices to **step 1**, `baseline-quorum`, then invoke
+   `Force fresh QA witness for current file` on each. Wait for all three baseline
+   witnesses.
+2. On Device A only, use Obsidian's Markdown editor to add
+   `S12A-AE-EDITED-FROM-A`. The post-edit content must differ from baseline by at
+   least eight bytes. Do not save through any non-editor path.
+3. On Device A, advance to **step 2**, `edit-applied-on-a`, and force a fresh
+   witness. This produces the deterministic target: the one step-2 `local-edit`
+   settled hash for the same safe `pathId`, distinct from A's step-1 baseline hash.
+4. After the edit visibly arrives, advance Device B to **step 3**, `settled-on-b`,
+   force a fresh witness, and require that hash. Repeat on Device C at **step 4**,
+   `settled-on-c`. Do not manually choose a convenient hash.
+5. Advance all devices to **step 5**, `ready-to-export`. Export safe witness bundles
+   **while tracing remains active**, then stop the traces. Export is deliberately not
+   a post-stop trace step.
+6. Preserve the untouched three bundles and run:
+
+   ```sh
+   bun run qa:analyze-bundles -- <device-a.ndjson> <device-b.ndjson> <device-c.ndjson> \
+     --out qa-runs/s12a-three-device-active-edit-pass/report.json
+   ```
+
+   Put a human-readable `summary.md` alongside the report. It must name the shared
+   run ID; the three device roles/platforms; Device A's baseline and post-edit hashes;
+   the iPad and Android hashes and first settled step for each; and the final
+   strict-foreground/analyzer verdict. If any condition fails, retain the raw bundles
+   and report under the `-fail/` directory instead.
+
+### Pass contract
+
+The analyzer fails closed unless it receives exactly one `desktop`, one `ios`, and
+one `android` bundle; all headers and mobile witness events are foreground/`qa-safe`;
+Device A has one step-1 baseline and a distinct step-2 `local-edit` settled hash for
+the same `pathId`; and iPad/Android settle that exact hash at steps 3 and 4. Existing
+stale/recovery-old-hash checks remain mandatory. The resulting `report.json` must have
+`summary.ok: true`.
+
+---
+
 ## Scenario s12b — Mobile-Foregrounded Quorum
 
 **Devices**: Linux (A), iPad foreground (B), Android **backgrounded** (C)

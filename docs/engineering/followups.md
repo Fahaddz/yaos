@@ -22,6 +22,15 @@ For current priority framing, cross-check:
 
 - Current three-device evidence is passive quorum, not a fresh edit propagating
   through all three devices.
+- The manual-only setup now exists at
+  `qa/obsidian-harness/scenarios/s12a-three-device-active-edit.ts` and
+  `docs/qa/multi-device-witness-runbook.md`.
+- **Deferred execution:** run it on Linux desktop + real foreground iPad + real
+  foreground Android with a shared `qaTraceSecret`, then preserve untouched bundles,
+  `report.json`, and `summary.md` under
+  `qa-runs/s12a-three-device-active-edit-pass/` or `-fail/`.
+- Closure requires the analyzer's strict active-edit contract to pass; the existing
+  passive three-device report cannot be renamed or reused as this evidence.
 
 ### Real-device `s12c` conflict-artifact proof
 

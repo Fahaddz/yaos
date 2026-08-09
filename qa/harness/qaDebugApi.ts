@@ -417,6 +417,21 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 	const { app } = plugin;
 	const POLL_INTERVAL = 250;
 
+	/**
+	 * Copy external QA-harness scenario state into the passive witness tracker.
+	 * The tracker only records this annotation in telemetry; scenario control
+	 * remains owned by qa/harness and never alters sync state.
+	 */
+	function applyScenarioContextToTracker(): void {
+		const state = plugin.getScenarioController?.()?.getScenarioStepState();
+		plugin.getDeviceWitnessTracker?.()?.setScenarioContext({
+			scenarioRunId: state?.scenarioRunId ?? null,
+			scenarioId: state?.scenarioId ?? null,
+			stepIndex: state?.stepIndex ?? null,
+			stepLabel: state?.stepLabel,
+		});
+	}
+
 	async function sha256(text: string): Promise<string> {
 		return plugin.sha256Hex(text);
 	}
@@ -717,6 +732,7 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 				}
 			}
 			await plugin.startQaFlightTrace(mode);
+			applyScenarioContextToTracker();
 		},
 
 		async stopFlightTrace(): Promise<void> {
@@ -923,6 +939,7 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 
 		__qaOnlySetScenarioRunIdUnsafe(scenarioRunId: string, scenarioId: string): void {
 			plugin.getScenarioController?.()?.setScenarioRunId(scenarioRunId, scenarioId);
+			applyScenarioContextToTracker();
 		},
 
 		__qaOnlyAdvanceScenarioStepUnsafe(stepIndex: number, label?: string): void {
@@ -943,6 +960,7 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 			}
 			const ok = scenarioCtrl.advanceScenarioStep(stepIndex, label);
 			if (!ok) return;
+			applyScenarioContextToTracker();
 			// Emit qa.scenario.step flight event
 			plugin.getFlightTraceController()?.record({
 				priority: "important",
