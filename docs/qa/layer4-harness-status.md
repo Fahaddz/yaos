@@ -77,8 +77,10 @@ Tests that do NOT import from `qa/` remain in the plugin repo and run in CI:
 2. **Checkpoint segments lost after plugin reload**: In-memory segments are cleared on
    plugin reload. Bundle export must happen before reload.
 
-3. **Filesystem persistence always fail-closed on desktop**: `.obsidian` is inside the
-   vault root. Bundle export uses clipboard/modal only.
+3. **Safe witness export stays outside the vault**: the command builds analyzer-compatible
+   NDJSON, copies it to the clipboard when possible, and otherwise opens a selectable modal.
+   It never writes bundles under `.obsidian` or through the vault adapter. Save or share copied
+   evidence outside the vault before running `qa:analyze-bundles`.
 
 4. **transient_open_editor_disk_lag classification**: Uses
    `editorSampleKind=healthy_sampled` as proxy for `editorHash===crdtHash` (diverged events

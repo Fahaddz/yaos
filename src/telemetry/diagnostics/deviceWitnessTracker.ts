@@ -420,6 +420,11 @@ export class DeviceWitnessTracker {
 		return this._getRuntimeState();
 	}
 
+	/** Flight mode captured when this passive tracker was created. */
+	getFlightMode(): WitnessTrackerConfig["flightMode"] {
+		return this.config.flightMode;
+	}
+
 	/**
 	 * Phase 2: Read in-memory checkpoint segments for QA API export.
 	 * Returns segments sorted by index. Each segment is a NDJSON string.

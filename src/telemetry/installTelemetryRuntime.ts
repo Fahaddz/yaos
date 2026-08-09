@@ -299,28 +299,6 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	// Witness bundle / export helpers (safe mode only — no unsafe-local)
 	// -----------------------------------------------------------------------
 
-	function _buildBundleHeader(privacyMode: "safe"): Record<string, unknown> {
-		const ftc = flightTrace;
-		const ctx = ftc?.context;
-		const tracker = deviceWitnessTracker;
-		return {
-			bundleVersion: 1,
-			privacyMode,
-			traceId: ctx?.traceId ?? null,
-			deviceId: ctx?.deviceId ?? null,
-			witnessSeq: tracker?.currentWitnessSeq() ?? null,
-			exportedAt: new Date().toISOString(),
-		};
-	}
-
-	function _buildBundleString(privacyMode: "safe"): string {
-		const tracker = deviceWitnessTracker;
-		const header = _buildBundleHeader(privacyMode);
-		const segments = tracker?.getCheckpointSegments() ?? [];
-		const lines = [JSON.stringify(header), ...segments.map(s => s.content)];
-		return lines.join("\n");
-	}
-
 	async function _persistCheckpointSegmentsIfSafe(): Promise<void> {
 		const tracker = deviceWitnessTracker;
 		if (!tracker) return;
@@ -384,9 +362,34 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			new Notice("No active witness tracker. Start a telemetry trace first.", 5000);
 			return;
 		}
-		const bundleStr = _buildBundleString("safe");
-		new Notice(`Witness bundle ready (${bundleStr.length} chars). Check console.`, 4000);
-		console.debug("[yaos:telemetry] witness bundle:", bundleStr);
+
+		try {
+			const { buildSafeWitnessBundle, copyWitnessBundleToClipboard } = await import("./diagnostics/witnessBundleFormat");
+			const ctx = ftc.context;
+			const result = buildSafeWitnessBundle({
+				pluginVersion: host.getPluginVersion(),
+				deviceId: ctx?.deviceId ?? "unavailable",
+				localTraceId: ctx?.traceId ?? "unavailable",
+				platform: "unknown",
+				runtimeState: tracker.getRuntimeState(),
+				flightMode: tracker.getFlightMode(),
+				qaTraceSecretHash: _qaTraceSecretHash ?? "not-configured",
+				segments: tracker.getCheckpointSegments(),
+			});
+
+			if (await copyWitnessBundleToClipboard(result.bundle)) {
+				const omission = result.droppedUnsafeLineCount > 0
+					? ` ${result.droppedUnsafeLineCount} unsafe checkpoint line(s) were omitted.`
+					: "";
+				new Notice(`Safe witness bundle copied (${result.bundle.length} chars).${omission}`, 5000);
+				return;
+			}
+
+			const { WitnessBundleExportModal } = await import("./diagnostics/witnessBundleExportModal");
+			new WitnessBundleExportModal(host.app, result.bundle).open();
+		} catch {
+			new Notice("Could not prepare a safe witness bundle.", 5000);
+		}
 	}
 
 	function showDeviceIdentity(): void {

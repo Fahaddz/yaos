@@ -69,39 +69,26 @@ Mode: `qa-safe` (recommended for cross-device runs — uses shared `qaTraceSecre
 
 ## Bundle Export
 
-### Primary export channel
+### Safe export channel
 
 On each device, invoke:
 ```
 YAOS QA: Export witness bundle
 ```
 
-- **Desktop**: bundle is copied to clipboard. A Notice confirms "witness bundle copied to clipboard".
-- **Mobile**: bundle is delivered via platform share sheet (AirDrop, Files, etc.).
-- **Filesystem write** (optional): only when the resolved path `<configDir>/plugins/yaos/witness-bundles/` is **outside** the vault root. On typical Obsidian desktop configurations, `.obsidian` is inside the vault root, so filesystem write is unavailable — clipboard is the primary channel.
+The command builds an analyzer-compatible `qa-safe` NDJSON bundle in memory, with an
+explicit allowlist that omits raw paths, note content, tokens, and unreviewed fields.
+It then uses these delivery paths:
 
-When filesystem write is unavailable, the Notice reads:
-> "witness bundle delivered via clipboard/share-sheet; filesystem write unavailable: path inside vault root"
+- **Clipboard available**: the safe bundle is copied to the clipboard and a Notice
+  confirms the copy.
+- **Clipboard unavailable**: a selectable modal opens so the bundle can be copied
+  manually.
 
-This is expected behavior. The clipboard path always works.
-
-### Unsafe-local bundle (full/local-private mode only)
-
-For debugging with raw paths and content:
-```
-YAOS QA: Export witness bundle (unsafe local debug)
-```
-
-⚠️ **Warning**: Bundles in `unsafe-local` mode contain raw vault paths and/or raw note content. **Do not share outside the development team.**
-
-### Filesystem persistence (opt-in, best-effort)
-
-When the resolved checkpoint directory is outside the vault root, checkpoint segments are automatically serialized to disk when the flight trace stops. This is opt-in convenience — Phase 3 acceptance does not depend on it succeeding.
-
-When the path is inside the vault root:
-- No segment files are written
-- A single `device.witness.diverged` with `reason: "checkpoint_path_inside_vault"` is emitted (once per session)
-- The identity modal shows `filesystemPersistenceStatus: "unavailable_inside_vault"`
+The command does not use a platform share sheet, write through the vault adapter,
+persist to plugin data, or create a bundle under `.obsidian`. There is no
+`unsafe-local` export command. Save the copied evidence outside the vault before
+reloading the plugin, then pass that external file to `qa:analyze-bundles`.
 
 ---
 
