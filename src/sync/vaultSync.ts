@@ -189,7 +189,7 @@ export class VaultSync {
 	 * Preserves transaction origin so consumers can distinguish local from remote.
 	 */
 	private _metaDeepObserver = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
-		const origin = events[0]?.transaction.origin;
+		const origin: unknown = events[0]?.transaction.origin;
 		const isLocal = isLocalOrigin(origin, this.provider);
 
 		let changes: MetaSemanticChange[];
@@ -397,8 +397,8 @@ export class VaultSync {
 				// (setupWS) reuses provider.url directly without re-calling
 				// params().  VaultSync keeps provider.url fresh via
 				// scheduleSocketTicketRefresh so reconnects always carry a live
-				// ticket.  See engineering/zero-config-auth.md § "Reconnect
-				// behavior" and engineering/warts-and-limits.md § "Pragmatic
+				// ticket.  See docs/architecture/zero-config-auth.md § "Reconnect
+				// behavior" and docs/architecture/warts-and-limits.md § "Pragmatic
 				// compromises".
 				const ticketResult = this._getSocketTicket ? await this._getSocketTicket() : null;
 				if (ticketResult) {
@@ -2105,12 +2105,11 @@ export class VaultSync {
 		this.clearPendingRenames();
 		await this.flushReceiptPersistence();
 
-		const provider = this.provider as any;
-		const ws = provider.ws;
+		const ws = this.provider.ws;
 
 		// Force terminate the WebSocket to skip the 30s close handshake timeout in "ws" library (Node/Electron).
 		// Safe because it's a targeted call on our own instance.
-		if (ws && typeof ws.terminate === "function") {
+		if (isTerminableWebSocket(ws)) {
 			ws.terminate();
 		}
 
@@ -2342,4 +2341,13 @@ export function classifyDiskPathForReconcile(
 	}
 
 	return { action: "untracked" };
+}
+
+function isTerminableWebSocket(value: unknown): value is { terminate: () => void } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"terminate" in value &&
+		typeof value.terminate === "function"
+	);
 }
