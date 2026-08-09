@@ -12,7 +12,7 @@ We deleted that brittle state machine. YAOS now utilizes direct native R2 bindin
 
 This native proxy approach drastically simplifies the client logic, eliminates the need for external `aws4fetch` signing libraries, and completely removes the need to parse S3 XML responses.
 
-![Attachment upload lifecycle: presigned S3 flow vs native Worker proxy](./diagrams/attachment-upload-lifecycle-presigned-s3-flow-vs-native-worker-proxy.webp)
+![Attachment upload lifecycle: presigned S3 flow vs native Worker proxy](../diagrams/attachment-upload-lifecycle-presigned-s3-flow-vs-native-worker-proxy.webp)
 
 ### Bounding the Cloudflare Fan-Out
 
@@ -32,7 +32,7 @@ If a user deletes or modifies that PDF, the server must track which of those 1MB
 
 Moreover, building this in JS would be really inefficient. Bandwidth is cheap; distributed garbage collection is a nightmare. Instead, YAOS uses standard Last-Writer-Wins full file overwrites.
 
-![Why YAOS avoids block-level chunking](./diagrams/why-yaos-avoids-block-level-chunking.webp)
+![Why YAOS avoids block-level chunking](../diagrams/why-yaos-avoids-block-level-chunking.webp)
 
 ## Blob Sync Queues
 

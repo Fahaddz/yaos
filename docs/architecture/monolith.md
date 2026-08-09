@@ -2,7 +2,7 @@
 
 The current YAOS architecture uses a single, shared Y.Doc for the entire vault - file metadata, folder structures, blob references, and all markdown Y.Text values.
 
-![Single-vault monolithic Y.Doc vs sharded two-tier CRDT model](./diagrams/single-vault-monolithic-y-doc-vs-sharded-two-tier-crdt-model.webp)
+![Single-vault monolithic Y.Doc vs sharded two-tier CRDT model](../diagrams/single-vault-monolithic-y-doc-vs-sharded-two-tier-crdt-model.webp)
 
 For small and medium personal vaults (upto ~40-50 MB of raw text), this gives:
 

@@ -100,7 +100,7 @@ In `reconciliationController.ts`, the `updatedOnDisk` loop only enters the recon
 
 - Pure policy modules in `src/runtime/reconcile/` are testable without Obsidian/Yjs/disk/network — **good**.
 - Characterization tests exist: `tests/safety-brake-policy.ts`, `tests/fingerprint-quarantine-policy.ts`, `tests/amplification-quarantine-policy.ts`, `tests/baseline-advancement-policy.ts`, `tests/closed-file-planner.ts`, `tests/rename-admission-wiring.ts`.
-- Behavior freeze declared in `engineering/autophagy-plan.md` but rename matrix and open/bound wiring violate strict interpretation.
+- Behavior freeze declared in `docs/archive/autophagy-plan.md` but rename matrix and open/bound wiring violate strict interpretation.
 
 ### Prediction vs finding
 
@@ -291,7 +291,7 @@ Setting `SCHEMA_VERSION = 2` → guard fails with exit 1. **Verified.**
 
 ### What is deferred / unused
 
-- `findCanonicalPathCollisions()` — **only tested**, not wired to reconcile/import (`engineering/autophagy-plan.md` follow-up)
+- `findCanonicalPathCollisions()` — **only tested**, not wired to reconcile/import (`docs/archive/autophagy-plan.md` follow-up)
 - Case collisions: no folding; `File.md` vs `file.md` are different keys — product decision deferred
 - CRDT keys still use Obsidian `normalizePath` (`vaultSync.normPath`), not `canonicalPath` — **dual normalization risk** for NFC/NFD edge cases
 
@@ -366,8 +366,8 @@ Setting `SCHEMA_VERSION = 2` → guard fails with exit 1. **Verified.**
 
 | Path | Description |
 |---|---|
-| `/home/kavin/github/do-sync/audit/autophagy-commits.txt` | Full commit stat dump (469 lines) |
-| `/home/kavin/github/do-sync/audit/autophagy-ledger.md` | Claim → commit map and file classification |
+| `Unavailable in repository` | Historical local commit-stat dump (469 lines) |
+| `docs/archive/audits/autophagy-ledger.md` | Claim → commit map and file classification |
 | `/home/kavin/Desktop/autophagy-audit-report.md` | This report |
 
 ---

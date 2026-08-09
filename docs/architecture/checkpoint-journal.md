@@ -22,7 +22,7 @@ This was the architectural inflection point: we stopped treating persistence lik
 
 ## What we built
 
-We implemented a two-layer persistence model in [`server/src/chunkedDocStore.ts`](../server/src/chunkedDocStore.ts):
+We implemented a two-layer persistence model in [`server/src/chunkedDocStore.ts`](../../server/src/chunkedDocStore.ts):
 
 1. Checkpoint layer
 - full-state snapshot, chunked at 512 KiB
@@ -38,7 +38,7 @@ This is chunking at the I/O boundary: the in-memory document can stay monolithic
 
 ## Write path
 
-In [`server/src/server.ts`](../server/src/server.ts), `onSave()` now:
+In [`server/src/server.ts`](../../server/src/server.ts), `onSave()` now:
 
 1. Computes current state vector.
 2. If state vector matches baseline, skips save (no-op guard).

@@ -9,7 +9,7 @@ Bridging an eventual-consistency file watcher to a strong-consistency state mach
 
 YAOS solves the problem natively by abandoning time-based heuristics in favor of content-addressed state acknowledgment.
 
-![Filesystem bridge control loops and invariants (Disk <-> CRDT)](./diagrams/filesystem-bridge-control-loops-diagram-with-invariants-disk-crdt.webp)
+![Filesystem bridge control loops and invariants (Disk <-> CRDT)](../diagrams/filesystem-bridge-control-loops-diagram-with-invariants-disk-crdt.webp)
 
 ## The "Time" Trap (Why naive watchers fail)
 

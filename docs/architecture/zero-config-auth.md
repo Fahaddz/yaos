@@ -61,7 +61,7 @@ The fix is a proactive refresh manager in `VaultSync`:
 
 The `force=true` flag causes `ticketCache.invalidate()` to run before `ticketCache.get()`, guaranteeing a network fetch rather than returning the still-cached (but about-to-expire) ticket.
 
-If `y-partyserver` is upgraded, verify whether this behavior has changed — see also `engineering/warts-and-limits.md`.
+If `y-partyserver` is upgraded, verify whether this behavior has changed — see also `docs/architecture/warts-and-limits.md`.
 
 ## Threat model notes
 
@@ -89,7 +89,7 @@ The `wrangler.toml` included with the server contains this setting as a commente
 - Ensure auth material is redacted from traces and diagnostics by default.
 
 For the broader list of accepted compromises and tracked debt, see
-`engineering/warts-and-limits.md`.
+`docs/architecture/warts-and-limits.md`.
 
 # The URI Protocol Handshake
 
@@ -109,7 +109,7 @@ We solved this via Capability Negotiation:
 - If the server lacks the `YAOS_BUCKET` binding, it returns `{ attachments: false, snapshots: false }`.
 - The plugin reads this and gracefully disables the attachment and snapshot UI. It continues to sync markdown text flawlessly.
 
-![Deploy-button resilience without mandatory R2](./diagrams/deploy-button-resilience-without-mandatory-r2.webp)
+![Deploy-button resilience without mandatory R2](../diagrams/deploy-button-resilience-without-mandatory-r2.webp)
 
 
 Power users who want attachment sync can easily add the R2 binding later via the Cloudflare dashboard **one-step (Just add an R2 binding to the Worker)**. The server will dynamically detect the new binding, update its capabilities, and the plugin will unlock the UI without a single line of code changing.

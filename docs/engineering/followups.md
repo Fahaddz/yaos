@@ -7,9 +7,9 @@ This replaces the older phase-numbered follow-up notes and absorbs the still-rel
 parts of the old QA / RCA open-work queues.
 
 For current priority framing, cross-check:
-- `engineering/active-threads.md`
-- `engineering/bug-rca-ledger.md`
-- `engineering/layer4-harness-status.md`
+- `docs/engineering/active-threads.md`
+- `docs/engineering/bug-rca-ledger.md`
+- `docs/qa/layer4-harness-status.md`
 
 ## Validation gaps
 
@@ -243,7 +243,7 @@ while YAOS is disabled; provider streams `REMOTE_FROM_DESKTOP` into CRDT
 on re-enable; the file is open so the bound path runs; the user-visible
 end state is `BASELINE_PROOF\n\nREMOTE_FROM_DESKTOP\n` with no conflict
 artifact preserving `LOCAL_ON_IPAD`. The Issue #22-B ledger entry in
-`engineering/bug-rca-ledger.md` carries the durable record.
+`docs/engineering/bug-rca-ledger.md` carries the durable record.
 
 The closed-file `_lastDiskIndexPersistedAt` mtime tie-break (commits 7cb4cc2
 + 17864ce) does NOT cover this case, because `baselineHash` is non-null on

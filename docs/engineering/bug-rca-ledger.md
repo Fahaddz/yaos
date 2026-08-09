@@ -90,7 +90,7 @@ Repo-validated bug / incident ledger as of 2026-05-27.
   - legacy document migration
   - better debug surface for deployment validation
 - Current caveat:
-  - storage-level and pathology validation are strong, but full live provider/client handoff proof is still tracked separately in `engineering/followups.md`
+  - storage-level and pathology validation are strong, but full live provider/client handoff proof is still tracked separately in `docs/engineering/followups.md`
 
 ### Issue `#25` — editor-bound recovery loop
 
@@ -205,7 +205,7 @@ Repo-validated bug / incident ledger as of 2026-05-27.
 - Status: open
 - Why still open:
   - desktop `s12c` exists
-  - `engineering/layer4-harness-status.md` still lists real-device `s12c` as not proven
+  - `docs/qa/layer4-harness-status.md` still lists real-device `s12c` as not proven
 
 ## Engineering debt, not active product incidents
 
@@ -213,7 +213,7 @@ Repo-validated bug / incident ledger as of 2026-05-27.
 
 - Status: open design / follow-up work
 - Primary source:
-  - `engineering/followups.md`
+  - `docs/engineering/followups.md`
 - Note:
   - this is real design debt, but it is not the same thing as the stale seven-suite failure story that was once mistaken for a product regression cluster
 

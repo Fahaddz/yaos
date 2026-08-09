@@ -2,7 +2,7 @@
 
 **Audit range:** `3f5e306..HEAD` (39 commits)  
 **Branch note:** `autophagy-branch` is not present locally; work is merged into `main` via PR #54 (`p0-salvage-telemetry-split`).  
-**Commit dump:** `audit/autophagy-commits.txt`
+**Commit dump:** unavailable in this repository; the original audit cited a local historical dump.
 
 ## Claim → Commit Map
 
@@ -39,7 +39,7 @@
 | QA_HARNESS | 80+ | `qa/harness/*`, `qa/obsidian-harness/*`, `qa/controllers/*` |
 | BUILD_RELEASE | 4 | `esbuild.config.mjs`, `package.json`, `.github/workflows/release.yml`, `.gitignore` |
 | GUARD_TOOLING | 5 | `scripts/guard-*.mjs`, `scripts/lint-*.mjs` |
-| DOCS | 3 | `engineering/autophagy-plan.md`, `docs/architecture/runtime-estates.md`, `docs/engineering/schema-version-guard.md` |
+| DOCS | 3 | `docs/archive/autophagy-plan.md`, `docs/architecture/runtime-estates.md`, `docs/engineering/schema-version-guard.md` |
 | TESTS | 30+ | `tests/*-policy.ts`, `tests/trace-sink.ts`, etc. |
 | DELETION | 3 | `src/debug/flightEmitter.ts`, `src/lab/` (removed), legacy rename API |
 

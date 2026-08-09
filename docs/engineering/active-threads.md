@@ -17,10 +17,10 @@ Open work:
 - retire historical snapshots that still read like live status
 
 Primary docs:
-- `engineering/bug-rca-ledger.md`
-- `engineering/followups.md`
-- `engineering/layer4-harness-status.md`
-- `engineering/qa-history.md`
+- `docs/engineering/bug-rca-ledger.md`
+- `docs/docs/engineering/followups.md`
+- `docs/qa/layer4-harness-status.md`
+- `docs/archive/qa/qa-history.md`
 
 ### 2. Validation still missing before a confidence-heavy release
 
@@ -30,13 +30,13 @@ These are the remaining externally meaningful gaps:
 - real-device `s12c` conflict-artifact behavior is still not proven
 
 Primary evidence:
-- `engineering/layer4-harness-status.md`
+- `docs/qa/layer4-harness-status.md`
 - `qa-runs/s12a-three-device-pass/summary.md`
 - `qa-runs/s12b-linux-android-partial/summary.md`
 
 ### 3. Follow-up engineering debt that is real but not a stop-ship emergency
 
-Still-open items are grouped in `engineering/followups.md`.
+Still-open items are grouped in `docs/engineering/followups.md`.
 
 Highest-signal ones right now:
 - live provider/client offline handoff proof

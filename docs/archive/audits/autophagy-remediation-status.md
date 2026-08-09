@@ -1,8 +1,8 @@
 # Autophagy Audit Remediation Status
 
 **Date:** 2026-08-09
-**Audit reports:** `audit/autophagy-audit-report.md`, `audit/autophagy-audit-report2.md`
-**Audit ledger:** `audit/autophagy-ledger.md`
+**Audit reports:** `docs/archive/audits/autophagy-audit-report.md`, `docs/archive/audits/autophagy-audit-report2.md`
+**Audit ledger:** `docs/archive/audits/autophagy-ledger.md`
 **Implementation patch:** uncommitted work on `main` (15 tracked files + 2 new files)
 
 ---

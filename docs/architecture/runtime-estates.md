@@ -2,12 +2,14 @@
 
 This document defines the three runtime estates of this codebase and their
 boundaries. It is the authoritative reference for what belongs where and why.
+For source ownership, build products, and generated-output policy, see
+[Repository layout](repo-layout.md).
 
 ## The three estates
 
 ```
 Engine      = src/ product sync runtime          → main.js
-Observer    = src/telemetry/, src/lab/            → telemetry.js
+Observer    = src/telemetry/                      → telemetry.js
 Puppeteer   = qa/harness/                         → not shipped
 ```
 
@@ -16,7 +18,7 @@ Puppeteer   = qa/harness/                         → not shipped
 - Product sync runtime: VaultSync, ReconciliationController, EditorBindingManager,
   DiskMirror, BlobSyncManager, ConnectionController, SnapshotService, etc.
 - Ships to users on every release.
-- Must not import from `src/telemetry/`, `src/lab/`, or `qa/`.
+- Must not import from `src/telemetry/` or `qa/`.
 - Must not contain mutation harness code or Puppeteer scenario controls.
 
 ### Observer — `telemetry.js`
@@ -70,10 +72,9 @@ src/
     traceSink.ts              TraceSink interface + ProductFlightEvent* types
     traceContext.ts           TraceHttpContext, TraceEventDetails, TraceRecord types
     traceLogger.ts            TraceLoggerPort interface
-  lab/                        Observer implementations
+  telemetry/                  Observer implementations, entry, and host interface
     debug/                    FlightRecorder, FlightTraceController, FlightTraceSink
     diagnostics/              DeviceWitnessTracker, DiagnosticsService, PathRedactor
-  telemetry/                  Observer entry + host interface
     installTelemetryRuntime.ts
     telemetryRuntimeHost.ts
     debug/ports/
@@ -118,40 +119,18 @@ has regressed. The `guard:no-lab-artifact` script in `package.json` fails the
 build if `lab.js` is present.
 
 ```
-npm run build             build both bundles
-npm run verify:bundles    build + run transitional bundle guard
-npm run guard:production-bundles:strict     fail on any forbidden symbol
-npm run guard:production-bundles:transitional  warn on deferred Engine seams
-npm run guard:qa-isolation   confirm src/ does not import from qa/
+npm run build                                  build both bundles
+npm run verify:bundles                         build + run the local transitional bundle guard
+npm run guard:production-bundles:strict        fail on any forbidden symbol (used by CI and release)
+npm run guard:production-bundles:transitional  allow only explicitly deferred symbols for local checks
+npm run guard:no-tracked-generated-artifacts   fail if generated bundles, QA output, or QA run artifacts are tracked
+npm run guard:qa-isolation                      confirm src/ does not import from qa/
 ```
 
+The P2 cleanup removed the former `__qaOnly*Unsafe` Engine seams. The strict
+production-bundle guard permanently rejects those symbols if they reappear.
+
 ## Known debt
-
-### Engine test seams (deferred — separate phase)
-
-The following `__qaOnly*Unsafe` methods still exist on product classes in
-`main.js`. They are listed here explicitly so future contributors understand
-they are known, tracked, and not forgotten:
-
-| Method | Class | File |
-|--------|-------|------|
-| `__qaOnlyForceSyncFileFromDiskUnsafe` | `ReconciliationController` | `src/runtime/reconciliationController.ts` |
-| `__qaOnlyPauseEditorBindingPropagationUnsafe` | `ReconciliationController` | `src/runtime/reconciliationController.ts` |
-| `__qaOnlyResumeEditorBindingPropagationUnsafe` | `ReconciliationController` | `src/runtime/reconciliationController.ts` |
-| `__qaOnlySetExternalEditPolicyOverrideUnsafe` | `ReconciliationController` | `src/runtime/reconciliationController.ts` |
-| `__qaOnlyPauseBindingPropagationUnsafe` | `EditorBindingManager` | `src/sync/editorBinding.ts` |
-| `__qaOnlyResumeBindingPropagationUnsafe` | `EditorBindingManager` | `src/sync/editorBinding.ts` |
-
-**Status:** Observer/Puppeteer split is clean. Engine is not yet pure.
-
-These methods cannot be removed without replacing them with injected unsafe
-capability ports (a separate architectural phase). Until then:
-
-- `guard:production-bundles:strict` will fail on `ForceSync`, `Unsafe`, `__qaOnly`
-- `guard:production-bundles:transitional` will warn and exit 0 (used in CI)
-
-Do not add new `__qaOnly` or `Unsafe` methods to product classes without explicit
-sign-off and an update to this table.
 
 ### TelemetryRuntimeHost broad object handles (deferred)
 
