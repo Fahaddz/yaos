@@ -4,6 +4,7 @@ import type { Connection, ConnectionContext, WSMessage } from "partyserver";
 import { runSerialized, runSingleFlight } from "./asyncConcurrency";
 import { ChunkedDocStore } from "./chunkedDocStore";
 import { SqlDocStore } from "./sqlDocStore";
+import { shouldUseSqlState } from "./sqlMigrationTrust";
 import { readRoomMeta, type RoomMeta, writeRoomMeta } from "./roomMeta";
 import {
 	createSnapshot,
@@ -345,8 +346,31 @@ export class VaultSyncServer extends YServer {
 			// Evaluated AFTER the try/catch: a null sqlState (SQL failure) correctly
 			// reports no SQL data and routes to the KV fallback below.
 			const sqlHasData = sqlState !== null && (sqlState.snapshot !== null || sqlState.journalUpdates.length > 0);
+			const sqlMigrationReceipt = sqlHasData && sqlStore.isMigrated();
+			let unverifiedSqlHasLegacySource = false;
 
-			if (sqlHasData) {
+			if (sqlHasData && !sqlMigrationReceipt) {
+				// A fresh SQL-native room has no receipt. It is only unsafe to trust an
+				// unreceipted SQL checkpoint when a retained legacy source proves this
+				// room is in (or was interrupted during) KV-to-SQL migration.
+				const kvState = await this.getChunkedDocStore().loadState();
+				const kvHasData = kvState.checkpoint !== null || kvState.journalUpdates.length > 0;
+				const legacyRaw = await this.ctx.storage.get<unknown>(LEGACY_DOCUMENT_KEY);
+				const legacyBytes = legacyRaw instanceof Uint8Array
+					? legacyRaw
+					: legacyRaw instanceof ArrayBuffer
+						? new Uint8Array(legacyRaw)
+						: ArrayBuffer.isView(legacyRaw)
+							? new Uint8Array(
+								legacyRaw.buffer,
+								legacyRaw.byteOffset,
+								legacyRaw.byteLength,
+							)
+							: null;
+				unverifiedSqlHasLegacySource = kvHasData || (legacyBytes?.byteLength ?? 0) > 0;
+			}
+
+			if (shouldUseSqlState(sqlHasData, sqlMigrationReceipt, unverifiedSqlHasLegacySource)) {
 				// ── Normal SQL path ──────────────────────────────────────────
 				// sqlState is guaranteed non-null here (sqlHasData implies sqlState !== null)
 				if (sqlState!.snapshot) {
@@ -375,7 +399,7 @@ export class VaultSyncServer extends YServer {
 				return;
 			}
 
-			// ── SQL failed: attempt KV fallback (read-only, no SQL write-back) ──
+			// ── SQL unreadable: attempt KV fallback (read-only, no SQL write-back) ──
 			if (sqlState === null) {
 				// SQL load threw — check if KV still has usable data.
 				const kvStore = this.getChunkedDocStore();
@@ -484,9 +508,19 @@ export class VaultSyncServer extends YServer {
 					for (const update of kvState.journalUpdates) Y.applyUpdate(this.document, update);
 				}
 
-				// Migrate to SQL: write full state as a clean snapshot
+				// Migrate to SQL: write full state as a clean snapshot, then prove the
+				// checkpoint can be read back byte-for-byte before recording migration
+				// completion or allowing any later KV cleanup.
 				const migratedUpdate = Y.encodeStateAsUpdate(this.document);
 				sqlStore.rewriteCheckpoint(migratedUpdate);
+				const verifiedSqlState = sqlStore.loadState();
+				if (
+					verifiedSqlState.snapshot === null ||
+					verifiedSqlState.journalUpdates.length !== 0 ||
+					!equalBytes(verifiedSqlState.snapshot, migratedUpdate)
+				) {
+					throw new Error("KV-to-SQL checkpoint verification failed; retaining legacy KV data");
+				}
 
 				const loadedSV = Y.encodeStateVector(this.document);
 				this.getPersistenceCoordinator().setInitialStateVector(loadedSV);
@@ -521,10 +555,9 @@ export class VaultSyncServer extends YServer {
 					migrationDurationMs: this.migrationDurationMs,
 				});
 
-				// Best-effort: delete legacy key (don't fail if this errors)
-				if (legacyBytes) {
-					try { await this.ctx.storage.delete([LEGACY_DOCUMENT_KEY]); } catch {}
-				}
+				// Legacy KV is intentionally retained here. The feature-gated cleanup
+				// route requires both this verified checkpoint and the migration receipt
+				// before it can delete any legacy source keys.
 				return;
 			}
 
@@ -980,14 +1013,23 @@ export class VaultSyncServer extends YServer {
 		keysDeleted: number;
 		error?: string;
 	}> {
-		// Safety: verify SQL has data before wiping KV
+		// Destructive cleanup is allowed only after a verified checkpoint migration.
+		// Journal-only SQL is not sufficient evidence that the legacy KV state was
+		// fully checkpointed, and fresh SQL rooms have no migration receipt.
 		const sqlStore = this.getSqlDocStore();
 		const sqlState = sqlStore.loadState();
-		if (sqlState.snapshot === null && sqlState.journalUpdates.length === 0) {
+		if (sqlState.snapshot === null) {
 			return {
 				status: "aborted",
 				keysDeleted: 0,
-				error: "SQL storage is empty — refusing to delete KV data (would cause data loss)",
+				error: "SQL checkpoint is absent — refusing to delete KV data (would cause data loss)",
+			};
+		}
+		if (!sqlStore.isMigrated()) {
+			return {
+				status: "aborted",
+				keysDeleted: 0,
+				error: "SQL migration receipt is absent — refusing to delete KV data",
 			};
 		}
 

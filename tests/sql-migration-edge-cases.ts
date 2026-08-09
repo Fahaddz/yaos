@@ -9,6 +9,7 @@
 
 import { SqlDocStore } from "../server/src/sqlDocStore";
 import { ChunkedDocStore } from "../server/src/chunkedDocStore";
+import { shouldUseSqlState } from "../server/src/sqlMigrationTrust";
 import * as Y from "yjs";
 
 // ── Fake SQL storage (mirrors sql-doc-store.ts harness) ─────────────────────
@@ -39,6 +40,24 @@ class FakeSqlStorage {
 				this.autoIncrements.set(match[1], 1);
 			}
 			return new FakeSqlCursor<T>([]);
+		}
+
+		// INSERT OR REPLACE migration receipt metadata
+		if (trimmed.startsWith("INSERT OR REPLACE INTO _migration_meta")) {
+			const table = this.tables.get("_migration_meta")!;
+			const [key, value] = bindings as [string, string];
+			const existing = table.findIndex((row) => row.key === key);
+			const next = { key, value };
+			if (existing >= 0) table[existing] = next;
+			else table.push(next);
+			return new FakeSqlCursor<T>([]);
+		}
+
+		// SELECT migration receipt metadata
+		if (trimmed.startsWith("SELECT value FROM _migration_meta WHERE key = ?")) {
+			const table = this.tables.get("_migration_meta") ?? [];
+			const [key] = bindings as [string];
+			return new FakeSqlCursor<T>(table.filter((row) => row.key === key) as T[]);
 		}
 
 		// INSERT INTO snapshot_chunks
@@ -660,6 +679,79 @@ console.log("\n--- Test 7: Empty KV + empty SQL → fresh vault (no crash) ---")
 	assert(sqlStateAfter.journalUpdates.length === 0, "SQL journal remains empty after fresh-vault load");
 
 	freshDoc.destroy();
+}
+
+// ── Test 8: Unverified SQL never bypasses a retained KV migration source ─────
+
+console.log("\n--- Test 8: failed SQL verification retries from KV on a fresh cold load ---");
+{
+	const kvStorage = new FakeKvStorage();
+	const sqlDo = new FakeDurableObjectStorage();
+	const kvStore = new ChunkedDocStore(kvStorage as unknown as DurableObjectStorage);
+	const sqlStore = new SqlDocStore(sqlDo as any);
+
+	const sourceDoc = new Y.Doc();
+	sourceDoc.getMap("meta").set("kv-authority.md", { path: "kv-authority.md", mtime: 1 });
+	const sourceUpdate = Y.encodeStateAsUpdate(sourceDoc);
+	await kvStore.rewriteCheckpoint(sourceUpdate, Y.encodeStateVector(sourceDoc));
+
+	// Model the state left behind when rewriteCheckpoint persisted but its
+	// read-back verification failed: readable SQL, no migration receipt, and a
+	// retained KV source that must remain authoritative after process restart.
+	const corruptDoc = new Y.Doc();
+	corruptDoc.getMap("meta").set("corrupt-sql.md", { path: "corrupt-sql.md", mtime: 2 });
+	sqlStore.rewriteCheckpoint(Y.encodeStateAsUpdate(corruptDoc));
+	const failedSqlState = sqlStore.loadState();
+	assert(failedSqlState.snapshot !== null, "failed migration leaves a readable SQL checkpoint");
+	assert(!sqlStore.isMigrated(), "failed migration has no completion receipt");
+	assert(
+		!shouldUseSqlState(true, sqlStore.isMigrated(), true),
+		"fresh cold load rejects unreceipted SQL when retained KV exists",
+	);
+	assert(
+		shouldUseSqlState(true, false, false),
+		"fresh SQL-native room remains valid without a migration receipt",
+	);
+
+	// A fresh instance reconstructs from KV, overwrites the failed checkpoint,
+	// verifies it, and only then records the receipt that authorizes later SQL
+	// cold loads.
+	const kvState = await kvStore.loadState();
+	const recoveredDoc = new Y.Doc();
+	if (kvState.checkpoint) Y.applyUpdate(recoveredDoc, kvState.checkpoint);
+	for (const update of kvState.journalUpdates) Y.applyUpdate(recoveredDoc, update);
+	const recoveredUpdate = Y.encodeStateAsUpdate(recoveredDoc);
+	sqlStore.rewriteCheckpoint(recoveredUpdate);
+	const verifiedSqlState = sqlStore.loadState();
+	assert(
+		verifiedSqlState.snapshot !== null &&
+		verifiedSqlState.journalUpdates.length === 0 &&
+		equalBytes(verifiedSqlState.snapshot, recoveredUpdate),
+		"retry writes a verified KV-authoritative SQL checkpoint",
+	);
+	sqlStore.recordMigration({
+		sourceFormat: "kv",
+		sourceEntries: kvState.journalStats.entryCount,
+		sourceBytes: kvState.journalStats.totalBytes,
+		snapshotBytes: recoveredUpdate.byteLength,
+		activePathCount: 1,
+		migratedAt: new Date().toISOString(),
+	});
+	assert(sqlStore.isMigrated(), "verified retry records the migration receipt");
+	assert(
+		shouldUseSqlState(true, sqlStore.isMigrated(), true),
+		"later cold loads may use SQL after the verified receipt exists",
+	);
+
+	const finalDoc = new Y.Doc();
+	Y.applyUpdate(finalDoc, verifiedSqlState.snapshot!);
+	assert(finalDoc.getMap("meta").has("kv-authority.md"), "recovered SQL preserves the KV-authoritative document");
+	assert(!finalDoc.getMap("meta").has("corrupt-sql.md"), "recovered SQL does not serve the failed checkpoint");
+
+	sourceDoc.destroy();
+	corruptDoc.destroy();
+	recoveredDoc.destroy();
+	finalDoc.destroy();
 }
 
 // ── Results ──────────────────────────────────────────────────────────────────

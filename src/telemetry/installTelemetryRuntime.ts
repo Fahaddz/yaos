@@ -114,9 +114,7 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	let _qaTraceSecretHash: string | null = null;
 
 	// Witness observer refs for cleanup
-	let _witnessTextObservers: Map<string, { ytext: import("yjs").Text; handler: (...args: unknown[]) => void }> | null = null;
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	let _witnessIdToTextHandler: (() => void) | null = null;
+	let _witnessContentUnsubscribe: (() => void) | null = null;
 	let _witnessMetaHandler: (() => void) | null = null;
 
 	// -----------------------------------------------------------------------
@@ -260,19 +258,16 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			},
 		});
 
-		// Wire Y.Doc observers
+		// Wire passive Engine subscriptions. The Engine owns all Y.Text handles;
+		// telemetry receives only path/origin primitives through SyncReadPort.
 		if (vaultSync) {
-			_witnessTextObservers = new Map();
-			// NOTE: per-Y.Text content observers (attachTextObserver in v3 main.ts)
-			// are not wired here — that logic was in main.ts before P1 refactor and
-			// was not moved to installTelemetryRuntime.ts.  The idToText handler
-			// below provides a coarser fallback that marks all paths dirty on any
-			// idToText change.  Fine-grained per-text origin attribution is a
-			// follow-up item.
+			_witnessContentUnsubscribe = vaultSync.observePathContentChanges((path, isLocal) => {
+				deviceWitnessTracker?.markDirty(path, isLocal ? "local-edit" : "remote-apply");
+			});
 
 			// Use observeMetaChanges (observeDeep-backed, handles both v2 flat
 			// and v3 nested Y.Map entries) instead of a shallow meta.observe.
-			const unsubscribeMeta = vaultSync.observeMetaChanges((batch) => {
+			_witnessMetaHandler = vaultSync.observeMetaChanges((batch) => {
 				// Witness tracker observes BOTH local and remote changes — it tracks
 				// what this device believes about each file's state.
 				for (const change of batch.changes) {
@@ -293,28 +288,18 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 					// "removed" — entry fully expunged; skip
 				}
 			});
-			// Store as an unsubscribe function (not a Yjs callback)
-			_witnessMetaHandler = unsubscribeMeta;
-
-			const idToTextHandler = () => {
-				deviceWitnessTracker?.markDirty("*", "remote-apply");
-			};
-			_witnessIdToTextHandler = idToTextHandler;
 		}
 	}
 
 	function _stopDeviceWitnessTracker(): void {
+		if (_witnessContentUnsubscribe) {
+			try { _witnessContentUnsubscribe(); } catch { /* ignore */ }
+			_witnessContentUnsubscribe = null;
+		}
 		if (_witnessMetaHandler) {
 			// _witnessMetaHandler is the unsubscribe function returned by observeMetaChanges
 			try { _witnessMetaHandler(); } catch { /* ignore */ }
 			_witnessMetaHandler = null;
-		}
-		_witnessIdToTextHandler = null;
-		if (_witnessTextObservers) {
-			for (const [, { ytext, handler }] of _witnessTextObservers) {
-				ytext.unobserve(handler as Parameters<typeof ytext.unobserve>[0]);
-			}
-			_witnessTextObservers = null;
 		}
 		deviceWitnessTracker?.dispose();
 		deviceWitnessTracker = null;

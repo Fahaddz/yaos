@@ -155,6 +155,12 @@ export interface SyncReadPort {
 	 * the batch; the callback must not mutate CRDT state.
 	 */
 	observeMetaChanges(callback: (batch: import("../sync/fileMeta").MetaChangeBatch) => void): () => void;
+
+	/**
+	 * Subscribe to active markdown content changes as primitive path/origin data.
+	 * The Engine retains all mutable Y.Text ownership.
+	 */
+	observePathContentChanges(callback: (path: string, isLocal: boolean) => void): () => void;
 }
 
 export interface TelemetryRuntimeHost {

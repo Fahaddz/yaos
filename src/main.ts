@@ -484,6 +484,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 							getRecentEvents: (limit?: number) => vs.getRecentEvents(limit),
 							getSafeReconcileMode: () => vs.getSafeReconcileMode(),
 							observeMetaChanges: (cb) => vs.observeMetaChanges(cb),
+							observePathContentChanges: (cb) => vs.observePathContentChanges(cb),
 						};  // satisfies SyncReadPort — narrower union types on VaultSync are compatible
 					},
 					getTraceSink: () => this.traceSink,

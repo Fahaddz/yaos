@@ -78,6 +78,13 @@ const suites = [
 	[JITI, "tests/closed-file-mirror.ts"],
 	[JITI, "tests/folder-rename.ts"],
 	[JITI, "tests/chunked-doc-store.ts"],
+	[JITI, "tests/sql-doc-store.ts"],
+	[JITI, "tests/sql-migration-edge-cases.ts"],
+	[JITI, "tests/sql-oversized-delta-e2e.ts"],
+	[JITI, "tests/admin-route-gating.ts"],
+	[JITI, "tests/meta-v3-schema-gate-and-stats.ts"],
+	[JITI, "tests/meta-observer-integration.ts"],
+	[JITI, "tests/release-compatibility-matrix.ts"],
 	[JITI, "tests/trace-store.ts"],
 	[JITI, "tests/server-hardening.ts"],
 	[JITI, "tests/settings-hardening.ts"],
@@ -109,6 +116,7 @@ const suites = [
 	[JITI, "tests/server-persistence-pathology.ts"],
 	[JITI, "tests/device-witness-tracker.ts"],
 	[JITI, "tests/device-witness-tracker-lifecycle.ts"],
+	[JITI, "tests/telemetry-witness-content-observer.ts"],
 	[JITI, "tests/device-witness-qa-api.ts"],
 	// Phase 2 verification gates
 	[JITI, "tests/witness-schema.ts"],
@@ -133,6 +141,7 @@ const suites = [
 	// Autophagy: canonical path identity
 	[JITI, "tests/canonical-path.ts"],
 	[JITI, "tests/path-collision.ts"],
+	[JITI, "tests/path-index-collision.ts"],
 	[JITI, "tests/path-category.ts"],
 	// Autophagy: TraceSink dependency inversion
 	[JITI, "tests/trace-sink.ts"],

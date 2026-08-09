@@ -208,13 +208,7 @@ export class VaultSync {
 
 		if (changes.length === 0) return;
 
-		// Invalidate path indexes for structural changes only.
-		for (const change of changes) {
-			if (change.kind !== "mtime-changed" && change.kind !== "device-changed") {
-				this._pathIndexesDirty = true;
-				break;
-			}
-		}
+		this.invalidatePathIndexesForMetaChanges(changes);
 
 		// Dispatch to all registered listeners.
 		if (this._metaSemanticListeners.size > 0) {
@@ -224,6 +218,20 @@ export class VaultSync {
 			}
 		}
 	};
+
+	/**
+	 * Invalidate lazily derived path indexes only for metadata that can change
+	 * path identity or the deterministic collision winner. Device metadata is
+	 * intentionally excluded; mtime is included because it ranks collisions.
+	 */
+	private invalidatePathIndexesForMetaChanges(changes: readonly MetaSemanticChange[]): void {
+		for (const change of changes) {
+			if (change.kind !== "device-changed") {
+				this._pathIndexesDirty = true;
+				return;
+			}
+		}
+	}
 
 	private _localReady = false;
 	private _providerSynced = false;
@@ -712,6 +720,70 @@ export class VaultSync {
 	observeMetaChanges(callback: (batch: MetaChangeBatch) => void): () => void {
 		this._metaSemanticListeners.add(callback);
 		return () => { this._metaSemanticListeners.delete(callback); };
+	}
+
+	/**
+	 * Subscribe to markdown content changes without exposing mutable Yjs handles.
+	 *
+	 * The callback receives the current active metadata path and whether the
+	 * transaction is local. This lets passive observers react to content changes
+	 * while keeping all Y.Text ownership inside the Engine.
+	 */
+	observePathContentChanges(callback: (path: string, isLocal: boolean) => void): () => void {
+		const observers = new Map<string, {
+			text: Y.Text;
+			handler: (event: Y.YTextEvent, transaction: Y.Transaction) => void;
+		}>();
+
+		const detach = (fileId: string): void => {
+			const existing = observers.get(fileId);
+			if (!existing) return;
+			existing.text.unobserve(existing.handler);
+			observers.delete(fileId);
+		};
+
+		const attach = (fileId: string, text: Y.Text): void => {
+			const existing = observers.get(fileId);
+			if (existing?.text === text) return;
+			if (existing) detach(fileId);
+
+			const handler = (_event: Y.YTextEvent, transaction: Y.Transaction): void => {
+				const meta = this.meta.get(fileId);
+				const path = getMetaPath(meta);
+				if (!path || isFileMetaDeletedValue(meta)) return;
+				try {
+					callback(path, isLocalOrigin(transaction.origin, this.provider));
+				} catch (err) {
+					// A passive observer must never make a CRDT transaction fail.
+					this.log(`content observer callback failed: ${formatUnknown(err)}`);
+				}
+			};
+			text.observe(handler);
+			observers.set(fileId, { text, handler });
+		};
+
+		const synchronize = (): void => {
+			const activeIds = new Set<string>();
+			this.idToText.forEach((text, fileId) => {
+				activeIds.add(fileId);
+				attach(fileId, text);
+			});
+			for (const fileId of observers.keys()) {
+				if (!activeIds.has(fileId)) detach(fileId);
+			}
+		};
+
+		const idToTextHandler = (): void => synchronize();
+		synchronize();
+		this.idToText.observe(idToTextHandler);
+
+		let unsubscribed = false;
+		return () => {
+			if (unsubscribed) return;
+			unsubscribed = true;
+			this.idToText.unobserve(idToTextHandler);
+			for (const fileId of [...observers.keys()]) detach(fileId);
+		};
 	}
 
 	// -------------------------------------------------------------------
