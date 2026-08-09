@@ -12,7 +12,7 @@ literal `2` directly in `vaultSync.ts`:
 | 2 | `src/sync/vaultSync.ts` imports from `"./schema"` | Import removed or path changed |
 | 3 | `vaultSync.ts` does NOT contain `export const SCHEMA_VERSION = N` | Constant re-inlined as a literal |
 | 4 | `SCHEMA_VERSION` value in `schema.ts` equals `EXPECTED_SCHEMA_VERSION` | Version bumped in source but guard not updated, or vice versa |
-| 5 | `server/src/version.ts` `SERVER_MAX_SCHEMA_VERSION` equals expected | Server and plugin disagree |
+| 5 | `server/src/version.ts` exists and `SERVER_MAX_SCHEMA_VERSION` equals expected | Server contract deleted, or server and plugin disagree |
 | 6 | `server/src/version.ts` `SERVER_MIN_SCHEMA_VERSION` is less than or equal to expected | Server rejects supported plugin schema |
 | 7 | (implicit) Server `min <= max` | Min/max drift on server side |
 
@@ -124,18 +124,20 @@ The guard is also wired into the full regression suite:
 npm run test:regressions
 ```
 
-This runs the guard as one of 84 checks (at the time of writing). The suite
-fails if any guard check fails.
+That command runs the guard against the repository and then runs
+`tests/schema-version-guard.mjs`, a hermetic temporary-fixture regression. The
+fixture contains valid plugin schema files but intentionally omits
+`server/src/version.ts`; it must fail with a non-zero exit status. This prevents
+the guard from silently downgrading a missing server compatibility contract to
+a warning.
 
 ---
 
 ## How to test that the guard catches a regression
 
-The guard was validated during development by simulating the P1 regression:
-inline `SCHEMA_VERSION = 2` directly in `vaultSync.ts` and confirm the guard
-fails. Do not leave this in source; use a scratch branch or a temporary edit.
-
-Manual regression simulation:
+The automated temporary-fixture regression covers the missing-server-contract
+case. To manually test the original plugin-side regression without leaving a
+source edit behind:
 
 1. In `src/sync/vaultSync.ts`, temporarily add:
    ```typescript
@@ -150,7 +152,4 @@ Manual regression simulation:
 4. Revert the temporary change.
 
 Alternatively, temporarily set `EXPECTED_SCHEMA_VERSION` in the guard to the
-wrong value and confirm checks 4, 5, and 6 all fail.
-
-The simulated-regression approach is used in `npm run test:regressions` to
-confirm the guard itself is not a no-op.
+wrong value and confirm checks 4, 5, and 6 fail.
