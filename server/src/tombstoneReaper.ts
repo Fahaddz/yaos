@@ -177,13 +177,26 @@ export function reapTombstonedBodies(doc: Y.Doc, options: ReapOptions = {}): Rea
 
 	if (meta.size === 0 || idToText.size === 0) return { ...EMPTY_RESULT };
 
+	// Whether `pathToId` still decides path -> fileId resolution.
+	//
+	// Under the v2+ path model the client resolves purely from `meta` and stops
+	// writing `pathToId` at all (see usesV2PathModel / shouldWriteLegacyPathMap),
+	// so leftover entries are dormant legacy data that no longer authorises
+	// anything.  Treating them as authoritative would permanently block reaping
+	// on every migrated vault: one real vault had 14 of 46 tombstones pinned by
+	// exactly this drift.  Under the legacy model `pathToId` IS consulted first,
+	// so there it must still veto a reap.
+	const schemaVersion = doc.getMap("sys").get("schemaVersion");
+	const legacyPathModel = !(typeof schemaVersion === "number" && schemaVersion >= 2);
+
 	// Any id reachable as active content is off limits, even if some other meta
-	// entry claims it is deleted.  Two sources: the legacy path map, and meta
-	// entries that are not tombstones.
+	// entry claims it is deleted.
 	const activeIds = new Set<string>();
-	pathToId.forEach((fileId) => {
-		if (typeof fileId === "string") activeIds.add(fileId);
-	});
+	if (legacyPathModel) {
+		pathToId.forEach((fileId) => {
+			if (typeof fileId === "string") activeIds.add(fileId);
+		});
+	}
 	meta.forEach((value, fileId) => {
 		if (!isTombstone(value)) activeIds.add(fileId);
 	});

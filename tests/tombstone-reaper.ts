@@ -51,13 +51,14 @@ interface FileSpec {
 	legacyPathMap?: boolean;
 }
 
-function buildVault(specs: FileSpec[]): Y.Doc {
+function buildVault(specs: FileSpec[], schemaVersion: number | null = 2): Y.Doc {
 	const doc = new Y.Doc();
 	const idToText = doc.getMap<Y.Text>("idToText");
 	const meta = doc.getMap("meta");
 	const pathToId = doc.getMap<string>("pathToId");
 
 	doc.transact(() => {
+		if (schemaVersion !== null) doc.getMap("sys").set("schemaVersion", schemaVersion);
 		for (const spec of specs) {
 			const body = new Y.Text();
 			idToText.set(spec.id, body);
@@ -174,17 +175,47 @@ console.log("\n--- Test 5: nested (schema v3) metadata is handled ---");
 	doc.destroy();
 }
 
-console.log("\n--- Test 6: an id claimed active elsewhere is never reaped ---");
+console.log("\n--- Test 6a: legacy path model — a stale pathToId entry vetoes a reap ---");
 {
-	// Inconsistent document: meta says deleted, pathToId still points at it.
-	const doc = buildVault([{ id: "conflict", path: "c.md", chars: 5_000, deletedAt: NOW - 99 * DAY }]);
+	// Under the legacy model getFileId() consults pathToId FIRST, so an entry
+	// pointing at a tombstoned id still authorises that id and must veto.
+	const doc = buildVault([{ id: "conflict", path: "c.md", chars: 5_000, deletedAt: NOW - 99 * DAY }], null);
 	doc.transact(() => { doc.getMap<string>("pathToId").set("c.md", "conflict"); });
 
 	const result = reapTombstonedBodies(doc, { now: NOW });
 	assert(result.conflicted === 1, `conflict detected (got ${result.conflicted})`);
-	assert(result.reaped === 0, "nothing reaped while an active reference exists");
+	assert(result.reaped === 0, "nothing reaped while pathToId still authorises the id");
 	assert(bodyOf(doc, "conflict")?.length === 5_000, "body preserved");
 	doc.destroy();
+}
+
+console.log("\n--- Test 6b: v2 path model — dormant pathToId drift does NOT veto ---");
+{
+	// Under v2 the client resolves from meta alone and no longer writes
+	// pathToId, so leftover entries are dead weight and must not pin a body.
+	// A real vault had 14 of 46 tombstones blocked by exactly this.
+	const doc = buildVault([{ id: "drift", path: "d.md", chars: 5_000, deletedAt: NOW - 99 * DAY }], 2);
+	doc.transact(() => { doc.getMap<string>("pathToId").set("d.md", "drift"); });
+
+	const result = reapTombstonedBodies(doc, { now: NOW });
+	assert(result.conflicted === 0, `no conflict under v2 (got ${result.conflicted})`);
+	assert(result.reaped === 1, `body reaped despite stale pathToId (got ${result.reaped})`);
+	assert(bodyOf(doc, "drift") === null, "body reclaimed");
+	assert(doc.getMap("meta").has("drift"), "tombstone still preserved");
+	doc.destroy();
+}
+
+console.log("\n--- Test 6c: an active meta entry always vetoes, in any model ---");
+{
+	for (const schema of [null, 2]) {
+		const doc = buildVault([{ id: "live", path: "l.md", chars: 3_000 }], schema);
+		// Same id also carries a tombstone claim? Impossible for one key, so
+		// assert the simpler invariant: an active entry is never a candidate.
+		const result = reapTombstonedBodies(doc, { now: NOW });
+		assert(result.reaped === 0, `active file untouched (schema=${String(schema)})`);
+		assert(bodyOf(doc, "live")?.length === 3_000, `active body intact (schema=${String(schema)})`);
+		doc.destroy();
+	}
 }
 
 console.log("\n--- Test 7: budget caps a pass and reports the remainder ---");
