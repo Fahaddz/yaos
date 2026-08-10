@@ -175,13 +175,37 @@ export class VaultSyncServer extends YServer {
 		this.recordSvEchoResult(trySendSvEcho(connection, this.document, "baseline"));
 	}
 
+	/**
+	 * Monotonic count of Y.Doc "update" events.
+	 *
+	 * Used to tell whether applying a message actually changed the document.
+	 * A state-vector diff cannot answer that: the SV tracks insert clocks only,
+	 * so a delete-only update leaves it byte-identical.  One long-lived listener
+	 * avoids attaching and detaching a listener per message, which would need a
+	 * finally block and leak a listener whenever the parent handler throws.
+	 */
+	private docUpdateCount = 0;
+	private docUpdateWatcherAttached = false;
+
+	private ensureDocUpdateWatcher(): void {
+		if (this.docUpdateWatcherAttached) return;
+		this.docUpdateWatcherAttached = true;
+		this.document.on("update", () => { this.docUpdateCount++; });
+	}
+
 	handleMessage(connection: Connection, message: WSMessage): void {
 		const shouldEcho = isUpdateBearingSyncMessage(message);
+		this.ensureDocUpdateWatcher();
 		const svBefore = shouldEcho ? Y.encodeStateVector(this.document) : null;
+		const updatesBefore = this.docUpdateCount;
 		super.handleMessage(connection, message);
 		if (shouldEcho) {
 			const svAfter = Y.encodeStateVector(this.document);
-			const docChanged = svBefore !== null && !equalBytes(svBefore, svAfter);
+			// Either signal is sufficient; the counter is the one that sees
+			// deletions, the SV comparison is a second opinion.
+			const docChanged =
+				this.docUpdateCount !== updatesBefore
+				|| (svBefore !== null && !equalBytes(svBefore, svAfter));
 			// Do NOT send SV echoes in kv-fallback mode.  SV echoes signal
 			// "server durably received your state."  In fallback mode persistence
 			// is broken — sending echoes would give clients false confidence.

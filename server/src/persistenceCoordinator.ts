@@ -64,6 +64,14 @@ export interface PersistenceHealth {
 	lastCompactionAt: string | null;
 	lastCompactionReason: string | null;
 	lastCompactionError: string | null;
+	/**
+	 * Whether the document holds changes that are not yet persisted.
+	 *
+	 * Driven by the Y.Doc "update" event, NOT by state-vector comparison.  See
+	 * the note on `dirty` in PersistenceCoordinator for why that distinction is
+	 * load-bearing.
+	 */
+	dirty: boolean;
 }
 
 export interface SaveResult {
@@ -73,7 +81,17 @@ export interface SaveResult {
 	journalStats?: DocStoreJournalStats;
 }
 
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+/**
+ * Byte-compare two state vectors.
+ *
+ * ONLY valid for asking "does this baseline describe the same inserts as the
+ * document right now".  It MUST NOT be used to detect whether the document
+ * changed: state vectors track insert clocks and say nothing about the delete
+ * set, so two equal state vectors can describe documents that differ by an
+ * arbitrary number of deletions.  That confusion is the bug this file's `dirty`
+ * flag exists to prevent.
+ */
+function equalStateVectors(a: Uint8Array, b: Uint8Array): boolean {
 	if (a.byteLength !== b.byteLength) return false;
 	for (let i = 0; i < a.byteLength; i++) {
 		if (a[i] !== b[i]) return false;
@@ -89,6 +107,39 @@ export class PersistenceCoordinator {
 	private saveChain: Promise<void> = Promise.resolve();
 	private lastPersistedStateVector: Uint8Array | null = null;
 	private consecutiveSaveFailures = 0;
+
+	/**
+	 * Whether the document has changed since the last successful persist.
+	 *
+	 * THIS MUST NOT be derived from the state vector.  A Yjs state vector is a
+	 * map of client -> highest clock, i.e. it tracks INSERTS only.  Deletions
+	 * are recorded in the delete set, which the state vector does not describe
+	 * at all.  "Select all, delete" on a 50MB document therefore leaves the
+	 * state vector byte-identical, and a save gated on state-vector equality
+	 * skips the write while reporting success — so the deletion never reaches
+	 * storage and the document resurrects on the next cold load.
+	 *
+	 * The Y.Doc "update" event fires if and only if the document actually
+	 * changed, for insertions and deletions alike, so it is the only sound
+	 * trigger.  The delta itself is still computed against
+	 * `lastPersistedStateVector`: `Y.encodeStateAsUpdate(doc, sv)` always
+	 * carries the FULL delete set regardless of `sv`, so a delete-only change
+	 * does produce a non-empty delta once we actually attempt the write.
+	 *
+	 * Defaults to TRUE, deliberately.  The listener below only observes updates
+	 * that happen after construction, so a coordinator built over a document
+	 * that already holds unsaved changes must assume the worst.  A redundant
+	 * save costs one small journal row; a missed save loses user data.
+	 * setInitialStateVector() is what establishes "clean", and the cold load
+	 * path calls it once the loaded state is in memory.
+	 */
+	private dirty = true;
+
+	/** Bound so it can be detached in dispose(). */
+	private readonly onDocumentUpdate = (): void => {
+		this.dirty = true;
+		this.health.dirty = true;
+	};
 
 	private readonly checkpointFallbackDeltaBytes: number;
 	private readonly checkpointFallbackAfterFailures: number;
@@ -114,6 +165,7 @@ export class PersistenceCoordinator {
 		lastCompactionAt: null,
 		lastCompactionReason: null,
 		lastCompactionError: null,
+		dirty: true,
 	};
 
 	constructor(
@@ -130,12 +182,40 @@ export class PersistenceCoordinator {
 			options?.journalCompactMaxEntries ?? JOURNAL_COMPACT_MAX_ENTRIES;
 		this.journalCompactMaxBytes =
 			options?.journalCompactMaxBytes ?? JOURNAL_COMPACT_MAX_BYTES;
+
+		this.document.on("update", this.onDocumentUpdate);
 	}
 
-	/** Set initial state vector from loaded state. */
+	/** Detach the document listener.  Tests create many coordinators. */
+	dispose(): void {
+		this.document.off("update", this.onDocumentUpdate);
+	}
+
+	/**
+	 * Record the state vector that storage currently reflects, i.e. the base the
+	 * next delta is computed against.
+	 *
+	 * This also decides whether the document counts as clean, and the two are
+	 * NOT the same claim.  Cold load materialises the persisted state into the
+	 * document and then reports that exact state vector, so document and storage
+	 * agree and the document is clean.  A caller that supplies a baseline
+	 * DIFFERENT from the document's current state vector is saying "storage is
+	 * behind" — there is unpersisted state, so the document must stay dirty.
+	 *
+	 * Marking clean is gated on that equality rather than done unconditionally,
+	 * because unconditional clearing would drop whatever the document already
+	 * held at construction time.  Ambiguity resolves toward dirty: a redundant
+	 * save costs one journal row, a missed save loses data.
+	 */
 	setInitialStateVector(sv: Uint8Array): void {
 		this.lastPersistedStateVector = sv;
 		this.health.lastPersistedStateVectorHash = bytesToHex(sv.slice(0, 16));
+
+		const documentMatchesStorage = equalStateVectors(sv, Y.encodeStateVector(this.document));
+		if (documentMatchesStorage) {
+			this.dirty = false;
+			this.health.dirty = false;
+		}
 	}
 
 	/** Get the last successfully persisted state vector. */
@@ -154,14 +234,24 @@ export class PersistenceCoordinator {
 
 		const run = this.saveChain.then(async (): Promise<SaveResult> => {
 			try {
-				return await this.executeSave();
+				const result = await this.executeSave();
+				if (!result.success) {
+					// The document still holds unpersisted changes.  Re-arm the
+					// flag so the next save retries instead of silently skipping.
+					this.dirty = true;
+					this.health.dirty = true;
+				}
+				return result;
 			} finally {
 				this.health.queuedSaveCount = Math.max(0, this.health.queuedSaveCount - 1);
 				// pendingPersistence is true if:
 				// - more saves are queued, OR
-				// - we're in degraded state (document has unpersisted state)
+				// - we're in degraded state, OR
+				// - the document is dirty (including delete-only changes)
 				this.health.pendingPersistence =
-					this.health.queuedSaveCount > 0 || this.health.status === "degraded";
+					this.health.queuedSaveCount > 0
+					|| this.health.status === "degraded"
+					|| this.dirty;
 			}
 		});
 
@@ -173,14 +263,24 @@ export class PersistenceCoordinator {
 	private async executeSave(): Promise<SaveResult> {
 		this.health.lastSaveStartedAt = new Date().toISOString();
 
+		// Gate on the update-driven dirty flag, never on state-vector equality.
+		// See the `dirty` field for the full rationale: state vectors do not
+		// describe the delete set, so an SV comparison treats "select all,
+		// delete" as a no-op and drops the write.
+		if (!this.dirty) {
+			this.trace?.("save.skipped_not_dirty", {});
+			return { success: true, method: "skipped" };
+		}
+
+		// Clear BEFORE encoding.  An update that lands while this save is in
+		// flight must re-mark the document rather than be swallowed by the
+		// clear that follows a successful write.
+		this.dirty = false;
+		this.health.dirty = false;
+
 		// Compute delta inside serialized save task
 		const baseStateVector = this.lastPersistedStateVector;
 		const currentStateVector = Y.encodeStateVector(this.document);
-
-		if (baseStateVector && equalBytes(baseStateVector, currentStateVector)) {
-			this.trace?.("save.skipped_equal_sv", {});
-			return { success: true, method: "skipped" };
-		}
 
 		const delta = baseStateVector
 			? Y.encodeStateAsUpdate(this.document, baseStateVector)
