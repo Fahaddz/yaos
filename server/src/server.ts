@@ -3,6 +3,7 @@ import { YServer } from "y-partyserver";
 import type { Connection, ConnectionContext, WSMessage } from "partyserver";
 import { runSerialized, runSingleFlight } from "./asyncConcurrency";
 import { ChunkedDocStore } from "./chunkedDocStore";
+import { reapTombstonedBodies, type ReapResult } from "./tombstoneReaper";
 import { SqlDocStore } from "./sqlDocStore";
 import { shouldUseSqlState } from "./sqlMigrationTrust";
 import { readRoomMeta, type RoomMeta, writeRoomMeta } from "./roomMeta";
@@ -126,6 +127,8 @@ export class VaultSyncServer extends YServer {
 	private legacyDocumentMigrated = false;
 
 	/** Storage migration observability fields. */
+	private tombstoneReapAttempted = false;
+	private lastTombstoneReap: ReapResult | null = null;
 	private storageMode: "sql" | "kv-migrated" | "fresh" | "kv-fallback" | null = null;
 	private migrationStatus: "not_started" | "migrated" | "already_sql" | "failed" | null = null;
 	private migrationAt: string | null = null;
@@ -175,37 +178,13 @@ export class VaultSyncServer extends YServer {
 		this.recordSvEchoResult(trySendSvEcho(connection, this.document, "baseline"));
 	}
 
-	/**
-	 * Monotonic count of Y.Doc "update" events.
-	 *
-	 * Used to tell whether applying a message actually changed the document.
-	 * A state-vector diff cannot answer that: the SV tracks insert clocks only,
-	 * so a delete-only update leaves it byte-identical.  One long-lived listener
-	 * avoids attaching and detaching a listener per message, which would need a
-	 * finally block and leak a listener whenever the parent handler throws.
-	 */
-	private docUpdateCount = 0;
-	private docUpdateWatcherAttached = false;
-
-	private ensureDocUpdateWatcher(): void {
-		if (this.docUpdateWatcherAttached) return;
-		this.docUpdateWatcherAttached = true;
-		this.document.on("update", () => { this.docUpdateCount++; });
-	}
-
 	handleMessage(connection: Connection, message: WSMessage): void {
 		const shouldEcho = isUpdateBearingSyncMessage(message);
-		this.ensureDocUpdateWatcher();
 		const svBefore = shouldEcho ? Y.encodeStateVector(this.document) : null;
-		const updatesBefore = this.docUpdateCount;
 		super.handleMessage(connection, message);
 		if (shouldEcho) {
 			const svAfter = Y.encodeStateVector(this.document);
-			// Either signal is sufficient; the counter is the one that sees
-			// deletions, the SV comparison is a second opinion.
-			const docChanged =
-				this.docUpdateCount !== updatesBefore
-				|| (svBefore !== null && !equalBytes(svBefore, svAfter));
+			const docChanged = svBefore !== null && !equalBytes(svBefore, svAfter);
 			// Do NOT send SV echoes in kv-fallback mode.  SV echoes signal
 			// "server durably received your state."  In fallback mode persistence
 			// is broken — sending echoes would give clients false confidence.
@@ -275,6 +254,7 @@ export class VaultSyncServer extends YServer {
 					oversizedDeltaCount: this.oversizedDeltaCount,
 					migrationMeta: this.documentLoaded ? this.getSqlDocStore().getMigrationMeta() : null,
 				},
+				tombstoneReap: this.lastTombstoneReap,
 			});
 		}
 
@@ -615,6 +595,62 @@ export class VaultSyncServer extends YServer {
 			await run;
 		} finally {
 			this.loadPromise = gate.inFlight;
+		}
+
+		// Every load path funnels through here, so this is the one place the
+		// reaper can run exactly once per instance without duplicating the call
+		// across the sql / kv-migrated / kv-fallback / fresh branches.
+		await this.maybeReapTombstonedBodies();
+	}
+
+	/**
+	 * Reclaim the Y.Text bodies of long-tombstoned files, once per instance.
+	 *
+	 * Deleting a file leaves its body in `idToText` forever — see
+	 * tombstoneReaper.ts for why that happens and why removing it is safe.  The
+	 * resulting update is an ordinary document change, so the framework's
+	 * debounced save picks it up like any edit; the persistence coordinator's
+	 * dirty flag is what guarantees a deletion-only change is actually written.
+	 *
+	 * Cold load is the trigger rather than an alarm: hibernation makes cold
+	 * loads frequent enough to be effectively periodic, and every setAlarm()
+	 * costs a row written against a daily free-tier budget shared with sync.
+	 */
+	private async maybeReapTombstonedBodies(): Promise<void> {
+		if (this.tombstoneReapAttempted) return;
+		this.tombstoneReapAttempted = true;
+		if (!this.documentLoaded) return;
+
+		// In kv-fallback the store is broken.  Reaping would delete content in
+		// memory, broadcast it to every client, and never record it durably —
+		// the one situation where a reap could actually lose data.
+		if (this.storageMode === "kv-fallback") return;
+
+		try {
+			const result = reapTombstonedBodies(this.document);
+			this.lastTombstoneReap = result;
+			if (result.tombstones > 0) {
+				await this.recordTrace("tombstone-reap", { ...result });
+			}
+
+			// Persist explicitly rather than relying on the framework's
+			// debounced save.  y-partyserver registers its document "update"
+			// listener AFTER awaiting onLoad(), and this runs inside onLoad, so
+			// the reap's update predates that listener and would otherwise wait
+			// for an unrelated edit to flush it — or be discarded on eviction and
+			// redone on the next load.
+			if (result.reaped > 0) {
+				const save = await this.getPersistenceCoordinator().enqueueSave();
+				if (!save.success) {
+					console.error(
+						`${LOG_PREFIX} tombstone reap could not be persisted; ` +
+						`bodies remain until the next attempt:`, save.error,
+					);
+				}
+			}
+		} catch (err) {
+			// Maintenance must never break a room load.
+			console.error(`${LOG_PREFIX} tombstone reap failed:`, err);
 		}
 	}
 

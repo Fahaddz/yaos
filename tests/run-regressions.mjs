@@ -121,6 +121,7 @@ const suites = [
 	[JITI, "tests/flight-lifecycle-local-disk-to-server-receipt.ts"],
 	[JITI, "tests/server-persistence-pathology.ts"],
 	[JITI, "tests/persistence-delete-only.ts"],
+	[JITI, "tests/tombstone-reaper.ts"],
 	[JITI, "tests/device-witness-tracker.ts"],
 	[JITI, "tests/device-witness-tracker-lifecycle.ts"],
 	[JITI, "tests/telemetry-witness-content-observer.ts"],
