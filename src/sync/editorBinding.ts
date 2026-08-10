@@ -492,6 +492,164 @@ export class EditorBindingManager {
 	}
 
 	/**
+	 * Release bindings whose workspace leaf no longer exists.
+	 *
+	 * Closing a tab is the one lifecycle event with no cleanup path: `unbind`
+	 * needs a live MarkdownView to derive its key, `unbindByPath` only fires on
+	 * delete/rename, and `auditBindings` skips detached views outright because
+	 * `isAuditActionable` bails when `view.file` is null. Measured on a
+	 * 121-note vault: `bindings` reached 133 entries with a single tab open,
+	 * each stranded entry pinning a dead MarkdownView, its EditorView, the
+	 * detached DOM and a live UndoManager doc listener (~39 KB apiece).
+	 *
+	 * Two independent signals must agree before we release anything:
+	 *
+	 *   1. the leaf key is absent from the workspace, and
+	 *   2. CodeMirror already tore the view down, so our ViewPlugin.destroy
+	 *      hook removed it from knownCmViews.
+	 *
+	 * Requiring both keeps a workspace mutation that transiently hides a leaf
+	 * from stranding a live editor. Verified against reading-mode toggles,
+	 * sidebar collapse, popout moves and split focus changes: every one of
+	 * those keeps the EditorView registered, so none of them prune.
+	 */
+	pruneOrphanedBindings(liveLeafKeys: ReadonlySet<string>, source: string): number {
+		let pruned = 0;
+		let deferred = 0;
+
+		for (const [leafId, binding] of Array.from(this.bindings)) {
+			if (liveLeafKeys.has(leafId)) continue;
+			if (this.knownCmViews.has(binding.cm)) {
+				// Signals disagree: the leaf is gone but CodeMirror still holds
+				// the view. Leave it for the next sweep rather than guess.
+				deferred += 1;
+				continue;
+			}
+
+			this.clearScheduledHealthCheck(leafId);
+			this.clearCmResolveRetry(leafId);
+			this.healthWorkInFlight.delete(leafId);
+			binding.undoManager.destroy();
+			this.cmToLeafId.delete(binding.cm);
+			this.bindings.delete(leafId);
+			pruned += 1;
+			this.log(
+				`pruneOrphanedBindings: released "${binding.path}" (leaf=${leafId}, cm=${binding.cmId})`,
+			);
+		}
+
+		if (pruned > 0 || deferred > 0) {
+			this.trace?.("editor", "bindings-pruned", {
+				source,
+				pruned,
+				deferred,
+				remaining: this.bindings.size,
+				knownCmViews: this.knownCmViews.size,
+			});
+		}
+		return pruned;
+	}
+
+	/**
+	 * Build a per-binding UndoManager without Yjs's permanent doc listener.
+	 *
+	 * Y.UndoManager's constructor registers two subscriptions on the shared
+	 * vault doc: `afterTransaction`, which `destroy()` removes, and an
+	 * anonymous `destroy` closure, which it does not — `destroy()` only calls
+	 * `doc.off('afterTransaction', ...)`. That closure holds a hard reference
+	 * to every UndoManager ever constructed on the doc, including the ones we
+	 * tear down correctly, so the observer set grows for the whole session.
+	 * Measured against a real vault: 268 `destroy` observers after ordinary
+	 * use, and creating then correctly destroying 50 managers left 50 behind.
+	 *
+	 * We already destroy our managers explicitly on unbind, prune and
+	 * teardown, so the auto-destroy-on-doc-destroy hook buys us nothing.
+	 * Remove whichever `destroy` observers the constructor just added.
+	 *
+	 * `_observers` is Yjs-internal, so every access is shape-checked; if a
+	 * future Yjs changes it we silently keep the old behaviour rather than
+	 * throw during a bind.
+	 */
+	private createUndoManager(ytext: Y.Text): Y.UndoManager {
+		const doc = ytext.doc;
+		// Only the `destroy` hook is surplus here — this manager's
+		// `afterTransaction` subscription is the one that makes undo work.
+		const before = this.snapshotDocObservers(doc, "destroy");
+		const undoManager = new Y.UndoManager(ytext);
+		this.releaseAddedDocObservers(doc, "destroy", before);
+		return undoManager;
+	}
+
+	/**
+	 * Build the collab extension without the manager y-codemirror hides in it.
+	 *
+	 * `YSyncConfig`'s constructor unconditionally runs `new Y.UndoManager(ytext)`
+	 * (y-codemirror.next/src/y-sync.js:11) and then never reads it — the manager
+	 * the editor actually drives is the one we pass to yUndoManagerFacet. That
+	 * stray manager stays subscribed to the vault doc forever, so every rebind
+	 * leaked one `afterTransaction` observer and one of Yjs's unremovable
+	 * `destroy` closures. Measured: +72 of each across 72 tab opens, even with
+	 * binding pruning working.
+	 *
+	 * Our own manager is constructed before this call, so anything that appears
+	 * on either observer set during `yCollab` belongs to the stray one and is
+	 * safe to drop.
+	 */
+	private buildCollabExtension(ytext: Y.Text, undoManager: Y.UndoManager): Extension {
+		const doc = ytext.doc;
+		const destroyBefore = this.snapshotDocObservers(doc, "destroy");
+		const transactionBefore = this.snapshotDocObservers(doc, "afterTransaction");
+
+		const extension = yCollab(ytext, this.vaultSync.provider.awareness, {
+			undoManager,
+		});
+
+		this.releaseAddedDocObservers(doc, "destroy", destroyBefore);
+		this.releaseAddedDocObservers(doc, "afterTransaction", transactionBefore);
+		return extension;
+	}
+
+	/**
+	 * Drop observers registered on `doc` since `before` was captured.
+	 *
+	 * Yjs never removes an UndoManager's `destroy` hook — `destroy()` only
+	 * unsubscribes `afterTransaction` — so managers we create would otherwise be
+	 * pinned for the lifetime of the doc. We destroy ours explicitly on unbind,
+	 * prune and teardown, so the auto-destroy hook buys us nothing.
+	 */
+	private releaseAddedDocObservers(
+		doc: Y.Doc | null,
+		event: "destroy" | "afterTransaction",
+		before: ReadonlySet<(...args: never[]) => void> | null,
+	): void {
+		if (!doc || !before) return;
+		const after = this.snapshotDocObservers(doc, event);
+		if (!after) return;
+		for (const observer of after) {
+			if (before.has(observer)) continue;
+			doc.off(event, observer);
+		}
+	}
+
+	/**
+	 * Copy of the doc's observers for `event`, or null if Yjs's shape changed.
+	 * `_observers` is Yjs-internal, so every step is shape-checked; on an
+	 * unexpected layout we return null and keep the old leaky behaviour rather
+	 * than throw mid-bind.
+	 */
+	private snapshotDocObservers(
+		doc: Y.Doc | null,
+		event: string,
+	): Set<(...args: never[]) => void> | null {
+		if (!doc || !("_observers" in doc)) return null;
+		const observers = doc._observers;
+		if (!(observers instanceof Map)) return null;
+		const forEvent = observers.get(event);
+		if (!(forEvent instanceof Set)) return null;
+		return new Set(forEvent);
+	}
+
+	/**
 	 * Check if a path is currently bound to an active editor.
 	 */
 	isBound(path: string): boolean {
@@ -1130,7 +1288,7 @@ export class EditorBindingManager {
 			reason,
 		} = options;
 
-		const undoManager = new Y.UndoManager(ytext);
+		const undoManager = this.createUndoManager(ytext);
 
 		this.vaultSync.provider.awareness.setLocalStateField("user", {
 			name: deviceName,
@@ -1139,9 +1297,7 @@ export class EditorBindingManager {
 			colorLight: "#30bced33",
 		});
 
-		const collabExtension = yCollab(ytext, this.vaultSync.provider.awareness, {
-			undoManager,
-		});
+		const collabExtension = this.buildCollabExtension(ytext, undoManager);
 
 		try {
 			this.clearLocalCursor(`${action}-pre-reconfigure`);

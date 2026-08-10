@@ -22,6 +22,13 @@ function sliceBetween(source, startMarker, endMarker) {
 	return source.slice(start, end);
 }
 
+/** Source with comments removed, so call-site counts ignore prose. */
+function stripComments(source) {
+	return source
+		.replace(/\/\*[\s\S]*?\*\//g, "")
+		.replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
 const workspaceSource = readFileSync(new URL("../src/runtime/editorWorkspaceOrchestrator.ts", import.meta.url), "utf8");
 const bindingSource = readFileSync(new URL("../src/sync/editorBinding.ts", import.meta.url), "utf8");
 
@@ -151,6 +158,101 @@ console.log("\n--- Test 6: CM resolve retries outlast layout churn and stay diag
 	assert(
 		retrySection?.includes("failure: this.lastCmResolveFailure"),
 		"degraded trace reports why resolution failed",
+	);
+}
+
+console.log("\n--- Test 7: closed leaves release their bindings ---");
+{
+	const section = sliceBetween(
+		bindingSource,
+		"pruneOrphanedBindings(liveLeafKeys: ReadonlySet<string>, source: string): number {",
+		"private createUndoManager(",
+	);
+	assert(section !== null, "pruneOrphanedBindings section found");
+	// Two independent signals must agree. Leaf-absence alone would unbind a
+	// live editor if a workspace mutation transiently hid its leaf.
+	assert(
+		section?.includes("if (liveLeafKeys.has(leafId)) continue;"),
+		"a binding whose leaf is still open is never pruned",
+	);
+	assert(
+		section?.includes("if (this.knownCmViews.has(binding.cm)) {"),
+		"a binding whose EditorView is still registered is never pruned",
+	);
+	// Teardown must match unbindByPath or the prune trades one leak for another.
+	assert(
+		section?.includes("binding.undoManager.destroy();"),
+		"pruning destroys the UndoManager",
+	);
+	assert(
+		section?.includes("this.bindings.delete(leafId);")
+		&& section?.includes("this.cmToLeafId.delete(binding.cm);"),
+		"pruning releases the binding and its CM mapping",
+	);
+
+	const orchestratorSource = readFileSync(
+		new URL("../src/runtime/editorWorkspaceOrchestrator.ts", import.meta.url),
+		"utf8",
+	);
+	const layout = sliceBetween(
+		orchestratorSource,
+		"onLayoutChange(): void {",
+		"pruneOrphanedBindings(reason: string): number {",
+	);
+	const pruneCall = layout?.indexOf("this.pruneOrphanedBindings(") ?? -1;
+	const auditCall = layout?.indexOf("this.auditBindings(") ?? -1;
+	assert(
+		pruneCall >= 0 && auditCall >= 0 && pruneCall < auditCall,
+		"layout-change prunes dead bindings before auditing the rest",
+	);
+	// Keys must be derived exactly as bind() does, or path-keyed bindings
+	// would never match a live entry and would be pruned while in use.
+	assert(
+		orchestratorSource.includes('"id" in leaf && typeof leaf.id === "string"')
+		&& orchestratorSource.includes("view.file?.path"),
+		"live leaf keys use the same leaf-id-then-path derivation as bind()",
+	);
+}
+
+console.log("\n--- Test 8: Yjs doc observers do not accumulate per bind ---");
+{
+	// Y.UndoManager's constructor adds a `destroy` hook that destroy() never
+	// removes, and YSyncConfig builds a second manager it never uses. Left
+	// alone each bind leaked one observer of each kind, permanently.
+	const bindingCode = stripComments(bindingSource);
+	const undoManagerConstructions =
+		bindingCode.match(/new Y\.UndoManager\(/g)?.length ?? 0;
+	assert(
+		undoManagerConstructions === 1,
+		"UndoManagers are only constructed inside createUndoManager",
+	);
+	const yCollabCalls = bindingCode.match(/yCollab\(/g)?.length ?? 0;
+	assert(
+		yCollabCalls === 1,
+		"yCollab is only invoked inside buildCollabExtension",
+	);
+
+	const builder = sliceBetween(
+		bindingSource,
+		"private buildCollabExtension(",
+		"private releaseAddedDocObservers(",
+	);
+	assert(builder !== null, "buildCollabExtension section found");
+	assert(
+		builder?.includes('this.releaseAddedDocObservers(doc, "destroy", destroyBefore)')
+		&& builder?.includes('this.releaseAddedDocObservers(doc, "afterTransaction", transactionBefore)'),
+		"the stray YSyncConfig UndoManager's observers are both released",
+	);
+
+	const factory = sliceBetween(
+		bindingSource,
+		"private createUndoManager(",
+		"* Build the collab extension",
+	);
+	assert(
+		factory?.includes('this.releaseAddedDocObservers(doc, "destroy", before)')
+		&& !factory?.includes('"afterTransaction"'),
+		"our own UndoManager keeps its afterTransaction subscription so undo works",
 	);
 }
 

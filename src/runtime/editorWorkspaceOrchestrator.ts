@@ -40,11 +40,44 @@ export class EditorWorkspaceOrchestrator {
 			this.getActiveMarkdownPath(),
 			"layout-change-active-blur",
 		);
+		// Release bindings for leaves that are gone before auditing the rest,
+		// so the audit never inspects a dead editor. Closing a tab is the only
+		// lifecycle event with no other cleanup path.
+		this.pruneOrphanedBindings("layout-change");
 		const touched = this.auditBindings("layout-change");
 		if (touched > 0) {
 			this.deps.log(`Binding health audit (layout-change) — touched ${touched}`);
 			this.deps.scheduleTraceStateSnapshot("binding-audit:layout-change");
 		}
+	}
+
+	/**
+	 * Drop bindings whose leaf has left the workspace.
+	 *
+	 * Keys are derived exactly as EditorBindingManager.bind does — leaf id when
+	 * Obsidian exposes one, file path otherwise — so a path-keyed binding is
+	 * matched by a path-keyed live entry and never looks orphaned.
+	 */
+	pruneOrphanedBindings(reason: string): number {
+		const editorBindings = this.deps.getEditorBindings();
+		if (!editorBindings) return 0;
+
+		const liveLeafKeys = new Set<string>();
+		this.deps.app.workspace.iterateAllLeaves((leaf) => {
+			const view = leaf.view;
+			if (!(view instanceof MarkdownView)) return;
+			const leafId = "id" in leaf && typeof leaf.id === "string"
+				? leaf.id
+				: view.file?.path;
+			if (leafId) liveLeafKeys.add(leafId);
+		});
+
+		const pruned = editorBindings.pruneOrphanedBindings(liveLeafKeys, reason);
+		if (pruned > 0) {
+			this.deps.log(`Pruned ${pruned} orphaned binding(s) (${reason})`);
+			this.deps.scheduleTraceStateSnapshot(`binding-prune:${reason}`);
+		}
+		return pruned;
 	}
 
 	onActiveLeafChange(leaf: WorkspaceLeaf | null): void {

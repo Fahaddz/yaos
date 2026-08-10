@@ -70,6 +70,7 @@ const editorBindings = {
 	bind: () => {},
 	clearLocalCursor: () => {},
 	auditBindings: () => 0,
+	pruneOrphanedBindings: () => 0,
 	notify: () => {},
 };
 
