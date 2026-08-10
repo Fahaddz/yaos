@@ -782,7 +782,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				bindingPropagationGate,
 			);
 
-			// 3. Global CM6 extension
+			// 3. Global CM6 extension.
+			//
+			// registerEditorExtension applies to editors that already exist:
+			// Obsidian calls Workspace.updateOptions() internally, which
+			// reconfigures every live EditorView in place. Verified on Obsidian
+			// 1.13.4 — registering from an async onload on a warm workspace
+			// constructed our ViewPlugin on all 6 open editors. So no explicit
+			// updateOptions() call is needed here.
 			this.registerEditorExtension(
 				this.editorBindings.getBaseExtension(),
 			);

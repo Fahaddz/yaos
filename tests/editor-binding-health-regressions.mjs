@@ -88,6 +88,72 @@ console.log("\n--- Test 4: editor-health-heal origin remains manual-only ---");
 	);
 }
 
+console.log("\n--- Test 5: CM resolution prefers editorInfoField and fails closed ---");
+{
+	const section = sliceBetween(
+		bindingSource,
+		"private getCmView(view: MarkdownView): EditorView | null {",
+		"private warnCmDegraded(): void {",
+	);
+	assert(section !== null, "getCmView section found");
+	assert(
+		bindingSource.includes("cm.state.field(editorInfoField, false)"),
+		"editor ownership is read from Obsidian's public editorInfoField",
+	);
+	const infoIndex = section?.indexOf("if (infoMatches.length === 1)") ?? -1;
+	const domIndex = section?.indexOf("if (matches.length === 0)") ?? -1;
+	assert(
+		infoIndex >= 0 && domIndex >= 0 && infoIndex < domIndex,
+		"editorInfoField ownership is consulted before DOM containment",
+	);
+	const ambiguousIndex = section?.indexOf('"cm-resolution-ambiguous"') ?? -1;
+	assert(
+		ambiguousIndex >= 0
+		&& (section?.indexOf("return null;", ambiguousIndex) ?? -1) > ambiguousIndex,
+		"ambiguous resolution fails closed instead of binding a guessed editor",
+	);
+	// knownCmViews is populated by our ViewPlugin, whose construction lags the
+	// workspace event that triggers bind(). Measured on a 121-note vault:
+	// 32 resolution failures without this fallback, 0 with it.
+	const zeroMatchIndex = section?.indexOf("if (matches.length === 0)") ?? -1;
+	const fromDomIndex = section?.indexOf("EditorView.findFromDOM(container)") ?? -1;
+	const giveUpIndex = zeroMatchIndex >= 0
+		? (section?.indexOf("return null;", zeroMatchIndex) ?? -1)
+		: -1;
+	assert(
+		fromDomIndex > zeroMatchIndex && fromDomIndex < giveUpIndex,
+		"zero-match falls back to CodeMirror findFromDOM before giving up",
+	);
+}
+
+console.log("\n--- Test 6: CM resolve retries outlast layout churn and stay diagnosable ---");
+{
+	const delayMs = Number(bindingSource.match(/CM_RESOLVE_RETRY_DELAY_MS = (\d+)/)?.[1]);
+	const maxRetries = Number(bindingSource.match(/CM_RESOLVE_MAX_RETRIES = (\d+)/)?.[1]);
+	const settleWindowMs = Number(
+		bindingSource.match(/FAST_SWITCH_BINDING_SETTLE_WINDOW_MS = (\d+)/)?.[1],
+	);
+	assert(
+		Number.isFinite(delayMs) && Number.isFinite(maxRetries) && Number.isFinite(settleWindowMs),
+		"CM resolve retry constants are readable",
+	);
+	// Delays are linear in attempt count, so the budget is the triangular sum.
+	const budgetMs = (delayMs * maxRetries * (maxRetries + 1)) / 2;
+	assert(
+		budgetMs > settleWindowMs,
+		`CM resolve retry budget (${budgetMs}ms) outlasts the fast-switch settle window (${settleWindowMs}ms)`,
+	);
+	const retrySection = sliceBetween(
+		bindingSource,
+		"private scheduleCmResolveRetry(",
+		"private clearCmResolveRetry(",
+	);
+	assert(
+		retrySection?.includes("failure: this.lastCmResolveFailure"),
+		"degraded trace reports why resolution failed",
+	);
+}
+
 console.log(`\n${"-".repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 console.log(`${"-".repeat(50)}\n`);

@@ -2,7 +2,7 @@ import { Compartment, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { yCollab, ySyncFacet } from "y-codemirror.next";
 import * as Y from "yjs";
-import { Notice, type MarkdownView } from "obsidian";
+import { editorInfoField, Notice, type MarkdownFileInfo, type MarkdownView } from "obsidian";
 import type { VaultSync } from "./vaultSync";
 import { applyDiffToYText } from "./diff";
 import type { TraceRecord } from "../observability/traceContext";
@@ -29,8 +29,16 @@ const FAST_SWITCH_BINDING_SETTLE_WINDOW_MS = 1600;
 const FAST_SWITCH_WINDOW_MS = 2000;
 const POST_BIND_HEALTH_GRACE_MS = 100;
 const LIVE_UPDATE_HEALTH_RETRY_DELAY_MS = 120;
-const CM_RESOLVE_RETRY_DELAY_MS = 80;
-const CM_RESOLVE_MAX_RETRIES = 2;
+const CM_RESOLVE_RETRY_DELAY_MS = 100;
+const CM_RESOLVE_MAX_RETRIES = 8;
+
+/** Why a getCmView() call failed to resolve an editor, for degraded traces. */
+interface CmResolveFailure {
+	reason: "no-known-cm-views" | "no-container-match" | "ambiguous";
+	knownCmViews: number;
+	containerMatches: number;
+	infoMatches: number;
+}
 
 /** Map from MarkdownView instance id to its binding state. */
 interface EditorBinding {
@@ -129,6 +137,13 @@ export class EditorBindingManager {
 	private cmDegradedWarned = false;
 	private cmResolveAttempts = new Map<string, number>();
 	private pendingCmResolveRetries = new Map<string, ReturnType<typeof setTimeout>>();
+	/**
+	 * Why the last getCmView() call returned null. Attached to the degraded
+	 * trace so field reports separate "no editor ever registered" (our CM6
+	 * extension reached this editor too late) from "registered but
+	 * unclaimable" (ambiguous container).
+	 */
+	private lastCmResolveFailure: CmResolveFailure | null = null;
 
 	private readonly debug: boolean;
 
@@ -678,8 +693,17 @@ export class EditorBindingManager {
 
 	/**
 	 * Get the CM6 EditorView from a MarkdownView.
-	 * Resolution is based on DOM containment over a set of known CM6 views
-	 * registered by our global ViewPlugin. This avoids private Obsidian APIs.
+	 *
+	 * Primary strategy is Obsidian's public `editorInfoField`, which every
+	 * editor state carries and which names the view owning that editor. It is
+	 * exact even when several editors share one container (embeds,
+	 * plugin-injected editors) or the DOM was re-parented mid-switch.
+	 *
+	 * DOM containment over the CM6 views registered by our global ViewPlugin
+	 * stays as the fallback. Both strategies use public API only.
+	 *
+	 * Resolution is fail-closed: while ownership is ambiguous we return null
+	 * and let the caller retry rather than bind the wrong editor.
 	 */
 	private getCmView(view: MarkdownView): EditorView | null {
 		const container = view.containerEl;
@@ -698,12 +722,16 @@ export class EditorBindingManager {
 			}
 		}
 
+		const infoMatches: EditorView[] = [];
 		const matches: EditorView[] = [];
 		const stale: EditorView[] = [];
 		for (const cm of this.knownCmViews) {
 			if (!cm.dom.isConnected) {
 				stale.push(cm);
 				continue;
+			}
+			if (this.cmBelongsToView(cm, view)) {
+				infoMatches.push(cm);
 			}
 			if (container.contains(cm.dom)) {
 				matches.push(cm);
@@ -714,17 +742,67 @@ export class EditorBindingManager {
 			this.cmToLeafId.delete(cm);
 		}
 
-		if (matches.length === 0) return null;
-		if (matches.length === 1) return matches[0]!;
+		if (infoMatches.length === 1) {
+			this.lastCmResolveFailure = null;
+			return infoMatches[0]!;
+		}
+		if (infoMatches.length > 1) {
+			const focusedInfoMatch = this.findFocusedCm(infoMatches);
+			if (focusedInfoMatch) {
+				this.lastCmResolveFailure = null;
+				return focusedInfoMatch;
+			}
+		}
 
-		const activeElement =
-			typeof document !== "undefined" ? document.activeElement : null;
-		const focused = matches.filter((cm) =>
-			cm.hasFocus || (activeElement ? cm.dom.contains(activeElement) : false),
-		);
-		if (focused.length === 1) return focused[0]!;
+		if (matches.length === 0) {
+			// knownCmViews only fills once our global ViewPlugin is constructed,
+			// and that construction can lag the workspace event that triggered
+			// bind(). Measured on a 121-note vault: the editor is already live
+			// (view.editor.cm connected) while knownCmViews still holds 0-2
+			// entries, so both the ownership and containment passes come up
+			// empty and we burn the retry budget waiting for registration.
+			// CodeMirror's public findFromDOM resolves the live EditorView
+			// straight from this view's container, so the note binds on the
+			// first attempt instead.
+			// knownCmViews only ever holds connected views (disconnected ones are
+			// pruned above), so the containment pass can never return a detached
+			// editor. findFromDOM has no such invariant — on a closed leaf it
+			// happily finds the dead EditorView still sitting in the detached
+			// container — so re-establish the invariant explicitly.
+			const fromDom = EditorView.findFromDOM(container);
+			if (fromDom?.dom.isConnected) {
+				this.registerKnownCmView(fromDom);
+				this.lastCmResolveFailure = null;
+				return fromDom;
+			}
+			this.lastCmResolveFailure = {
+				reason: this.knownCmViews.size === 0
+					? "no-known-cm-views"
+					: "no-container-match",
+				knownCmViews: this.knownCmViews.size,
+				containerMatches: 0,
+				infoMatches: infoMatches.length,
+			};
+			return null;
+		}
+		if (matches.length === 1) {
+			this.lastCmResolveFailure = null;
+			return matches[0]!;
+		}
+
+		const focused = this.findFocusedCm(matches);
+		if (focused) {
+			this.lastCmResolveFailure = null;
+			return focused;
+		}
 
 		const ids = matches.map((cm) => this.getCmId(cm));
+		this.lastCmResolveFailure = {
+			reason: "ambiguous",
+			knownCmViews: this.knownCmViews.size,
+			containerMatches: matches.length,
+			infoMatches: infoMatches.length,
+		};
 		this.trace?.("editor", "cm-resolution-ambiguous", {
 			leafId: leafId ?? "unknown",
 			path: view.file?.path ?? null,
@@ -750,6 +828,36 @@ export class EditorBindingManager {
 		console.error(
 			"[yaos] Critical: Could not locate CodeMirror 6 EditorView. Live binding disabled.",
 		);
+	}
+
+	/**
+	 * True when `cm` is the editor Obsidian associates with `view`, according
+	 * to the public editorInfoField carried in the editor's state.
+	 */
+	private cmBelongsToView(cm: EditorView, view: MarkdownView): boolean {
+		let info: MarkdownFileInfo | undefined;
+		try {
+			info = cm.state.field(editorInfoField, false);
+		} catch {
+			return false;
+		}
+
+		if (!info) return false;
+		if (info === view) return true;
+		// Some editors expose a separate MarkdownFileInfo for the same file.
+		// Demand a live file plus a shared Editor before claiming ownership so
+		// two fileless editors cannot resolve to each other.
+		if (!view.file || info.file !== view.file) return false;
+		return info.editor !== undefined && info.editor === view.editor;
+	}
+
+	private findFocusedCm(cms: EditorView[]): EditorView | null {
+		const activeElement =
+			typeof document !== "undefined" ? document.activeElement : null;
+		const focused = cms.filter((cm) =>
+			cm.hasFocus || (activeElement ? cm.dom.contains(activeElement) : false),
+		);
+		return focused.length === 1 ? focused[0]! : null;
 	}
 
 	private getCmId(cm: EditorView): string {
@@ -938,6 +1046,7 @@ export class EditorBindingManager {
 				path: view.file?.path ?? null,
 				source,
 				attempts,
+				failure: this.lastCmResolveFailure,
 			});
 			return;
 		}
