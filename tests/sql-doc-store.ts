@@ -18,6 +18,14 @@ class FakeSqlStorage {
 	private tables: Map<string, Array<Record<string, unknown>>> = new Map();
 	private autoIncrements: Map<string, number> = new Map();
 
+	/**
+	 * Test hook: offset applied to the snapshot_chunks byte total reported by
+	 * the pre-sizing aggregate, so a disagreement between the aggregate and the
+	 * row scan can be exercised.  Real SQLite cannot disagree with itself, but
+	 * loadState must still fail closed if it ever does.
+	 */
+	snapshotTotalBias = 0;
+
 	exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): FakeSqlCursor<T> {
 		const trimmed = query.trim().replace(/\s+/g, " ");
 
@@ -67,6 +75,18 @@ class FakeSqlStorage {
 			const table = this.tables.get("journal") ?? [];
 			const sorted = [...table].sort((a, b) => (a.id as number) - (b.id as number));
 			return new FakeSqlCursor<T>(sorted as T[]);
+		}
+
+		// COUNT/SUM from snapshot_chunks — used by loadState to pre-size the
+		// contiguous snapshot buffer before streaming the rows.
+		if (trimmed.includes("COUNT(*)") && trimmed.includes("snapshot_chunks")) {
+			const table = this.tables.get("snapshot_chunks") ?? [];
+			const cnt = table.length;
+			const total = table.reduce(
+				(sum, row) => sum + (row.data instanceof ArrayBuffer ? row.data.byteLength : 0),
+				0,
+			) + this.snapshotTotalBias;
+			return new FakeSqlCursor<T>([{ cnt, total } as T]);
 		}
 
 		// COUNT/SUM from journal
@@ -302,6 +322,49 @@ console.log("\n--- Test 7: KV-to-SQL migration simulation ---");
 	assert(meta2.size === 200, `migrated doc has 200 entries (got ${meta2.size})`);
 	kvDoc.destroy();
 	doc2.destroy();
+}
+
+console.log("\n--- Test 8: snapshot size mismatch fails loudly ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	// FakeDurableObjectStorage structurally implements the subset of the DO
+	// storage surface SqlDocStore uses; the worker-types interface is private.
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	const doc = makeDoc(20);
+	store.rewriteCheckpoint(Y.encodeStateAsUpdate(doc));
+
+	// A snapshot buffer sized from a wrong total would silently truncate the
+	// Y.Doc update, which Yjs would then fail to decode or — worse — decode
+	// partially.  loadState must refuse to return a buffer it could not fill
+	// exactly, in either direction.
+	storage.sql.snapshotTotalBias = -1;
+	let shortMessage = "";
+	try {
+		store.loadState();
+	} catch (err) {
+		shortMessage = err instanceof Error ? err.message : String(err);
+	}
+	assert(
+		shortMessage.includes("size mismatch"),
+		`under-reported total throws (got ${shortMessage || "no throw"})`,
+	);
+
+	storage.sql.snapshotTotalBias = 1;
+	let longMessage = "";
+	try {
+		store.loadState();
+	} catch (err) {
+		longMessage = err instanceof Error ? err.message : String(err);
+	}
+	assert(
+		longMessage.includes("size mismatch"),
+		`over-reported total throws (got ${longMessage || "no throw"})`,
+	);
+
+	doc.destroy();
 }
 
 // ── Results ─────────────────────────────────────────────────────────────────

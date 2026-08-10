@@ -176,29 +176,55 @@ export class SqlDocStore {
 
 	/**
 	 * Load the full document state: snapshot + journal replay.
+	 *
+	 * MEMORY CONTRACT — snapshot reassembly:
+	 * The snapshot must end up as one contiguous Uint8Array because a Yjs
+	 * update cannot be applied in fragments.  That contiguous buffer costs S
+	 * bytes.  The naive implementation additionally materialises every row via
+	 * .toArray() before copying, holding another S bytes of per-row
+	 * ArrayBuffers alive for the whole copy loop — peak 2S on a 128MB heap
+	 * that the decoded Y.Doc will then dominate.
+	 *
+	 * Instead we size the buffer with an aggregate query, then stream the
+	 * cursor and copy each row straight into place.  Once a row is copied its
+	 * ArrayBuffer is unreachable and collectable, so peak is S + one chunk
+	 * rather than 2S.
+	 *
+	 * The cursor is consumed synchronously with no intervening await, as
+	 * required for snapshot isolation (a cursor resumed after an await may
+	 * observe later, possibly uncommitted, writes).
 	 */
 	loadState(): LoadedDocState {
 		this.ensureSchema();
 
-		// Read snapshot
-		const snapshotRows = this.storage.sql.exec<{ data: ArrayBuffer }>(
-			"SELECT data FROM snapshot_chunks ORDER BY chunk_index",
+		const [sizes] = this.storage.sql.exec<{ cnt: number; total: number }>(
+			"SELECT COUNT(*) AS cnt, COALESCE(SUM(LENGTH(data)), 0) AS total FROM snapshot_chunks",
 		).toArray();
 
 		let snapshot: Uint8Array | null = null;
-		if (snapshotRows.length > 0) {
-			let totalSize = 0;
-			const chunks: Uint8Array[] = [];
-			for (const row of snapshotRows) {
-				const chunk = new Uint8Array(row.data);
-				chunks.push(chunk);
-				totalSize += chunk.byteLength;
-			}
-			snapshot = new Uint8Array(totalSize);
+		if ((sizes?.cnt ?? 0) > 0) {
+			snapshot = new Uint8Array(sizes.total);
 			let offset = 0;
-			for (const chunk of chunks) {
+			const cursor = this.storage.sql.exec<{ data: ArrayBuffer }>(
+				"SELECT data FROM snapshot_chunks ORDER BY chunk_index",
+			);
+			for (const row of cursor) {
+				const chunk = new Uint8Array(row.data);
+				if (offset + chunk.byteLength > snapshot.byteLength) {
+					// A concurrent rewriteCheckpoint cannot interleave here (single
+					// threaded, no await), so this means the aggregate and the scan
+					// disagree — fail loudly rather than persist a truncated doc.
+					throw new Error(
+						`snapshot_chunks size mismatch: aggregate reported ${snapshot.byteLength} bytes, scan produced at least ${offset + chunk.byteLength}`,
+					);
+				}
 				snapshot.set(chunk, offset);
 				offset += chunk.byteLength;
+			}
+			if (offset !== snapshot.byteLength) {
+				throw new Error(
+					`snapshot_chunks size mismatch: aggregate reported ${snapshot.byteLength} bytes, scan produced ${offset}`,
+				);
 			}
 		}
 
