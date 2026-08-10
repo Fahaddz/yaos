@@ -222,6 +222,11 @@ export class VaultSyncServer extends YServer {
 			// Debug polling is periodic and must not trigger a checkpoint load
 			// on every poll.  documentSummary is conditionally included only if
 			// the document is already in memory.
+			//
+			// crdtFootprint is opt-in (?census=1) for the same reason: it walks
+			// every struct and re-encodes the whole document, which is far too
+			// expensive to run on a poll.
+			const wantCensus = url.searchParams.get("census") === "1";
 			const recent = await listRecentTraceEntries(this.ctx.storage, TRACE_DEBUG_LIMIT);
 			const coordinator = this.getPersistenceCoordinator();
 			const serverHealth: ServerPersistenceHealth = {
@@ -236,6 +241,7 @@ export class VaultSyncServer extends YServer {
 				svEcho: { ...this.svEchoCounters },
 				persistence: serverHealth,
 				documentSummary: this.documentLoaded ? this.getDocumentSummary() : null,
+				crdtFootprint: wantCensus && this.documentLoaded ? this.getCrdtFootprint() : null,
 				storage: {
 					mode: this.storageMode,
 					migrationStatus: this.migrationStatus,
@@ -679,6 +685,85 @@ export class VaultSyncServer extends YServer {
 			);
 		}
 		return this.persistence;
+	}
+
+	/**
+	 * In-memory CRDT footprint census.
+	 *
+	 * Two very different things can make a Y.Doc expensive in RAM, and they
+	 * need opposite remedies:
+	 *
+	 *   - Cons-string accumulation.  Yjs merges adjacent ContentString items
+	 *     with `str += str`.  Under fine-grained editing that runs millions of
+	 *     times and V8 keeps a deep rope it will not flatten.  Struct count
+	 *     stays low, memory climbs.  Re-materialising the doc recovers it.
+	 *   - Item fragmentation.  Non-adjacent or multi-client edits produce
+	 *     structs Yjs cannot merge.  Struct count climbs and stays climbed.
+	 *     Re-materialising does NOT recover it.
+	 *
+	 * `bytesPerStruct` separates them: ~10^4 means few large items (rope
+	 * regime), ~10^1 means many small items (fragmentation regime).  Benchmark
+	 * for the same metrics on synthetic corpora: scripts/bench-memory.js.
+	 *
+	 * This walks every struct and fully re-encodes the document, so it is far
+	 * too expensive for the periodic debug poll and is opt-in only.
+	 */
+	private getCrdtFootprint(): {
+		clients: number;
+		structs: number;
+		items: number;
+		gcs: number;
+		deletedItems: number;
+		liveChars: number;
+		encodedBytes: number;
+		bytesPerStruct: number;
+		itemsPerKB: number;
+		databaseSizeBytes: number | null;
+	} {
+		let structs = 0;
+		let items = 0;
+		let gcs = 0;
+		let deletedItems = 0;
+		let liveChars = 0;
+
+		for (const structList of this.document.store.clients.values()) {
+			structs += structList.length;
+			for (const struct of structList) {
+				// instanceof, not constructor.name: class names do not survive
+				// minification in the released bundle.
+				if (!(struct instanceof Y.Item)) {
+					gcs++;
+					continue;
+				}
+				items++;
+				if (struct.deleted) deletedItems++;
+				else liveChars += struct.length;
+			}
+		}
+
+		const encodedBytes = Y.encodeStateAsUpdate(this.document).byteLength;
+
+		let databaseSizeBytes: number | null = null;
+		try {
+			const size = this.ctx.storage.sql?.databaseSize;
+			if (typeof size === "number") databaseSizeBytes = size;
+		} catch {
+			// KV-backed or unavailable — reported as null rather than failing
+			// the whole debug response.
+		}
+
+		return {
+			clients: this.document.store.clients.size,
+			structs,
+			items,
+			gcs,
+			deletedItems,
+			liveChars,
+			encodedBytes,
+			bytesPerStruct: structs > 0 ? encodedBytes / structs : 0,
+			itemsPerKB: liveChars > 0 ? items / (liveChars / 1024) : 0,
+			databaseSizeBytes,
+		};
 	}
 
 	/** Decoded document summary for deployment validation and diagnostics. */
