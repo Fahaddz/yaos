@@ -78,6 +78,7 @@ tools/
 .codex/
 .claude/
 .antigravitycli/
+.opencode/
 WITNESS-PHASE-2-VERIFICATION.md
 WITNESS-PHASE-3-VERIFICATION.md
 tests/regression-baseline.md
