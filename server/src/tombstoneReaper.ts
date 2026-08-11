@@ -84,11 +84,23 @@ export interface ReapResult {
 	metaEntries: number;
 	/** meta entries that are tombstones. */
 	tombstones: number;
+	/** Tombstones whose body is already gone — nothing to reclaim. */
+	alreadyReaped: number;
+	/** Tombstones that still hold a body, i.e. the candidate pool. */
+	withBody: number;
 	/** Bodies actually deleted. */
 	reaped: number;
 	/** Characters of live content removed. */
 	charsFreed: number;
-	/** Tombstoned, but still inside the grace window. */
+	/**
+	 * Tombstoned, but still inside the grace window.
+	 *
+	 * NOTE: withinGrace, unknownAge and conflicted OVERLAP.  Each is evaluated
+	 * independently, so one tombstone can appear in several, and they do NOT
+	 * sum to `withBody`.  They previously partitioned it, which meant the first
+	 * matching reason hid every other one and produced a materially wrong read
+	 * of a live vault.
+	 */
 	withinGrace: number;
 	/**
 	 * Tombstoned with no usable deletion timestamp, so age cannot be
@@ -104,6 +116,8 @@ export interface ReapResult {
 const EMPTY_RESULT: ReapResult = {
 	metaEntries: 0,
 	tombstones: 0,
+	alreadyReaped: 0,
+	withBody: 0,
 	reaped: 0,
 	charsFreed: 0,
 	withinGrace: 0,
@@ -176,7 +190,12 @@ export function reapTombstonedBodies(doc: Y.Doc, options: ReapOptions = {}): Rea
 	const idToText = doc.getMap<Y.Text>("idToText");
 	const pathToId = doc.getMap<string>("pathToId");
 
-	if (meta.size === 0 || idToText.size === 0) return { ...EMPTY_RESULT };
+	// Only `meta` short-circuits.  An empty idToText also means nothing to
+	// reclaim, but returning zeros for it would report a vault with tombstones as
+	// having none — the same class of mistake as the counters that used to
+	// short-circuit each other.  The per-tombstone check below reports those as
+	// alreadyReaped instead.
+	if (meta.size === 0) return { ...EMPTY_RESULT };
 
 	// Whether `pathToId` still decides path -> fileId resolution.
 	//
@@ -210,24 +229,33 @@ export function reapTombstonedBodies(doc: Y.Doc, options: ReapOptions = {}): Rea
 		result.tombstones++;
 
 		// Nothing to reclaim — already reaped, or never had a body.
-		if (!idToText.has(fileId)) return;
-
-		if (activeIds.has(fileId)) {
-			result.conflicted++;
+		if (!idToText.has(fileId)) {
+			result.alreadyReaped++;
 			return;
 		}
+		result.withBody++;
 
+		// Every reason is evaluated, not just the first one that matches.
+		//
+		// These counters used to short-circuit: the conflict check returned
+		// before the age checks ran, so a tombstone that was BOTH still
+		// referenced and inside the grace window was reported only as
+		// `conflicted` and its age was never established.  A real vault
+		// reported `conflicted: 14`, which read as "14 bodies are blocked only
+		// by a stale reference, so fixing that frees them" — and it was wrong.
+		// All 14 were also inside the grace window, which the numbers could not
+		// say.  Overlapping counters describe the tombstone; a partition only
+		// describes the order the code happened to ask.
+		const blockedByReference = activeIds.has(fileId);
 		const deletedAt = readDeletedAt(value);
-		if (deletedAt === null) {
-			result.unknownAge++;
-			return;
-		}
-		if (now - deletedAt < graceMs) {
-			result.withinGrace++;
-			return;
-		}
+		const ageUnknown = deletedAt === null;
+		const insideGrace = !ageUnknown && now - deletedAt < graceMs;
 
-		candidates.push(fileId);
+		if (blockedByReference) result.conflicted++;
+		if (ageUnknown) result.unknownAge++;
+		if (insideGrace) result.withinGrace++;
+
+		if (!blockedByReference && !ageUnknown && !insideGrace) candidates.push(fileId);
 	});
 
 	if (candidates.length === 0) return result;

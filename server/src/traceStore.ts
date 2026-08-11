@@ -261,16 +261,39 @@ export function createTraceKey(ts = Date.now()): string {
 export class TraceRing {
 	/** Stored keys, oldest first.  null until seeded from storage. */
 	private keys: string[] | null = null;
+	/** Appends made by this instance while unseeded, or since the last re-seed. */
 	private appendsSinceSeed = 0;
 
 	/**
-	 * Re-seed occasionally so the in-memory view cannot drift permanently from
-	 * storage — a failed delete would otherwise let the ring grow unbounded.
-	 * Amortised this is ~0.4 rows read per trace instead of ~201.
+	 * Appends tolerated before the ring reconciles with storage.
+	 *
+	 * Seeding costs one `list` over the whole prefix, so doing it on the first
+	 * append charges every short-lived instance ~maxEntries rows read.  That is
+	 * the common case: a hibernating room wakes, writes a checkpoint-load trace
+	 * or two, and is evicted again — measured at ~200 of the ~344 rows a single
+	 * wake of a real room cost.  Amortising over appends does nothing for an
+	 * instance that only ever makes two.
+	 *
+	 * Deferring instead means an instance that appends fewer than this never
+	 * lists at all, and a busy one pays ~maxEntries rows per SEED_AFTER_APPENDS
+	 * appends.  The price is bounded overshoot: storage holds at most
+	 * maxEntries + SEED_AFTER_APPENDS entries between reconciliations, which
+	 * does not affect reads because listRecentTraceEntries asks for the newest
+	 * N regardless.
 	 */
-	private static readonly RESEED_AFTER_APPENDS = 500;
+	private static readonly SEED_AFTER_APPENDS = 200;
 
-	constructor(private readonly maxEntries: number) {}
+	private readonly seedAfterAppends: number;
+
+	/**
+	 * @param seedAfterAppends appends tolerated before reconciling with storage.
+	 *   Defaults to SEED_AFTER_APPENDS.  Pass 1 to reconcile on every append,
+	 *   which is what the stateless helper needs to keep its exact retention
+	 *   semantics.
+	 */
+	constructor(private readonly maxEntries: number, seedAfterAppends = TraceRing.SEED_AFTER_APPENDS) {
+		this.seedAfterAppends = Math.max(1, seedAfterAppends);
+	}
 
 	async append(storage: TraceStorageLike, entry: TraceEntry): Promise<void> {
 		const traceTs = Date.parse(entry.ts);
@@ -278,26 +301,33 @@ export class TraceRing {
 		await storage.put(key, entry);
 		if (this.maxEntries <= 0) return;
 
+		this.appendsSinceSeed++;
+
 		// Held in a local: `this.keys` is a mutable field, so TypeScript discards
 		// any narrowing across the awaits below.
-		let keys: string[];
 		const cached = this.keys;
-		if (cached === null || this.appendsSinceSeed >= TraceRing.RESEED_AFTER_APPENDS) {
-			// Listed AFTER the put, so the result already contains `key`.
-			const stored = await storage.list<TraceEntry>({ prefix: TRACE_KEY_PREFIX });
-			keys = Array.from(stored.keys());
-			this.appendsSinceSeed = 0;
-		} else {
-			keys = cached;
-			keys.push(key);
-			this.appendsSinceSeed++;
+		if (cached !== null && this.appendsSinceSeed < this.seedAfterAppends) {
+			cached.push(key);
+			const excess = cached.length - this.maxEntries;
+			if (excess <= 0) return;
+			await storage.delete(cached.splice(0, excess));
+			return;
 		}
+		if (cached === null && this.appendsSinceSeed < this.seedAfterAppends) {
+			// Unseeded and still within the tolerated overshoot: skip the list
+			// entirely.  Most instances never get past this branch.
+			return;
+		}
+
+		// Reconcile with storage.  Listed AFTER the put, so `key` is included.
+		const stored = await storage.list<TraceEntry>({ prefix: TRACE_KEY_PREFIX });
+		const keys = Array.from(stored.keys());
+		this.appendsSinceSeed = 0;
 		this.keys = keys;
 
 		const excess = keys.length - this.maxEntries;
 		if (excess <= 0) return;
-		const doomed = keys.splice(0, excess);
-		await storage.delete(doomed);
+		await storage.delete(keys.splice(0, excess));
 	}
 }
 
@@ -312,7 +342,7 @@ export async function appendTraceEntry(
 	entry: TraceEntry,
 	maxEntries: number,
 ): Promise<void> {
-	await new TraceRing(maxEntries).append(storage, entry);
+	await new TraceRing(maxEntries, 1).append(storage, entry);
 }
 
 export async function listRecentTraceEntries(

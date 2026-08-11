@@ -26,6 +26,18 @@ export type SvEchoKind = "baseline" | "postApply";
 export interface SvEchoDurability {
 	generation: number;
 	epoch: string;
+	/**
+	 * True when the room's persistence is degraded.
+	 *
+	 * Carried here because the echo is the only channel the client already
+	 * receives on every update-bearing message and on connect.  Without it a
+	 * client has no way to learn that the server cannot store its writes short
+	 * of polling the debug endpoint, so the failure is invisible to the user —
+	 * which is the entire class of bug this addresses.
+	 *
+	 * Emitted only when true, keeping the common payload unchanged.
+	 */
+	degraded?: boolean;
 }
 
 export type SvEchoSendResult =
@@ -58,6 +70,7 @@ function svEchoPayload(encodedSv: string, durability?: SvEchoDurability): string
 				sv: encodedSv,
 				gen: durability.generation,
 				genEpoch: durability.epoch,
+				...(durability.degraded ? { degraded: true } : {}),
 			}
 			: {
 				type: SV_ECHO_TYPE,

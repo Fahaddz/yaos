@@ -57,10 +57,15 @@ function makeTracker(): { doc: Y.Doc; tracker: ServerAckTracker; provider: objec
 const sv = (doc: Y.Doc): Uint8Array => Y.encodeStateVector(doc);
 
 /** Server-side echo, parsed by the client, exactly as the wire does it. */
-function echo(tracker: ServerAckTracker, doc: Y.Doc, generation: number | null): void {
+function echo(
+	tracker: ServerAckTracker,
+	doc: Y.Doc,
+	generation: number | null,
+	degraded?: boolean,
+): void {
 	const payload = generation === null
 		? makeSvEchoCustomMessage(sv(doc))
-		: makeSvEchoCustomMessage(sv(doc), { generation, epoch: EPOCH });
+		: makeSvEchoCustomMessage(sv(doc), { generation, epoch: EPOCH, ...(degraded ? { degraded: true } : {}) });
 	const parsed = parseSvEchoMessageDetailed(payload);
 	if (parsed.kind !== "valid_sv_echo") throw new Error(`echo did not parse: ${parsed.kind}`);
 	tracker.recordServerSvEcho(parsed.sv, parsed.durability);
@@ -286,6 +291,104 @@ console.log("\n--- Test 8: the counter advances only on a SUCCESSFUL persist ---
 	second.dispose();
 	doc.destroy();
 	replayed.destroy();
+}
+
+console.log("\n--- Test 9: server persistence health reaches the client ---");
+{
+	// The silent-failure class this closes: the socket is healthy, edits reach
+	// other devices, and the writes are only discovered missing after the room
+	// is evicted.  The client has no other channel to learn it, so the echo
+	// carries it.
+	const { doc, tracker } = makeTracker();
+
+	echo(tracker, doc, 1);
+	assert(
+		tracker.serverPersistenceDegraded === false,
+		"a healthy echo omits the flag and reports healthy",
+	);
+	assert(
+		tracker.getState().serverPersistenceDegraded === false,
+		"health is exposed on the snapshot the status bar reads",
+	);
+
+	echo(tracker, doc, 1, true);
+	assert(tracker.serverPersistenceDegraded === true, "a degraded echo is observed");
+	assert(
+		tracker.getState().serverPersistenceDegraded === true,
+		"degraded state reaches the snapshot",
+	);
+
+	// Recovery must clear it, otherwise the indicator sticks and stops meaning
+	// anything.
+	echo(tracker, doc, 2);
+	assert(tracker.serverPersistenceDegraded === false, "recovery clears the flag");
+
+	// A server too old to report health must not be read as healthy: with no
+	// marker at all there is nothing to believe, so the last known value stands.
+	echo(tracker, doc, 3, true);
+	echo(tracker, doc, null);
+	assert(
+		tracker.serverPersistenceDegraded === true,
+		"an echo without a durability marker does not silently clear the warning",
+	);
+
+	doc.destroy();
+}
+
+console.log("\n--- Test 10: degradation does not by itself withdraw a receipt ---");
+{
+	// Independence matters: a receipt says "this state was persisted", and one
+	// already granted stays true even if the NEXT save fails.  Conflating the
+	// two would make the receipt flap on unrelated faults.
+	const { doc, tracker, provider } = makeTracker();
+	echo(tracker, doc, 5);
+	doc.getText("a").insert(0, "hello");
+	echo(tracker, doc, 6, true);
+	assert(
+		tracker.getState().serverAppliedLocalState === true,
+		"the generation advanced, so the receipt is granted despite degradation",
+	);
+	assert(tracker.serverPersistenceDegraded === true, "and degradation is reported alongside it");
+
+	// Now a failing save: generation stalls, so no receipt for the new edit.
+	doc.getText("a").insert(5, " world");
+	echo(tracker, doc, 6, true);
+	assert(
+		tracker.getState().serverAppliedLocalState === false,
+		"a stalled generation withholds the receipt for the newer edit",
+	);
+	void provider;
+	doc.destroy();
+}
+
+console.log("\n--- Test 11: the guarantee level is observed, not assumed ---");
+{
+	// The UI wording is driven by this.  Claiming a durable write against a
+	// server that never reported one would be the same class of lie the receipt
+	// change set out to remove, so it must start false and only ever be raised
+	// by evidence on the wire.
+	const { doc, tracker } = makeTracker();
+	assert(
+		tracker.receiptGuaranteeIsDurable === false,
+		"a tracker that has seen no echo does not claim durability",
+	);
+
+	echo(tracker, doc, null);
+	assert(
+		tracker.receiptGuaranteeIsDurable === false,
+		"an echo without a durability marker leaves the weaker guarantee in force",
+	);
+
+	echo(tracker, doc, 1);
+	assert(
+		tracker.receiptGuaranteeIsDurable === true,
+		"a marker-bearing echo raises the guarantee",
+	);
+	assert(
+		tracker.getState().receiptGuaranteeIsDurable === true,
+		"the guarantee level reaches the snapshot the status bar reads",
+	);
+	doc.destroy();
 }
 
 // ---------------------------------------------------------------------------

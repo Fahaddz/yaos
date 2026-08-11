@@ -273,6 +273,37 @@ console.log("\n--- Test 8: throttle-summary bypasses the limiter and does not re
 		`rows read per append is small (${(storage.keysListed / APPENDS).toFixed(2)}, naive form was ~${MAX})`,
 	);
 
+	// A short-lived instance must never list.  This is the case the first
+	// version of the fix missed: a hibernating room wakes, writes one or two
+	// traces and is evicted, so amortising over appends never pays off.  A real
+	// room was measured spending ~200 of ~344 rows per wake on exactly this.
+	{
+		const brief = new CountingStorage();
+		// Pre-existing history, as a real room has.
+		for (let i = 0; i < MAX; i++) brief.data.set(`trace:${String(i).padStart(13, "0")}:aa`, {});
+		const wake = new TraceRing(MAX);
+		for (let i = 0; i < 3; i++) {
+			await wake.append(brief as never, { ts: new Date(1_800_000_000_000 + i).toISOString(), event: "checkpoint-load" } as never);
+		}
+		assert(brief.lists === 0, `a short-lived instance lists zero times (${brief.lists})`);
+		assert(brief.keysListed === 0, `and reads zero rows to trim (${brief.keysListed})`);
+		assert(brief.puts === 3, "the traces were still written");
+	}
+
+	// Overshoot is bounded: retention is eventual, not exact, and must not drift.
+	{
+		const bounded = new CountingStorage();
+		const ring = new TraceRing(MAX);
+		for (let i = 0; i < 2000; i++) {
+			await ring.append(bounded as never, { ts: new Date(1_900_000_000_000 + i).toISOString(), event: "e" } as never);
+		}
+		assert(
+			bounded.data.size <= MAX + 200,
+			`stored entries stay within maxEntries + slack (${bounded.data.size} <= ${MAX + 200})`,
+		);
+		assert(bounded.data.size >= MAX, `and the ring stays full (${bounded.data.size} >= ${MAX})`);
+	}
+
 	// The stateless helper keeps its old behaviour: one list per call.
 	const naive = new CountingStorage();
 	for (let i = 0; i < 20; i++) {

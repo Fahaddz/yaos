@@ -15,6 +15,8 @@ import {
 	getLabelFromConnectionState,
 	getServerReceiptStatusLabel,
 	SERVER_RECEIPT_STATUS_TITLE,
+	SERVER_RECEIPT_STATUS_TITLE_LEGACY,
+	getServerReceiptStatusTitle,
 } from "../src/status/statusBarController";
 import type { ConnectionState } from "../src/runtime/connectionController";
 
@@ -118,6 +120,13 @@ assert(
 	"offline + current-session echo identifies when the server receipt was observed",
 );
 assert(
+	getServerReceiptStatusLabel(
+		{ ...receiptBase, serverAppliedLocalState: true, lastServerReceiptEchoAt: observedAt, receiptGuaranteeIsDurable: true },
+		false,
+	) === `Receipt: offline — server saved at ${observedTime}`,
+	"offline + durable marker reports when the write landed, not merely an echo",
+);
+assert(
 	getServerReceiptStatusLabel({
 		...receiptBase,
 		serverAppliedLocalState: null,
@@ -148,11 +157,46 @@ const receiptStatus = getLabelFromConnectionState(
 	{ ...receiptBase, serverAppliedLocalState: true },
 );
 assert(receiptStatus.includes("Receipt:"), "connection label includes receipt label when facts are provided");
-assert(!/Synced|Saved|Confirmed|Durable|Acked|all devices/i.test(receiptStatus), "receipt label avoids stronger claims");
+// The receipt never implies DELIVERY, in either guarantee level.  "Saved" is no
+// longer banned outright: against a server that reports storage confirmation it
+// is simply true, and the old blanket ban would force the UI to understate a
+// guarantee it actually has.
 assert(
-	SERVER_RECEIPT_STATUS_TITLE ===
-		"Server receipt means this device’s latest local CRDT state was applied to the server Y.Doc in memory. It does not prove durable storage or that another device received the change.",
-	"receipt tooltip distinguishes in-memory server application from durability and delivery",
+	!/Synced|Confirmed|Acked|all devices|other devices/i.test(receiptStatus),
+	"receipt label never claims delivery to other devices",
+);
+assert(
+	!/Saved|Durable/i.test(receiptStatus),
+	"without a durability marker the label does not claim a durable write",
+);
+
+const durableReceipt = getLabelFromConnectionState(
+	{ kind: "online", generation: 1 },
+	null,
+	{ ...receiptBase, serverAppliedLocalState: true, receiptGuaranteeIsDurable: true },
+);
+assert(
+	/saved/i.test(durableReceipt),
+	"with a durability marker the label reports the write, not merely receipt",
+);
+assert(
+	!/Synced|all devices|other devices/i.test(durableReceipt),
+	"the durable label still does not claim delivery",
+);
+
+assert(
+	getServerReceiptStatusTitle({ ...receiptBase, receiptGuaranteeIsDurable: true }) ===
+		"Server receipt means this device’s latest local CRDT state was written to the server’s storage. It does not prove that another device received the change.",
+	"durable tooltip claims the write and still disclaims delivery",
+);
+assert(
+	getServerReceiptStatusTitle(receiptBase) === SERVER_RECEIPT_STATUS_TITLE_LEGACY,
+	"a server without the marker falls back to the in-memory wording",
+);
+assert(
+	/does not prove durable storage/.test(SERVER_RECEIPT_STATUS_TITLE_LEGACY)
+	&& !/does not prove durable storage/.test(SERVER_RECEIPT_STATUS_TITLE),
+	"the non-durable disclaimer survives only on the legacy wording",
 );
 const errorWithReceipt = getLabelFromConnectionState(
 	{ kind: "auth_failed", code: "unauthorized" },

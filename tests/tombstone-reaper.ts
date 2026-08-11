@@ -481,6 +481,63 @@ console.log("\n--- Test 14: forceCheckpoint leaves the document clean and retrie
 	c.dispose(); doc.destroy();
 }
 
+console.log("\n--- Test 15: skip reasons overlap instead of hiding each other ---");
+{
+	// The regression this pins cost a wrong inference on a live vault.  The
+	// counters used to partition, so the conflict check returned before the age
+	// checks ran: a tombstone that was BOTH still referenced AND inside the
+	// grace window was reported only as `conflicted`.  Reading that as "blocked
+	// only by a stale reference" implied removing the reference would free the
+	// body.  It would not have — the body was also too young.
+	const doc = buildVault([
+		{ id: "both", path: "b.md", chars: 5_000, deletedAt: NOW - 5 * DAY },   // young
+		{ id: "onlyYoung", path: "y.md", chars: 5_000, deletedAt: NOW - 5 * DAY },
+		{ id: "onlyRef", path: "r.md", chars: 5_000, deletedAt: NOW - 60 * DAY },
+		{ id: "neither", path: "n.md", chars: 5_000, deletedAt: NOW - 60 * DAY },
+	], null); // legacy, so pathToId references count
+	doc.transact(() => {
+		const pathToId = doc.getMap<string>("pathToId");
+		pathToId.set("b.md", "both");      // young AND referenced
+		pathToId.set("r.md", "onlyRef");   // old but referenced
+	});
+
+	const result = reapTombstonedBodies(doc, { now: NOW });
+
+	assert(result.tombstones === 4, `four tombstones (got ${result.tombstones})`);
+	assert(result.withBody === 4, `all four still hold a body (got ${result.withBody})`);
+	assert(result.conflicted === 2, `both referenced ones counted (got ${result.conflicted})`);
+	assert(result.withinGrace === 2, `both young ones counted (got ${result.withinGrace})`);
+	assert(result.reaped === 1, `only the unblocked one reaped (got ${result.reaped})`);
+	assert(bodyOf(doc, "neither") === null, "the unblocked body is gone");
+	assert(bodyOf(doc, "both") !== null, "the doubly-blocked body is kept");
+
+	// The point: the counters overlap, so they exceed the candidate pool.  A
+	// partition would have reported conflicted 2 / withinGrace 1 and silently
+	// lost the fact that "both" was young as well.
+	assert(
+		result.conflicted + result.withinGrace + result.unknownAge > result.withBody - result.reaped,
+		"skip reasons overlap rather than partitioning the pool",
+	);
+	doc.destroy();
+}
+
+console.log("\n--- Test 16: already-reaped tombstones are reported, not silently ignored ---");
+{
+	const doc = buildVault([
+		{ id: "gone", path: "g.md", chars: 1_000, deletedAt: NOW - 60 * DAY },
+		{ id: "stays", path: "s.md", chars: 1_000, deletedAt: NOW - 60 * DAY },
+	]);
+	const first = reapTombstonedBodies(doc, { now: NOW });
+	assert(first.reaped === 2 && first.alreadyReaped === 0, "first pass reaps both");
+
+	const second = reapTombstonedBodies(doc, { now: NOW });
+	assert(second.tombstones === 2, "tombstones still counted after reaping");
+	assert(second.alreadyReaped === 2, `both reported as already reaped (got ${second.alreadyReaped})`);
+	assert(second.withBody === 0, "no bodies remain in the candidate pool");
+	assert(second.reaped === 0, "idempotent");
+	doc.destroy();
+}
+
 // ---------------------------------------------------------------------------
 
 console.log(`\n${"─".repeat(56)}`);
