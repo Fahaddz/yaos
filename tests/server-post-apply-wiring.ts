@@ -35,6 +35,20 @@ assert(body.includes("if (shouldEcho)"), "postApply echo is gated on classifier 
 assert(body.includes("\"postApply\""), "postApply kind is used");
 assert(!body.includes("finally"), "handleMessage does not echo from a finally block");
 
+// Regression guard: docChanged MUST NOT be derived from state vectors alone.
+// A Yjs state vector tracks insert clocks and is blind to the delete set, so an
+// SV-only comparison reports false for a delete-only update.  This exact line
+// was reintroduced once by a patch applied over a stale read of server.ts, and
+// nothing caught it — the trace simply started lying about deletions again.
+assert(
+	body.includes("docUpdateCount"),
+	"docChanged uses the document update counter, not only a state-vector diff",
+);
+assert(
+	!/const docChanged =\s*svBefore !== null && !equalBytes\(svBefore, svAfter\);/.test(body),
+	"docChanged is not the SV-only comparison",
+);
+
 const classifierIndex = body.indexOf("isUpdateBearingSyncMessage(message)");
 const parentIndex = body.indexOf("super.handleMessage(connection, message)");
 const postApplyIndex = body.indexOf("\"postApply\"");

@@ -178,13 +178,40 @@ export class VaultSyncServer extends YServer {
 		this.recordSvEchoResult(trySendSvEcho(connection, this.document, "baseline"));
 	}
 
+	/**
+	 * Monotonic count of Y.Doc "update" events.
+	 *
+	 * Used to tell whether applying a message actually changed the document.
+	 * A state-vector diff cannot answer that: the SV tracks insert clocks only,
+	 * so a delete-only update leaves it byte-identical and `docChanged` would
+	 * report false for a 2KB deletion.  One long-lived listener avoids
+	 * attaching and detaching per message, which would need a finally block and
+	 * leak a listener whenever the parent handler throws.
+	 *
+	 * Re-armed by rematerializeDocument(), which replaces the document.
+	 */
+	private docUpdateCount = 0;
+	private docUpdateWatcherAttached = false;
+
+	private ensureDocUpdateWatcher(): void {
+		if (this.docUpdateWatcherAttached) return;
+		this.docUpdateWatcherAttached = true;
+		this.document.on("update", () => { this.docUpdateCount++; });
+	}
+
 	handleMessage(connection: Connection, message: WSMessage): void {
 		const shouldEcho = isUpdateBearingSyncMessage(message);
+		this.ensureDocUpdateWatcher();
 		const svBefore = shouldEcho ? Y.encodeStateVector(this.document) : null;
+		const updatesBefore = this.docUpdateCount;
 		super.handleMessage(connection, message);
 		if (shouldEcho) {
 			const svAfter = Y.encodeStateVector(this.document);
-			const docChanged = svBefore !== null && !equalBytes(svBefore, svAfter);
+			// The counter is the signal that sees deletions; the state-vector
+			// comparison is a second opinion for inserts.
+			const docChanged =
+				this.docUpdateCount !== updatesBefore
+				|| (svBefore !== null && !equalBytes(svBefore, svAfter));
 			// Do NOT send SV echoes in kv-fallback mode.  SV echoes signal
 			// "server durably received your state."  In fallback mode persistence
 			// is broken — sending echoes would give clients false confidence.
@@ -280,6 +307,14 @@ export class VaultSyncServer extends YServer {
 			}
 			await this.ensureDocumentLoaded();
 			return json(await this.executeEmergencyCompact());
+		}
+
+		if (request.method === "POST" && url.pathname === "/__yaos/rematerialize") {
+			if (!(this.env as { YAOS_ENABLE_ADMIN_ROUTES?: unknown }).YAOS_ENABLE_ADMIN_ROUTES) {
+				return json({ error: "not found" }, 404);
+			}
+			await this.ensureDocumentLoaded();
+			return json(await this.rematerializeDocument("admin"));
 		}
 
 		if (request.method === "POST" && url.pathname === "/__yaos/cleanup-kv") {
@@ -660,6 +695,88 @@ export class VaultSyncServer extends YServer {
 		} catch (err) {
 			// Maintenance must never break a room load.
 			console.error(`${LOG_PREFIX} tombstone reap failed:`, err);
+		}
+	}
+
+	/**
+	 * Rebuild the in-memory document to discard accumulated V8 rope structures.
+	 *
+	 * Yjs merges adjacent same-client inserts by concatenating their strings.
+	 * Over a long warm session that runs millions of times and V8 accumulates a
+	 * deep rope it will not flatten, so a warm document costs several times a
+	 * freshly cold-loaded one holding identical state.  Measured on this
+	 * deployment: 22-64 MiB hourly peaks for a 3.66MB document whose cold-load
+	 * footprint is ~8 MiB, with hibernation not reclaiming it.  Decoding the
+	 * document's own encoded state into a fresh Y.Doc rebuilds flat strings and
+	 * returns it to the cold-load floor.  See scripts/bench-warm-memory.js:
+	 * ~73% recovered at realistic edit locality.
+	 *
+	 * Item fragmentation — items that could not merge — is NOT recovered by
+	 * this, and is the remainder.
+	 *
+	 * The replacement carries byte-identical state, so client state vectors
+	 * still match and no resynchronisation is required beyond the sync step 1
+	 * that onStart() sends.  Connections belong to the server rather than the
+	 * document, so nothing is disconnected.
+	 *
+	 * Runs inside blockConcurrencyWhile so no message can be applied to a
+	 * half-swapped server: without it, an update arriving between the swap and
+	 * the listener re-registration would apply to the new document but never
+	 * reach other clients.
+	 */
+	async rematerializeDocument(reason: string): Promise<{
+		status: string;
+		encodedBytes?: number;
+		structs?: number;
+		error?: string;
+	}> {
+		if (!this.documentLoaded) return { status: "not_loaded" };
+		if (this.storageMode === "kv-fallback") return { status: "skipped_kv_fallback" };
+
+		try {
+			return await this.ctx.blockConcurrencyWhile(async () => {
+				const previous = this.document;
+				const encoded = Y.encodeStateAsUpdate(previous);
+
+				// WSSharedDoc is not exported by y-partyserver; the running
+				// document's own constructor is the only handle on it, and the
+				// replacement must be that subclass so awareness exists.
+				const DocumentClass = previous.constructor as new () => Y.Doc;
+				const fresh = new DocumentClass();
+				Y.applyUpdate(fresh, encoded);
+
+				// y-partyserver declares `document` readonly, but it is a plain
+				// instance field the mixin assigns in its constructor, and no
+				// exported API replaces it.  unstable_replaceDocument is not that
+				// API: it applies an inverse diff to the EXISTING document via
+				// UndoManager, keeping the ropes we are trying to discard.
+				const writableSelf = this as unknown as { document: Y.Doc };
+				writableSelf.document = fresh;
+				// Re-arm the update counter against the new document.
+				this.docUpdateWatcherAttached = false;
+				this.getPersistenceCoordinator().retargetDocument(fresh);
+
+				// onStart re-registers the broadcast, awareness and debounced
+				// save listeners on this.document and re-sends sync step 1 to
+				// every open connection.  onLoad() returns immediately because
+				// the document is already loaded.
+				await this.onStart();
+
+				previous.destroy();
+
+				const structs = [...fresh.store.clients.values()]
+					.reduce((total, list) => total + list.length, 0);
+				await this.recordTrace("document-rematerialized", {
+					reason,
+					encodedBytes: encoded.byteLength,
+					structs,
+				});
+				return { status: "ok", encodedBytes: encoded.byteLength, structs };
+			});
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			console.error(`${LOG_PREFIX} document re-materialisation failed:`, message);
+			return { status: "failed", error: message };
 		}
 	}
 
