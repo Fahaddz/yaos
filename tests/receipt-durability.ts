@@ -24,6 +24,7 @@ import * as Y from "yjs";
 import { ServerAckTracker } from "../src/sync/serverAckTracker";
 import { parseSvEchoMessageDetailed } from "../src/sync/svEchoMessage";
 import { makeSvEchoCustomMessage } from "../server/src/svEcho";
+import { PersistenceCoordinator, type DocStore, type DocStoreJournalStats } from "../server/src/persistenceCoordinator";
 
 let passed = 0;
 let failed = 0;
@@ -209,6 +210,82 @@ console.log("\n--- Test 7: no baseline yet means no confirmation ---");
 	echo(tracker, doc, 4);
 	assert(tracker.serverAppliedLocalState === true, "next persist confirms");
 	doc.destroy();
+}
+
+console.log("\n--- Test 8: the counter advances only on a SUCCESSFUL persist ---");
+{
+	// The whole guarantee rests on this: if the counter advanced on a failed
+	// write, the client would confirm a change that never reached storage —
+	// exactly the false positive being fixed, reintroduced from the other end.
+	class FlakyStore implements DocStore {
+		snapshot: Uint8Array | null = null;
+		journal: Uint8Array[] = [];
+		fail = false;
+		appendUpdate(update: Uint8Array): DocStoreJournalStats {
+			if (this.fail) throw new Error("append failed (injected)");
+			this.journal.push(update.slice());
+			return this.getJournalStats();
+		}
+		rewriteCheckpoint(update: Uint8Array): void {
+			if (this.fail) throw new Error("checkpoint failed (injected)");
+			this.snapshot = update.slice();
+			this.journal = [];
+		}
+		getJournalStats(): DocStoreJournalStats {
+			return { entryCount: this.journal.length, totalBytes: this.journal.reduce((n, e) => n + e.byteLength, 0) };
+		}
+	}
+
+	const doc = new Y.Doc();
+	doc.getText("t").insert(0, "body");
+	const store = new FlakyStore();
+	const coordinator = new PersistenceCoordinator(doc, store);
+
+	assert(coordinator.health.persistedGeneration === 0, "starts at zero");
+	assert(coordinator.health.generationEpoch.length > 0, "an epoch is assigned per instance");
+
+	const first = await coordinator.enqueueSave();
+	assert(first.success, "first save succeeds");
+	assert(coordinator.health.persistedGeneration === 1, `advanced to 1 (got ${coordinator.health.persistedGeneration})`);
+
+	// A no-op save must NOT advance it: nothing new reached storage.
+	const skipped = await coordinator.enqueueSave();
+	assert(skipped.method === "skipped", "clean document skips");
+	assert(coordinator.health.persistedGeneration === 1, "a skipped save does not advance the counter");
+
+	// A DELETION that fails to write must not advance it either.
+	store.fail = true;
+	doc.transact(() => { doc.getText("t").delete(0, 2); });
+	const failed = await coordinator.enqueueSave();
+	assert(!failed.success, "save fails while the store is broken");
+	assert(
+		coordinator.health.persistedGeneration === 1,
+		`a failed save does not advance the counter (got ${coordinator.health.persistedGeneration})`,
+	);
+
+	// And once storage recovers, the deletion lands and the counter moves.
+	store.fail = false;
+	const retry = await coordinator.enqueueSave();
+	assert(retry.success, "retry succeeds");
+	assert(coordinator.health.persistedGeneration === 2, `advanced to 2 (got ${coordinator.health.persistedGeneration})`);
+
+	const replayed = new Y.Doc();
+	if (store.snapshot) Y.applyUpdate(replayed, store.snapshot);
+	for (const e of store.journal) Y.applyUpdate(replayed, e);
+	assert(replayed.getText("t").toString() === "dy", `the deletion is in storage (got ${JSON.stringify(replayed.getText("t").toString())})`);
+
+	// Two instances over the same document must not share an epoch, or a restart
+	// would look like progress.
+	const second = new PersistenceCoordinator(doc, store);
+	assert(
+		second.health.generationEpoch !== coordinator.health.generationEpoch,
+		"a new instance gets a distinct epoch",
+	);
+
+	coordinator.dispose();
+	second.dispose();
+	doc.destroy();
+	replayed.destroy();
 }
 
 // ---------------------------------------------------------------------------
