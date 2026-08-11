@@ -3,6 +3,7 @@ import { YServer } from "y-partyserver";
 import type { Connection, ConnectionContext, WSMessage } from "partyserver";
 import { runSerialized, runSingleFlight } from "./asyncConcurrency";
 import { ChunkedDocStore } from "./chunkedDocStore";
+import { usesLegacyPathModel } from "./schemaModel";
 import { reapTombstonedBodies, type ReapResult } from "./tombstoneReaper";
 import { SqlDocStore } from "./sqlDocStore";
 import { shouldUseSqlState } from "./sqlMigrationTrust";
@@ -17,7 +18,7 @@ import {
 	type SnapshotResult,
 } from "./snapshot";
 import {
-	appendTraceEntry,
+	TraceRing,
 	listRecentTraceEntries,
 	prepareTraceEntryForStorage,
 	TRACE_RATE_THROTTLE_EVENT,
@@ -225,6 +226,25 @@ export class VaultSyncServer extends YServer {
 	private docUpdateWatcherAttached = false;
 	private updatesAtLastRemat = 0;
 	/**
+	 * Aggregate for update-bearing WebSocket messages.
+	 *
+	 * Replaces a per-message trace: see the note in handleMessage.  Lives
+	 * outside `recent` so it survives trace eviction, which is the entire point.
+	 */
+	private readonly updateStats = {
+		messages: 0,
+		changed: 0,
+		unchanged: 0,
+		bytesTotal: 0,
+		bytesMax: 0,
+	};
+	/**
+	 * One ring per instance so trimming needs no per-trace `list`.  See
+	 * TraceRing: the naive form cost ~201 rows read per trace and was the whole
+	 * of this room's read amplification.
+	 */
+	private readonly traceRing = new TraceRing(MAX_DEBUG_TRACE_EVENTS);
+	/**
 	 * Durable counters for re-materialisation.
 	 *
 	 * Kept as fields rather than read back from the trace ring buffer: that
@@ -261,11 +281,29 @@ export class VaultSyncServer extends YServer {
 			if (this.storageMode !== "kv-fallback") {
 				this.recordSvEchoResult(trySendSvEcho(connection, this.document, "postApply"));
 			}
-			// Fire-and-forget trace: do not block message processing.
-			void this.recordTrace("server.ydoc.update_observed", {
-				updateBytes: typeof message === "string" ? message.length : (message as ArrayBuffer).byteLength,
-				docChanged,
-			});
+			// Counted, not traced.
+			//
+			// This is the only per-message trace site in the server, and it was
+			// drowning everything else.  Each recordTrace costs a put, a
+			// list(cap+1) and a delete inside appendTraceEntry — roughly 2 rows
+			// written and 200 rows read EVERY time — so tracing per message both
+			// evicted every rare event from the 100-entry read window (98 of 100
+			// entries observed on a live vault) and produced ~100:1 read
+			// amplification against a daily row budget shared with sync.
+			//
+			// The aggregate is what anyone actually reads, and it lives in
+			// updateStats below, outside `recent`, where trace eviction cannot
+			// hide it.  Per-message detail remains in the Workers log via
+			// console.debug, matching how syncSocket.ts handles its own hot-path
+			// admission events.
+			const updateBytes = typeof message === "string"
+				? message.length
+				: (message as ArrayBuffer).byteLength;
+			this.updateStats.messages++;
+			if (docChanged) this.updateStats.changed++;
+			else this.updateStats.unchanged++;
+			this.updateStats.bytesTotal += updateBytes;
+			if (updateBytes > this.updateStats.bytesMax) this.updateStats.bytesMax = updateBytes;
 		}
 	}
 
@@ -324,6 +362,7 @@ export class VaultSyncServer extends YServer {
 					oversizedDeltaCount: this.oversizedDeltaCount,
 					migrationMeta: this.documentLoaded ? this.getSqlDocStore().getMigrationMeta() : null,
 				},
+				updateStats: { ...this.updateStats },
 				tombstoneReap: this.lastTombstoneReap,
 				rematerialize: {
 					count: this.rematerializeCount,
@@ -1021,6 +1060,7 @@ export class VaultSyncServer extends YServer {
 		/** pathToId entries that have no corresponding active meta entry. */
 		pathToIdWithoutActiveMeta: number;
 		schemaVersion: unknown;
+		pathModel: "legacy" | "id-first";
 		/** v3 observability: metadata entries stored as flat JSON objects. */
 		flatMetaEntries: number;
 		/** v3 observability: metadata entries stored as nested Y.Map. */
@@ -1042,8 +1082,15 @@ export class VaultSyncServer extends YServer {
 		let invalidMetaEntries = 0;
 
 		// Walk meta to count active/tombstoned and check consistency
+		// Which map authorises path -> fileId here.  Under the id-first model the
+		// client resolves from `meta` alone and stopped writing `pathToId`, so
+		// whatever survives migration is frozen at that instant and points into
+		// the pre-migration fileId space.  Resolving through it then reports a
+		// perfectly healthy vault as having zero files with text — which is
+		// exactly what one real 92-file vault reported.
+		const legacyPathModel = usesLegacyPathModel(this.document);
 		const activeMetaPaths = new Set<string>();
-		meta.forEach((value: unknown) => {
+		meta.forEach((value: unknown, fileId: string) => {
 			const path = this.readMetaPath(value);
 			if (!path) {
 				invalidMetaEntries++;
@@ -1062,7 +1109,10 @@ export class VaultSyncServer extends YServer {
 			} else {
 				activePathCount++;
 				activeMetaPaths.add(path);
-				const id = pathToId.get(path);
+				// Legacy: the path must appear in pathToId, and that id must have
+				// a body.  id-first: the meta KEY *is* the fileId, so ask
+				// idToText directly and never consult the dead map.
+				const id = legacyPathModel ? pathToId.get(path) : fileId;
 				if (!id) {
 					activePathsMissingFromPathToId++;
 				} else if (!idToText.has(id)) {
@@ -1092,6 +1142,12 @@ export class VaultSyncServer extends YServer {
 			activePathsMissingText,
 			pathToIdWithoutActiveMeta,
 			schemaVersion: this.document.getMap("sys").get("schemaVersion") ?? null,
+			/**
+			 * Which map the counters above resolved through.  Without this the
+			 * cross-map figures are uninterpretable: under "id-first" a nonzero
+			 * pathToIdWithoutActiveMeta is stale legacy residue, not drift.
+			 */
+			pathModel: usesLegacyPathModel(this.document) ? "legacy" : "id-first",
 			flatMetaEntries,
 			nestedMetaEntries,
 			invalidMetaEntries,
@@ -1421,7 +1477,7 @@ export class VaultSyncServer extends YServer {
 		}));
 
 		try {
-			await appendTraceEntry(this.ctx.storage, entry, MAX_DEBUG_TRACE_EVENTS);
+			await this.traceRing.append(this.ctx.storage, entry);
 		} catch (err) {
 			console.error(`${LOG_PREFIX} trace persist failed:`, err);
 		}

@@ -52,6 +52,7 @@
  */
 
 import * as Y from "yjs";
+import { usesLegacyPathModel } from "./schemaModel";
 
 /** Tombstones younger than this keep their bodies.  30 days. */
 export const TOMBSTONE_REAP_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -186,8 +187,7 @@ export function reapTombstonedBodies(doc: Y.Doc, options: ReapOptions = {}): Rea
 	// on every migrated vault: one real vault had 14 of 46 tombstones pinned by
 	// exactly this drift.  Under the legacy model `pathToId` IS consulted first,
 	// so there it must still veto a reap.
-	const schemaVersion = doc.getMap("sys").get("schemaVersion");
-	const legacyPathModel = !(typeof schemaVersion === "number" && schemaVersion >= 2);
+	const legacyPathModel = usesLegacyPathModel(doc);
 
 	// Any id reachable as active content is off limits, even if some other meta
 	// entry claims it is deleted.

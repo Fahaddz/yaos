@@ -1,5 +1,6 @@
 import {
 	appendTraceEntry,
+	TraceRing,
 	DEFAULT_TRACE_RATE_LIMIT_PER_WINDOW,
 	listRecentTraceEntries,
 	MAX_TRACE_ENTRY_BYTES,
@@ -218,6 +219,66 @@ console.log("\n--- Test 8: throttle-summary bypasses the limiter and does not re
 	const dropsAfterDrain = limiter.drainDropped();
 	assert(dropsAfterDrain === 0, "drainDropped resets to zero; throttle summary cannot recurse");
 	assert(isThrottleSummary === true, "throttle summary flag prevents recursive admit check");
+}
+
+// ── Row-read amplification: the ring must not list on every append ───────────
+//
+// A `list` over the trace prefix reads one SQL row per key on a SQLite-backed
+// Durable Object, and a trace is recorded per inbound sync message.  Listing on
+// every append cost ~201 rows read per ~2 written and was measured in
+// production as the entire read amplification of a room: 43,696 rows read
+// against 455 written for 300 update messages, a ratio of 96.
+//
+// The invariant is that appends are O(1) in list operations, not O(n).
+{
+	console.log("\n--- TraceRing: appends do not list per entry ---");
+	class CountingStorage {
+		readonly data = new Map<string, unknown>();
+		lists = 0;
+		puts = 0;
+		deletes = 0;
+		keysListed = 0;
+		async list<T>(options?: { prefix?: string; reverse?: boolean; limit?: number; end?: string }): Promise<Map<string, T>> {
+			this.lists++;
+			let keys = [...this.data.keys()].sort();
+			if (options?.prefix) keys = keys.filter((k) => k.startsWith(options.prefix!));
+			if (options?.end) keys = keys.filter((k) => k < options.end!);
+			if (options?.reverse) keys.reverse();
+			if (options?.limit !== undefined) keys = keys.slice(0, options.limit);
+			this.keysListed += keys.length;
+			return new Map(keys.map((k) => [k, this.data.get(k) as T]));
+		}
+		async put<T>(key: string, value: T): Promise<void> { this.puts++; this.data.set(key, value); }
+		async delete(keys: string[]): Promise<number> {
+			this.deletes++;
+			let n = 0;
+			for (const k of keys) if (this.data.delete(k)) n++;
+			return n;
+		}
+	}
+
+	const MAX = 200;
+	const APPENDS = 600;
+	const storage = new CountingStorage();
+	const ring = new TraceRing(MAX);
+	for (let i = 0; i < APPENDS; i++) {
+		await ring.append(storage as never, { ts: new Date(1_700_000_000_000 + i).toISOString(), event: "e" } as never);
+	}
+
+	assert(storage.puts === APPENDS, `one put per append (${storage.puts})`);
+	assert(storage.data.size <= MAX, `retention honoured (${storage.data.size} <= ${MAX})`);
+	assert(storage.lists <= 3, `list calls are O(1), not O(n) (${storage.lists} for ${APPENDS} appends)`);
+	assert(
+		storage.keysListed / APPENDS < 2,
+		`rows read per append is small (${(storage.keysListed / APPENDS).toFixed(2)}, naive form was ~${MAX})`,
+	);
+
+	// The stateless helper keeps its old behaviour: one list per call.
+	const naive = new CountingStorage();
+	for (let i = 0; i < 20; i++) {
+		await appendTraceEntry(naive as never, { ts: new Date(1_700_000_000_000 + i).toISOString(), event: "e" } as never, MAX);
+	}
+	assert(naive.lists === 20, `stateless appendTraceEntry still lists per call (${naive.lists})`);
 }
 
 console.log("\n──────────────────────────────────────────────────");

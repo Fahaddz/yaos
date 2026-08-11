@@ -233,34 +233,86 @@ export function createTraceKey(ts = Date.now()): string {
 	return `${TRACE_KEY_PREFIX}${paddedTimestamp(ts)}:${randomSuffix()}`;
 }
 
+/**
+ * Append-and-trim ring for trace entries.
+ *
+ * WHY THIS IS A CLASS AND NOT A FUNCTION
+ *
+ * The obvious implementation — put the entry, then list the prefix to find what
+ * to evict — costs one `list` per trace.  On a SQLite-backed Durable Object the
+ * KV API is billed as SQL rows, and a `list` with `limit: maxEntries + 1` reads
+ * up to that many rows.  At maxEntries = 200 that is ~201 rows read for every
+ * ~2 rows written, and since a trace is recorded per inbound sync message it
+ * dominated the room's entire storage profile.
+ *
+ * Measured in production, 300 update messages against one room:
+ *
+ *   rowsRead 43,696   rowsWritten 455   ratio 96.0
+ *   => 143 rows read per trace (below 201 only because the ring was filling)
+ *
+ * That ratio held at 80-101 across every day of a 30-day window on two
+ * separate vaults, and was the entire read-amplification story: the journal
+ * COUNT/SUM in the doc store accounts for barely a tenth of it.
+ *
+ * Keeping the key list in memory removes the per-trace `list` entirely.  One
+ * `list` seeds the ring per Durable Object instance, and eviction then deletes
+ * known keys directly.
+ */
+export class TraceRing {
+	/** Stored keys, oldest first.  null until seeded from storage. */
+	private keys: string[] | null = null;
+	private appendsSinceSeed = 0;
+
+	/**
+	 * Re-seed occasionally so the in-memory view cannot drift permanently from
+	 * storage — a failed delete would otherwise let the ring grow unbounded.
+	 * Amortised this is ~0.4 rows read per trace instead of ~201.
+	 */
+	private static readonly RESEED_AFTER_APPENDS = 500;
+
+	constructor(private readonly maxEntries: number) {}
+
+	async append(storage: TraceStorageLike, entry: TraceEntry): Promise<void> {
+		const traceTs = Date.parse(entry.ts);
+		const key = createTraceKey(Number.isFinite(traceTs) ? traceTs : Date.now());
+		await storage.put(key, entry);
+		if (this.maxEntries <= 0) return;
+
+		// Held in a local: `this.keys` is a mutable field, so TypeScript discards
+		// any narrowing across the awaits below.
+		let keys: string[];
+		const cached = this.keys;
+		if (cached === null || this.appendsSinceSeed >= TraceRing.RESEED_AFTER_APPENDS) {
+			// Listed AFTER the put, so the result already contains `key`.
+			const stored = await storage.list<TraceEntry>({ prefix: TRACE_KEY_PREFIX });
+			keys = Array.from(stored.keys());
+			this.appendsSinceSeed = 0;
+		} else {
+			keys = cached;
+			keys.push(key);
+			this.appendsSinceSeed++;
+		}
+		this.keys = keys;
+
+		const excess = keys.length - this.maxEntries;
+		if (excess <= 0) return;
+		const doomed = keys.splice(0, excess);
+		await storage.delete(doomed);
+	}
+}
+
+/**
+ * Stateless append.  Equivalent to a single-use TraceRing, so it still pays one
+ * `list` per call — retained for callers that have nowhere to keep state, and
+ * for tests that assert retention semantics directly.  Long-lived callers
+ * should hold a TraceRing instead; see the note on that class.
+ */
 export async function appendTraceEntry(
 	storage: TraceStorageLike,
 	entry: TraceEntry,
 	maxEntries: number,
 ): Promise<void> {
-	const traceTs = Date.parse(entry.ts);
-	await storage.put(createTraceKey(Number.isFinite(traceTs) ? traceTs : Date.now()), entry);
-	if (maxEntries <= 0) return;
-
-	const recent = await storage.list<TraceEntry>({
-		prefix: TRACE_KEY_PREFIX,
-		reverse: true,
-		limit: maxEntries + 1,
-	});
-	if (recent.size <= maxEntries) return;
-
-	const keys = Array.from(recent.keys());
-	const cutoffKey = keys.at(-1);
-	if (!cutoffKey) return;
-
-	const older = await storage.list<TraceEntry>({
-		prefix: TRACE_KEY_PREFIX,
-		end: cutoffKey,
-	});
-	const deleteKeys = [...older.keys(), cutoffKey];
-	if (deleteKeys.length > 0) {
-		await storage.delete(deleteKeys);
-	}
+	await new TraceRing(maxEntries).append(storage, entry);
 }
 
 export async function listRecentTraceEntries(
