@@ -38,6 +38,12 @@ const MAX_DEBUG_TRACE_EVENTS = 200;
 const JOURNAL_COMPACT_MAX_ENTRIES = 50;
 const JOURNAL_COMPACT_MAX_BYTES = 1 * 1024 * 1024;
 const TRACE_DEBUG_LIMIT = 100;
+/**
+ * Applied updates after which the document is rebuilt to shed accumulated V8
+ * rope structures.  See maybeRematerializeDocument.
+ */
+const REMATERIALIZE_UPDATE_THRESHOLD = 5000;
+
 const LOG_PREFIX = "[yaos-sync:server]";
 
 /**
@@ -171,6 +177,31 @@ export class VaultSyncServer extends YServer {
 			console.error(`${LOG_PREFIX} save failed (health: degraded, pendingPersistence: true):`, result.error);
 		}
 		await this.syncRoomMetaFromDocument();
+		await this.maybeRematerializeDocument();
+	}
+
+	/**
+	 * Rebuild the document once it has absorbed enough updates to have grown a
+	 * significant V8 rope.  Driven from onSave rather than the message path, so
+	 * it rides the existing debounce instead of adding work per message.
+	 *
+	 * Threshold is expressed in applied updates because Workers exposes no heap
+	 * API.  The growth curve in scripts/bench-warm-memory.js is steepest through
+	 * the first few thousand updates, so 5,000 catches most of the growth while
+	 * keeping swaps rare.
+	 *
+	 * The swap is cheap enough that this needs no further rate limiting:
+	 * measured encode+decode is 3-9ms for well-merged documents up to 20MB and
+	 * 35ms for a pathologically fragmented one, against a 30-second CPU budget
+	 * per event.  The encode half is already paid by every compaction.
+	 */
+	private async maybeRematerializeDocument(): Promise<void> {
+		if (!this.documentLoaded) return;
+		if (this.storageMode === "kv-fallback") return;
+		if (this.docUpdateCount - this.updatesAtLastRemat < REMATERIALIZE_UPDATE_THRESHOLD) return;
+		// Recorded before the attempt so a persistent failure cannot spin.
+		this.updatesAtLastRemat = this.docUpdateCount;
+		await this.rematerializeDocument("update-threshold");
 	}
 
 	async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
@@ -192,6 +223,7 @@ export class VaultSyncServer extends YServer {
 	 */
 	private docUpdateCount = 0;
 	private docUpdateWatcherAttached = false;
+	private updatesAtLastRemat = 0;
 
 	private ensureDocUpdateWatcher(): void {
 		if (this.docUpdateWatcherAttached) return;

@@ -122,6 +122,7 @@ const suites = [
 	[JITI, "tests/server-persistence-pathology.ts"],
 	[JITI, "tests/persistence-delete-only.ts"],
 	[JITI, "tests/tombstone-reaper.ts"],
+	[JITI, "tests/document-rematerialization.ts"],
 	[JITI, "tests/device-witness-tracker.ts"],
 	[JITI, "tests/device-witness-tracker-lifecycle.ts"],
 	[JITI, "tests/telemetry-witness-content-observer.ts"],
