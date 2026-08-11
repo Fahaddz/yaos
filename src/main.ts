@@ -77,6 +77,7 @@ import { EditorWorkspaceOrchestrator } from "./runtime/editorWorkspaceOrchestrat
 import { SetupLinkController } from "./runtime/setupLinkController";
 import { TraceRuntimeController } from "./runtime/traceRuntimeController";
 import { registerCommands } from "./commands";
+import { shouldRematerializeClient } from "./sync/clientRematerializePolicy";
 import {
 	getSyncStatusLabel,
 	renderConnectionState,
@@ -926,6 +927,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				if (waitingForR2 && (this.capabilityUpdateService?.shouldRefreshCapabilities() ?? false)) {
 					void this.refreshServerCapabilities("background-poll");
 				}
+				this.maybeRematerializeSyncStack();
 			}, 3000);
 			this.register(() => {
 				if (this.statusInterval) clearInterval(this.statusInterval);
@@ -949,6 +951,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					importUntrackedFiles: () => this.importUntrackedFiles(),
 					clearLocalServerReceiptState: () => this.clearLocalServerReceiptState(),
 					resetLocalCache: () => this.resetLocalCache(),
+					rematerializeSyncStack: (reason) => this.rematerializeSyncStack(reason),
 					nuclearReset: () => this.nuclearReset(),
 				});
 				// Lab/QA commands are registered separately by the lab runtime.
@@ -1446,7 +1449,92 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	// -------------------------------------------------------------------
 	// Teardown + reinit (for reset commands)
+	/**
+	 * Rebuild the sync stack when drift is large and nothing is at stake.
+	 *
+	 * Runs on the status tick rather than a dedicated timer so it cannot become
+	 * another thing to tear down.  All of the judgement is in
+	 * shouldRematerializeClient; this only supplies the inputs and guarantees a
+	 * single rebuild is in flight at a time.
+	 */
+	private rematerializeInFlight = false;
+
+	private maybeRematerializeSyncStack(): void {
+		const sync = this.vaultSync;
+		if (!sync) return;
+		if (!shouldRematerializeClient({
+			updatesSince: sync.documentUpdateCount,
+			connected: sync.connected,
+			busy: this.rematerializeInFlight,
+		})) return;
+
+		this.rematerializeInFlight = true;
+		void this.rematerializeSyncStack("drift-threshold").finally(() => {
+			this.rematerializeInFlight = false;
+		});
+	}
+
 	// -------------------------------------------------------------------
+	/**
+	 * Reclaim accumulated V8 rope by rebuilding the sync stack.
+	 *
+	 * The client has the same memory drift as the server — Yjs concatenates
+	 * adjacent inserts, V8 answers `str += str` with a rope node, and nothing
+	 * flattens it — but it cannot use the server's fix.  The server swaps its
+	 * Y.Doc in place because nothing but the persistence coordinator points at
+	 * it.  Here the provider, IndexedDB persistence, DiskMirror's
+	 * afterTransaction hook and every open editor binding are all wired to this
+	 * exact document, and the provider captures its settings in closures rather
+	 * than storing them, so an in-place swap would mean re-deriving the entire
+	 * stack by hand in the most failure-sensitive file in the plugin.
+	 *
+	 * Restarting achieves the same thing using a path that already exists and is
+	 * already exercised by the reset commands: teardown, then initSync, which
+	 * cold-loads from IndexedDB into a fresh Y.Doc whose strings are flat by
+	 * construction.  No new code runs inside the CRDT path.
+	 *
+	 * It is not free — a reconnect, an IndexedDB re-read and a reconciliation
+	 * pass — which is why the caller decides when the trade is worth it rather
+	 * than this method firing on a timer.
+	 */
+	private async rematerializeSyncStack(reason: string): Promise<{
+		status: "ok" | "skipped" | "failed";
+		detail?: string;
+		updatesBefore?: number;
+	}> {
+		if (!this.vaultSync) return { status: "skipped", detail: "sync not initialized" };
+
+		const updatesBefore = this.vaultSync.documentUpdateCount;
+		this.log(`rematerialize (${reason}): restarting sync stack after ${updatesBefore} updates`);
+		this.trace("trace", "client-rematerialize-start", { reason, updatesBefore });
+
+		try {
+			await this.teardownSync();
+		} catch (error) {
+			// A failed teardown leaves the lifecycle closed, so reinitialising
+			// on top of it would build a second stack over a half-torn one.
+			console.error("[yaos] rematerialize teardown failed:", error);
+			this.trace("trace", "client-rematerialize-failed", {
+				reason, stage: "teardown", error: formatUnknown(error),
+			});
+			return { status: "failed", detail: formatUnknown(error) };
+		}
+
+		try {
+			await this.initSync(true);
+		} catch (error) {
+			console.error("[yaos] rematerialize reinit failed:", error);
+			this.trace("trace", "client-rematerialize-failed", {
+				reason, stage: "init", error: formatUnknown(error),
+			});
+			return { status: "failed", detail: formatUnknown(error) };
+		}
+
+		this.trace("trace", "client-rematerialize-done", { reason, updatesBefore });
+		this.log(`rematerialize (${reason}): sync stack rebuilt`);
+		return { status: "ok", updatesBefore };
+	}
+
 
 	/**
 	 * Begin one orderly runtime teardown. The returned promise remains shared by
@@ -1789,12 +1877,33 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			lastKnownServerReceiptEchoAt: vaultSync.lastKnownServerReceiptEchoAt,
 			candidatePersistenceHealthy: vaultSync.candidatePersistenceHealthy,
 			serverReceiptStartupValidation: vaultSync.serverReceiptStartupValidation,
+			receiptGuaranteeIsDurable: vaultSync.receiptGuaranteeIsDurable,
+			serverPersistenceDegraded: vaultSync.serverPersistenceDegraded,
 		} : null;
+		this.noticeServerPersistenceHealth(vaultSync?.serverPersistenceDegraded ?? false);
 		if (connectionState) {
 			renderConnectionState(this.statusBarEl, connectionState, transferStatus, serverReceipt, attentionCount);
 		} else {
 			renderSyncStatus(this.statusBarEl, _coarseState, transferStatus, attentionCount);
 		}
+	}
+
+	/**
+	 * Server durability is the one failure the user cannot otherwise see: the
+	 * socket stays green, edits appear on other devices, and the writes are only
+	 * missing after the room is evicted from memory.  The status bar carries the
+	 * standing indicator; this fires once per transition so a persistent fault
+	 * does not become wallpaper.
+	 */
+	private serverPersistenceDegradedNotified = false;
+
+	private noticeServerPersistenceHealth(degraded: boolean): void {
+		if (degraded === this.serverPersistenceDegradedNotified) return;
+		this.serverPersistenceDegradedNotified = degraded;
+		const notice = degraded
+			? "YAOS: The server is not saving changes. Edits still sync between open devices, but anything made now may be lost. Avoid bulk edits or deletions until this clears."
+			: "YAOS: The server is saving changes again.";
+		new Notice(notice, degraded ? 15000 : 6000);
 	}
 
 	private buildFilesNeedingAttentionText(): string {

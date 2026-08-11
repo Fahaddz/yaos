@@ -16,6 +16,11 @@ export interface CommandsRuntimeHost {
 	importUntrackedFiles(): Promise<void>;
 	clearLocalServerReceiptState(): Promise<"cleared_persistent" | "cleared_memory_only" | "failed" | undefined>;
 	resetLocalCache(): void;
+	rematerializeSyncStack(reason: string): Promise<{
+		status: "ok" | "skipped" | "failed";
+		detail?: string;
+		updatesBefore?: number;
+	}>;
 	nuclearReset(): void;
 }
 
@@ -159,6 +164,24 @@ export function registerCommands(
 		name: "Reset local cache (re-sync from server)",
 		callback: () => {
 			host.resetLocalCache();
+		},
+	});
+
+	registrar.addCommand({
+		id: "rebuild-document",
+		name: "Rebuild sync document (reclaim memory)",
+		callback: () => {
+			void host.rematerializeSyncStack("command").then(
+				(result) => new Notice(
+					result.status === "ok"
+						? `Sync document rebuilt after ${result.updatesBefore ?? 0} updates.`
+						: result.status === "skipped"
+							? `Nothing to rebuild (${result.detail ?? "not initialized"}).`
+							: "Rebuild failed. Check console.",
+					result.status === "ok" ? 4000 : 7000,
+				),
+				() => new Notice("Rebuild failed. Check console.", 5000),
+			);
 		},
 	});
 

@@ -293,6 +293,24 @@ export class VaultSync {
 	/** Timer handle for the proactive provider URL ticket refresh. */
 	private _socketTicketRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
+	/**
+	 * Applied Y.Doc updates since this sync stack was built.
+	 *
+	 * Proxy for accumulated V8 rope, because neither Obsidian nor the Workers
+	 * runtime exposes a heap figure worth reading.  Reset implicitly: a restart
+	 * builds a new VaultSync, which is exactly the event that flattens the
+	 * strings this is counting.
+	 */
+	private _documentUpdateCount = 0;
+	private readonly _countDocumentUpdate = (): void => {
+		this._documentUpdateCount++;
+	};
+
+	/** Applied updates since this sync stack was built. */
+	get documentUpdateCount(): number {
+		return this._documentUpdateCount;
+	}
+
 	constructor(
 		settings: VaultSyncSettings,
 		options?: {
@@ -428,6 +446,17 @@ export class VaultSync {
 			this.provider,
 			this.persistence,
 		);
+
+		// Applied-update counter, for the memory drift the client shares with the
+		// server.  Yjs concatenates adjacent inserts and V8 answers `str += str`
+		// with a rope node it never flattens, so a long editing session costs
+		// several times the same vault freshly loaded.  The client has no
+		// equivalent of the server's in-place document swap — provider,
+		// IndexedDB and every editor binding are wired to this Y.Doc — so the
+		// reclaim is a sync-stack restart, and this counter is what tells the
+		// plugin one is worth paying for.  See docs/rfcs/lazy-body-subdocs.md
+		// for why the structural fix is a separate question.
+		this.ydoc.on("update", this._countDocumentUpdate);
 		this.serverAckTracker = new ServerAckTracker(this.trace, this.onFlightEvent);
 
 		// Track connection generations for reconnect detection
@@ -1918,6 +1947,8 @@ export class VaultSync {
 	}
 	get hasUnconfirmedServerReceiptCandidate(): boolean { return this.serverAckTracker.hasUnconfirmedCandidate; }
 	get serverReceiptCandidateCapturedAt(): number | null { return this.serverAckTracker.candidateCapturedAt; }
+	get serverPersistenceDegraded(): boolean { return this.serverAckTracker.serverPersistenceDegraded; }
+	get receiptGuaranteeIsDurable(): boolean { return this.serverAckTracker.receiptGuaranteeIsDurable; }
 
 	async flushReceiptPersistence(): Promise<void> {
 		await this.serverAckTracker.flushReceiptPersistence();

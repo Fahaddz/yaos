@@ -124,6 +124,7 @@ const suites = [
 	[JITI, "tests/tombstone-reaper.ts"],
 	[JITI, "tests/document-rematerialization.ts"],
 	[JITI, "tests/rematerialize-policy.ts"],
+	[JITI, "tests/client-rematerialize-policy.ts"],
 	[JITI, "tests/schema-path-model.ts"],
 	[JITI, "tests/receipt-durability.ts"],
 	[JITI, "tests/diff-surrogate-safety.ts"],
