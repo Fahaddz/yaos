@@ -26,6 +26,48 @@ class FakeSqlStorage {
 	 */
 	snapshotTotalBias = 0;
 
+	/** Rows handed back to the caller across every SELECT. */
+	rowsRead = 0;
+
+	/**
+	 * Journal rows SQLite would have to touch.  An aggregate over `journal`
+	 * returns a single row but visits the whole table (SQLite has no O(1)
+	 * COUNT), and a SQLite-backed Durable Object bills rows touched — so this
+	 * is the number that actually spends the free-tier read budget.
+	 */
+	journalRowsScanned = 0;
+
+	/**
+	 * Test hook: ground truth straight from the table, bypassing exec() so
+	 * reading it never perturbs the counters above.
+	 */
+	journalTruth(): { entryCount: number; totalBytes: number } {
+		const table = this.tables.get("journal") ?? [];
+		return {
+			entryCount: table.length,
+			totalBytes: table.reduce((sum, row) => sum + (row.byte_length as number), 0),
+		};
+	}
+
+	/** Test hook: pre-populate the journal, as a cold load would find it. */
+	seedJournalRows(byteLengths: number[]): void {
+		if (!this.tables.has("journal")) {
+			this.tables.set("journal", []);
+			this.autoIncrements.set("journal", 1);
+		}
+		const table = this.tables.get("journal")!;
+		for (const byteLength of byteLengths) {
+			const id = this.autoIncrements.get("journal")!;
+			this.autoIncrements.set("journal", id + 1);
+			table.push({
+				id,
+				data: new Uint8Array(byteLength).buffer,
+				byte_length: byteLength,
+				created_at: new Date().toISOString(),
+			});
+		}
+	}
+
 	exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): FakeSqlCursor<T> {
 		const trimmed = query.trim().replace(/\s+/g, " ");
 
@@ -67,6 +109,7 @@ class FakeSqlStorage {
 		if (trimmed.startsWith("SELECT data FROM snapshot_chunks")) {
 			const table = this.tables.get("snapshot_chunks") ?? [];
 			const sorted = [...table].sort((a, b) => (a.chunk_index as number) - (b.chunk_index as number));
+			this.rowsRead += sorted.length;
 			return new FakeSqlCursor<T>(sorted as T[]);
 		}
 
@@ -74,6 +117,8 @@ class FakeSqlStorage {
 		if (trimmed.startsWith("SELECT data, byte_length FROM journal")) {
 			const table = this.tables.get("journal") ?? [];
 			const sorted = [...table].sort((a, b) => (a.id as number) - (b.id as number));
+			this.rowsRead += sorted.length;
+			this.journalRowsScanned += sorted.length;
 			return new FakeSqlCursor<T>(sorted as T[]);
 		}
 
@@ -86,6 +131,7 @@ class FakeSqlStorage {
 				(sum, row) => sum + (row.data instanceof ArrayBuffer ? row.data.byteLength : 0),
 				0,
 			) + this.snapshotTotalBias;
+			this.rowsRead += 1;
 			return new FakeSqlCursor<T>([{ cnt, total } as T]);
 		}
 
@@ -94,6 +140,8 @@ class FakeSqlStorage {
 			const table = this.tables.get("journal") ?? [];
 			const cnt = table.length;
 			const total = table.reduce((sum, row) => sum + (row.byte_length as number), 0);
+			this.rowsRead += 1;
+			this.journalRowsScanned += table.length;
 			return new FakeSqlCursor<T>([{ cnt, total } as T]);
 		}
 
@@ -365,6 +413,166 @@ console.log("\n--- Test 8: snapshot size mismatch fails loudly ---");
 	);
 
 	doc.destroy();
+}
+
+console.log("\n--- Test 9: journal stats never drift from storage ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	// getJournalStats() is now answered from in-memory counters.  They are the
+	// only source of truth callers see, so the one thing that must never happen
+	// is drift from the table — check against a full scan after every mutation.
+	let drifts = 0;
+	const checkAgainstStorage = (label: string): void => {
+		const stats = store.getJournalStats();
+		const truth = storage.sql.journalTruth();
+		if (stats.entryCount !== truth.entryCount || stats.totalBytes !== truth.totalBytes) {
+			drifts++;
+			console.log(
+				`    drift at ${label}: reported ${stats.entryCount}/${stats.totalBytes}, `
+				+ `storage has ${truth.entryCount}/${truth.totalBytes}`,
+			);
+		}
+	};
+
+	checkAgainstStorage("cold instance");
+
+	// A realistic cycle: appends of varying size, a mid-cycle load, a
+	// zero-length update, and a compaction that empties the journal.
+	for (let i = 1; i <= 25; i++) {
+		store.appendUpdate(new Uint8Array(i * 7 + 1));
+		checkAgainstStorage(`append ${i}`);
+
+		if (i === 8) {
+			store.appendUpdate(new Uint8Array(0));
+			checkAgainstStorage("zero-length append");
+		}
+		if (i === 12) {
+			store.loadState();
+			checkAgainstStorage("after loadState");
+		}
+		if (i === 18) {
+			store.rewriteCheckpoint(Y.encodeStateAsUpdate(makeDoc(5)));
+			checkAgainstStorage("after rewriteCheckpoint");
+		}
+	}
+
+	assert(drifts === 0, `in-memory stats match a full scan at every step (${drifts} drifts)`);
+
+	const finalStats = store.getJournalStats();
+	assert(finalStats.entryCount === 7, `7 entries survive the compaction (got ${finalStats.entryCount})`);
+}
+
+console.log("\n--- Test 10: getJournalStats is O(1) ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	const APPENDS = 60;
+	// Before the fix, appendUpdate and the explicit call each ran a COUNT/SUM
+	// over the whole journal, so the Nth save touched 2N rows.
+	const preChangeRows = APPENDS * (APPENDS + 1);
+
+	storage.sql.rowsRead = 0;
+	storage.sql.journalRowsScanned = 0;
+	for (let i = 0; i < APPENDS; i++) {
+		store.appendUpdate(new Uint8Array(64));
+		store.getJournalStats();
+	}
+
+	assert(
+		storage.sql.journalRowsScanned <= 4,
+		`${APPENDS} save cycles touch ≤4 journal rows (got ${storage.sql.journalRowsScanned}; `
+		+ `pre-change cost was ${preChangeRows} rows read)`,
+	);
+	assert(
+		storage.sql.rowsRead <= 4,
+		`${APPENDS} save cycles issue ≤4 rows of SELECT output (got ${storage.sql.rowsRead})`,
+	);
+	assert(
+		store.getJournalStats().entryCount === APPENDS,
+		"the O(1) path still reports the true entry count",
+	);
+}
+
+console.log("\n--- Test 11: oversized update leaves stats untouched ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	store.appendUpdate(new Uint8Array(100));
+	store.appendUpdate(new Uint8Array(250));
+	const before = store.getJournalStats();
+
+	// Over MAX_JOURNAL_ENTRY_BYTES (1.5MB): rejected without an INSERT, so the
+	// counters must not move — otherwise every oversized paste would inflate
+	// them permanently and force spurious compactions.
+	const rejected = store.appendUpdate(new Uint8Array(2 * 1024 * 1024));
+	assert(rejected === null, "oversized append still returns null");
+
+	const after = store.getJournalStats();
+	assert(
+		after.entryCount === before.entryCount && after.totalBytes === before.totalBytes,
+		`stats unchanged by rejected append (${after.entryCount}/${after.totalBytes})`,
+	);
+	const truth = storage.sql.journalTruth();
+	assert(
+		after.entryCount === truth.entryCount && after.totalBytes === truth.totalBytes,
+		"stats still match storage after a rejected append",
+	);
+}
+
+console.log("\n--- Test 12: rewriteCheckpoint resets the counters ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	for (let i = 0; i < 5; i++) store.appendUpdate(new Uint8Array(128));
+	store.rewriteCheckpoint(Y.encodeStateAsUpdate(makeDoc(3)));
+
+	const cleared = store.getJournalStats();
+	assert(cleared.entryCount === 0, `entryCount zeroed by checkpoint (got ${cleared.entryCount})`);
+	assert(cleared.totalBytes === 0, `totalBytes zeroed by checkpoint (got ${cleared.totalBytes})`);
+
+	const next = store.appendUpdate(new Uint8Array(42));
+	assert(next?.entryCount === 1, `first post-checkpoint append reports 1 entry (got ${next?.entryCount})`);
+	assert(next?.totalBytes === 42, `first post-checkpoint append reports 42 bytes (got ${next?.totalBytes})`);
+}
+
+console.log("\n--- Test 13: stats seed lazily from an existing journal ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	storage.sql.seedJournalRows([10, 20, 30]);
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	// A fresh instance over a warm journal (the cold-start case) must not
+	// report zero just because it has not loaded yet.
+	storage.sql.journalRowsScanned = 0;
+	const seeded = store.getJournalStats();
+	assert(seeded.entryCount === 3, `seeded entryCount from storage (got ${seeded.entryCount})`);
+	assert(seeded.totalBytes === 60, `seeded totalBytes from storage (got ${seeded.totalBytes})`);
+
+	const afterFirstCall = storage.sql.journalRowsScanned;
+	store.getJournalStats();
+	store.getJournalStats();
+	assert(
+		storage.sql.journalRowsScanned === afterFirstCall,
+		`seed scan runs at most once per instance (${afterFirstCall} rows, then ${storage.sql.journalRowsScanned})`,
+	);
+
+	const grown = store.appendUpdate(new Uint8Array(5));
+	assert(grown?.entryCount === 4 && grown?.totalBytes === 65, `append builds on the seed (got ${grown?.entryCount}/${grown?.totalBytes})`);
 }
 
 // ── Results ─────────────────────────────────────────────────────────────────

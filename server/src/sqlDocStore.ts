@@ -75,7 +75,40 @@ interface DurableObjectStorageWithSql {
 export class SqlDocStore {
 	private initialized = false;
 
+	/**
+	 * In-memory mirror of the journal aggregate.
+	 *
+	 * These are EXACT, not approximate: the Durable Object is single threaded
+	 * and this class is the sole writer of the `journal` table, so nothing can
+	 * change it behind our back between our own writes.  Tracking the aggregate
+	 * here turns getJournalStats() — called on every save — from a full table
+	 * scan (SQLite has no O(1) COUNT, and SUM must touch every row) into O(1).
+	 * On a SQLite-backed DO, rows touched are the billed unit, so the scan cost
+	 * roughly the journal length in rows read per save.
+	 */
+	private journalEntryCount = 0;
+	private journalTotalBytes = 0;
+	private journalStatsSeeded = false;
+
 	constructor(private readonly storage: DurableObjectStorageWithSql) {}
+
+	/**
+	 * Seed the journal counters from storage, at most once per instance.
+	 *
+	 * loadState() seeds them for free from the scan it already performs, so
+	 * this aggregate only runs when stats are requested before any load —
+	 * and then the answer is cached for the life of the instance.
+	 */
+	private ensureJournalStatsSeeded(): void {
+		if (this.journalStatsSeeded) return;
+		const rows = this.storage.sql.exec<{ cnt: number; total: number }>(
+			"SELECT COUNT(*) as cnt, COALESCE(SUM(byte_length), 0) as total FROM journal",
+		).toArray();
+		const row = rows[0];
+		this.journalEntryCount = row?.cnt ?? 0;
+		this.journalTotalBytes = row?.total ?? 0;
+		this.journalStatsSeeded = true;
+	}
 
 	private ensureSchema(): void {
 		if (this.initialized) return;
@@ -240,6 +273,12 @@ export class SqlDocStore {
 			totalBytes += row.byte_length;
 		}
 
+		// This scan already visited every journal row, so the aggregate is free
+		// here — seed the counters instead of paying for a separate query later.
+		this.journalEntryCount = journalUpdates.length;
+		this.journalTotalBytes = totalBytes;
+		this.journalStatsSeeded = true;
+
 		return {
 			snapshot,
 			journalUpdates,
@@ -271,11 +310,18 @@ export class SqlDocStore {
 			return null;
 		}
 
+		// Seed before the INSERT: a lazy seed afterwards would already include
+		// this row and the increment below would double-count it.
+		this.ensureJournalStatsSeeded();
+
 		this.storage.sql.exec(
 			"INSERT INTO journal (data, byte_length) VALUES (?, ?)",
 			ownedBuffer(update, 0, update.byteLength),
 			update.byteLength,
 		);
+
+		this.journalEntryCount++;
+		this.journalTotalBytes += update.byteLength;
 
 		return this.getJournalStats();
 	}
@@ -309,6 +355,13 @@ export class SqlDocStore {
 				);
 			}
 		});
+
+		// The journal is now empty.  Set this only after the transaction
+		// commits: a rollback throws out of transactionSync, leaving the
+		// counters describing the journal that is still on disk.
+		this.journalEntryCount = 0;
+		this.journalTotalBytes = 0;
+		this.journalStatsSeeded = true;
 	}
 
 	/**
@@ -316,15 +369,11 @@ export class SqlDocStore {
 	 */
 	getJournalStats(): JournalStats {
 		this.ensureSchema();
+		this.ensureJournalStatsSeeded();
 
-		const rows = this.storage.sql.exec<{ cnt: number; total: number }>(
-			"SELECT COUNT(*) as cnt, COALESCE(SUM(byte_length), 0) as total FROM journal",
-		).toArray();
-
-		const row = rows[0];
 		return {
-			entryCount: row?.cnt ?? 0,
-			totalBytes: row?.total ?? 0,
+			entryCount: this.journalEntryCount,
+			totalBytes: this.journalTotalBytes,
 		};
 	}
 }
