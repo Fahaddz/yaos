@@ -39,16 +39,18 @@ import {
 	type PersistenceHealth,
 } from "./persistenceCoordinator";
 import type { LoadedDocState } from "./sqlDocStore";
+import {
+	REMATERIALIZE_MAX_AGE_MS,
+	REMATERIALIZE_MIN_UPDATES,
+	REMATERIALIZE_UPDATE_THRESHOLD,
+	shouldRematerialize,
+} from "./rematerializePolicy";
 
 const MAX_DEBUG_TRACE_EVENTS = 200;
 const JOURNAL_COMPACT_MAX_ENTRIES = 50;
 const JOURNAL_COMPACT_MAX_BYTES = 1 * 1024 * 1024;
 const TRACE_DEBUG_LIMIT = 100;
-/**
- * Applied updates after which the document is rebuilt to shed accumulated V8
- * rope structures.  See maybeRematerializeDocument.
- */
-const REMATERIALIZE_UPDATE_THRESHOLD = 5000;
+
 
 const LOG_PREFIX = "[yaos-sync:server]";
 
@@ -141,6 +143,26 @@ export class VaultSyncServer extends YServer {
 	/** Storage migration observability fields. */
 	private tombstoneReapAttempted = false;
 	private lastTombstoneReap: ReapResult | null = null;
+	/**
+	 * Cumulative reap history, persisted across instances.
+	 *
+	 * `lastTombstoneReap` alone is actively misleading.  Reaping runs once per
+	 * instance, so every instance AFTER a successful reap reports
+	 * `reaped: 0, alreadyReaped: N` — indistinguishable at a glance from a
+	 * reaper that has never worked.  The durable trace holds the real event but
+	 * is a 200-entry ring that a busy room evicts within minutes.
+	 *
+	 * These totals are the answer to "has reaping ever reclaimed anything, and
+	 * how much".  One storage write per EFFECTIVE reap only — reaps that free
+	 * nothing, which is almost all of them, cost nothing.
+	 */
+	private reapTotals: {
+		effectiveRuns: number;
+		bodiesReaped: number;
+		charsFreed: number;
+		lastEffectiveAt: string | null;
+		lastEffective: ReapResult | null;
+	} | null = null;
 	private storageMode: "sql" | "kv-migrated" | "fresh" | "kv-fallback" | null = null;
 	private migrationStatus: "not_started" | "migrated" | "already_sql" | "failed" | null = null;
 	private migrationAt: string | null = null;
@@ -191,10 +213,20 @@ export class VaultSyncServer extends YServer {
 	 * significant V8 rope.  Driven from onSave rather than the message path, so
 	 * it rides the existing debounce instead of adding work per message.
 	 *
-	 * Threshold is expressed in applied updates because Workers exposes no heap
-	 * API.  The growth curve in scripts/bench-warm-memory.js is steepest through
-	 * the first few thousand updates, so 5,000 catches most of the growth while
-	 * keeping swaps rare.
+	 * Two triggers, because one is not enough:
+	 *
+	 *   update-threshold — the primary.  Expressed in applied updates because
+	 *     Workers exposes no heap API, and because updates are what actually
+	 *     build rope.  The growth curve in scripts/bench-warm-memory.mjs is
+	 *     steepest through the first few thousand updates.
+	 *
+	 *   age — the backstop.  A vault edited steadily but slowly can stay warm
+	 *     for hours and drift the entire time without ever reaching 5,000, and
+	 *     an object holding an open WebSocket never hibernates its way out of
+	 *     it.  Past REMATERIALIZE_MAX_AGE_MS a document that has taken at
+	 *     least REMATERIALIZE_MIN_UPDATES is rebuilt anyway.  The minimum
+	 *     matters: with no updates there is no rope, so a timer alone would
+	 *     burn CPU on idle rooms to recover nothing.
 	 *
 	 * The swap is cheap enough that this needs no further rate limiting:
 	 * measured encode+decode is 3-9ms for well-merged documents up to 20MB and
@@ -204,10 +236,17 @@ export class VaultSyncServer extends YServer {
 	private async maybeRematerializeDocument(): Promise<void> {
 		if (!this.documentLoaded) return;
 		if (this.storageMode === "kv-fallback") return;
-		if (this.docUpdateCount - this.updatesAtLastRemat < REMATERIALIZE_UPDATE_THRESHOLD) return;
+
+		const reason = shouldRematerialize({
+			updatesSince: this.docUpdateCount - this.updatesAtLastRemat,
+			msSinceBaseline: Date.now() - this.lastRematerializeBaselineMs,
+		});
+		if (reason === null) return;
+
 		// Recorded before the attempt so a persistent failure cannot spin.
 		this.updatesAtLastRemat = this.docUpdateCount;
-		await this.rematerializeDocument("update-threshold");
+		this.lastRematerializeBaselineMs = Date.now();
+		await this.rematerializeDocument(reason);
 	}
 
 	async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
@@ -260,6 +299,13 @@ export class VaultSyncServer extends YServer {
 	private rematerializeCount = 0;
 	private lastRematerializedAt: string | null = null;
 	private lastRematerializeStructs: number | null = null;
+	/**
+	 * When the current re-materialisation window opened — instance start, or the
+	 * last rebuild.  Drives the age trigger.  Wall clock rather than a stored
+	 * timestamp: the window is about how long THIS resident document has been
+	 * accumulating rope, which begins again every time the object wakes.
+	 */
+	private lastRematerializeBaselineMs = Date.now();
 
 	private ensureDocUpdateWatcher(): void {
 		if (this.docUpdateWatcherAttached) return;
@@ -368,13 +414,22 @@ export class VaultSyncServer extends YServer {
 					migrationMeta: this.documentLoaded ? this.getSqlDocStore().getMigrationMeta() : null,
 				},
 				updateStats: { ...this.updateStats },
+				// Cheap enough to poll; see getCheapFootprint.  This is the
+				// series to watch for rope drift in production.
+				footprint: this.documentLoaded ? this.getCheapFootprint() : null,
 				tombstoneReap: this.lastTombstoneReap,
+				// Cumulative, durable, and the only reap figure that is not
+				// misleading after the work has already been done.
+				tombstoneReapTotals: await this.loadReapTotals(),
 				rematerialize: {
 					count: this.rematerializeCount,
 					lastAt: this.lastRematerializedAt,
 					lastStructs: this.lastRematerializeStructs,
 					updatesSinceLast: this.docUpdateCount - this.updatesAtLastRemat,
 					thresholdUpdates: REMATERIALIZE_UPDATE_THRESHOLD,
+					ageMsSinceBaseline: Date.now() - this.lastRematerializeBaselineMs,
+					maxAgeMs: REMATERIALIZE_MAX_AGE_MS,
+					minUpdatesForAgeTrigger: REMATERIALIZE_MIN_UPDATES,
 				},
 			});
 		}
@@ -452,9 +507,17 @@ export class VaultSyncServer extends YServer {
 	 * distinguish "applied in memory" from "stored", which the state vector
 	 * cannot express for deletions.
 	 */
-	private svEchoDurability(): { generation: number; epoch: string } {
+	private svEchoDurability(): { generation: number; epoch: string; degraded?: boolean } {
 		const health = this.getPersistenceCoordinator().health;
-		return { generation: health.persistedGeneration, epoch: health.generationEpoch };
+		// kv-fallback suppresses echoes entirely, so a client in that state sees
+		// silence rather than a flag; "degraded" covers the case where echoes
+		// still flow but writes are failing.
+		const degraded = health.status === "degraded";
+		return {
+			generation: health.persistedGeneration,
+			epoch: health.generationEpoch,
+			...(degraded ? { degraded: true } : {}),
+		};
 	}
 
 	private recordSvEchoResult(result: SvEchoSendResult): void {
@@ -796,10 +859,63 @@ export class VaultSyncServer extends YServer {
 						`bodies remain until the next attempt:`, save.error,
 					);
 				}
+
+				// Only an effective reap updates the durable totals, and only
+				// after the bodies are actually gone from storage — recording a
+				// reclaim that failed to persist would overstate what the next
+				// instance will find.
+				if (save.success) await this.recordEffectiveReap(result);
 			}
 		} catch (err) {
 			// Maintenance must never break a room load.
 			console.error(`${LOG_PREFIX} tombstone reap failed:`, err);
+		}
+	}
+
+	/** Storage key for the durable reap totals. */
+	private static readonly REAP_TOTALS_KEY = "tombstone:reap:totals";
+
+	/**
+	 * Load the cumulative reap history, once per instance.
+	 *
+	 * Falls back to zeros on a read failure rather than throwing: these are
+	 * observability counters, and losing them must never fail a debug response
+	 * or, worse, a room load.
+	 */
+	private async loadReapTotals(): Promise<NonNullable<VaultSyncServer["reapTotals"]>> {
+		if (this.reapTotals) return this.reapTotals;
+		const empty = {
+			effectiveRuns: 0,
+			bodiesReaped: 0,
+			charsFreed: 0,
+			lastEffectiveAt: null as string | null,
+			lastEffective: null as ReapResult | null,
+		};
+		try {
+			const stored = await this.ctx.storage.get(VaultSyncServer.REAP_TOTALS_KEY);
+			if (stored && typeof stored === "object") {
+				this.reapTotals = { ...empty, ...(stored as Partial<typeof empty>) };
+				return this.reapTotals;
+			}
+		} catch {
+			// Unreadable — report zeros rather than failing the caller.
+		}
+		this.reapTotals = empty;
+		return this.reapTotals;
+	}
+
+	/** Fold an effective reap into the durable totals. */
+	private async recordEffectiveReap(result: ReapResult): Promise<void> {
+		try {
+			const totals = await this.loadReapTotals();
+			totals.effectiveRuns++;
+			totals.bodiesReaped += result.reaped;
+			totals.charsFreed += result.charsFreed;
+			totals.lastEffectiveAt = new Date().toISOString();
+			totals.lastEffective = result;
+			await this.ctx.storage.put(VaultSyncServer.REAP_TOTALS_KEY, totals);
+		} catch (err) {
+			console.error(`${LOG_PREFIX} could not record reap totals:`, err);
 		}
 	}
 
@@ -813,7 +929,7 @@ export class VaultSyncServer extends YServer {
 	 * deployment: 22-64 MiB hourly peaks for a 3.66MB document whose cold-load
 	 * footprint is ~8 MiB, with hibernation not reclaiming it.  Decoding the
 	 * document's own encoded state into a fresh Y.Doc rebuilds flat strings and
-	 * returns it to the cold-load floor.  See scripts/bench-warm-memory.js:
+	 * returns it to the cold-load floor.  See scripts/bench-warm-memory.mjs:
 	 * ~73% recovered at realistic edit locality.
 	 *
 	 * Item fragmentation — items that could not merge — is NOT recovered by
@@ -950,7 +1066,7 @@ export class VaultSyncServer extends YServer {
 	 *
 	 * `bytesPerStruct` separates them: ~10^4 means few large items (rope
 	 * regime), ~10^1 means many small items (fragmentation regime).  Benchmark
-	 * for the same metrics on synthetic corpora: scripts/bench-memory.js.
+	 * for the same metrics on synthetic corpora: scripts/bench-memory.mjs.
 	 *
 	 * This walks every struct and fully re-encodes the document, so it is far
 	 * too expensive for the periodic debug poll and is opt-in only.
@@ -1010,6 +1126,56 @@ export class VaultSyncServer extends YServer {
 			bytesPerStruct: structs > 0 ? encodedBytes / structs : 0,
 			itemsPerKB: liveChars > 0 ? items / (liveChars / 1024) : 0,
 			databaseSizeBytes,
+		};
+	}
+
+	/**
+	 * Footprint numbers cheap enough to return on every debug poll.
+	 *
+	 * getCrdtFootprint() is the honest measurement but it re-encodes the whole
+	 * document, so it can only ever be opt-in — which makes it useless for the
+	 * thing we actually want, which is watching drift over time in production.
+	 *
+	 * Everything here is O(clients) or O(1):
+	 *   - struct count sums the per-client array lengths without touching a
+	 *     single struct, so it does not grow with document size.
+	 *   - databaseSize is a SQLite property read.
+	 *
+	 * `bytesPerStructApprox` substitutes stored bytes for encoded bytes.  The
+	 * two differ by SQLite page overhead and any journal not yet compacted, but
+	 * the metric only has to separate ~10^4 (rope regime, re-materialisation
+	 * recovers it) from ~10^1 (fragmentation, it does not), and a constant
+	 * factor never moves a reading across three orders of magnitude.  Use the
+	 * census when the exact figure matters.
+	 */
+	private getCheapFootprint(): {
+		clients: number;
+		structs: number;
+		databaseSizeBytes: number | null;
+		bytesPerStructApprox: number | null;
+		updatesApplied: number;
+	} {
+		let structs = 0;
+		for (const structList of this.document.store.clients.values()) {
+			structs += structList.length;
+		}
+
+		let databaseSizeBytes: number | null = null;
+		try {
+			const size = this.ctx.storage.sql?.databaseSize;
+			if (typeof size === "number") databaseSizeBytes = size;
+		} catch {
+			// KV-backed or unavailable — null rather than failing the response.
+		}
+
+		return {
+			clients: this.document.store.clients.size,
+			structs,
+			databaseSizeBytes,
+			bytesPerStructApprox: databaseSizeBytes !== null && structs > 0
+				? databaseSizeBytes / structs
+				: null,
+			updatesApplied: this.docUpdateCount,
 		};
 	}
 
