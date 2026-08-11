@@ -119,7 +119,7 @@ YAOS is optimized for personal or small-team note vaults, not for arbitrarily hu
 
 If your vault is normal notes, drafts, research, and attachments, YAOS is a great fit. If you want to sync giant text dumps or archival datasets, a simpler file-sync tool is a better choice.
 
-Rule of thumb: around 50 MB of raw text (not counting attachments like images and PDFs) is a comfortable target.
+Rule of thumb: around 50 MB of raw text (not counting attachments like images and PDFs) is a comfortable target. The constraint is memory, not disk. Opening a vault is cheap — well over 100 MB of Markdown loads without trouble — but a vault under continuous editing drifts to several times the memory of the same vault freshly loaded, and hibernation doesn't hand it back. The server periodically rebuilds the document to reclaim that, which is what keeps 50 MB a comfortable target rather than an optimistic one.
 
 ## Configuration
 
