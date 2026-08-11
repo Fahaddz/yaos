@@ -214,10 +214,24 @@ function liveBytes() {
 	return m.heapUsed + m.arrayBuffers;
 }
 
-function settle() {
-	// Two passes: the first frees, the second collects what the first unlinked.
-	global.gc();
-	global.gc();
+/**
+ * Collect until the heap stops shrinking.
+ *
+ * Two passes is not enough, and the shortfall is the same order as the effects
+ * this benchmark exists to measure.  After a multi-megabyte allocation burst
+ * V8 needs several sweeps to converge, and external ArrayBuffer memory is
+ * released at least one pass behind the JS heap — so a freed 1.6MB document
+ * can still read as ~1.9MB resident.  That is large enough to invent a
+ * reclamation that did not happen, or erase one that did.
+ */
+function settle(minPasses = 5, maxPasses = 24) {
+	let previous = Infinity;
+	for (let pass = 0; pass < maxPasses; pass++) {
+		global.gc();
+		const current = liveBytes();
+		if (pass + 1 >= minPasses && current >= previous) return;
+		previous = current;
+	}
 }
 
 // ---------------------------------------------------------------------------

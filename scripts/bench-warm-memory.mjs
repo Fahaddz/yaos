@@ -64,7 +64,23 @@ function makeRandom(seed) {
 	return () => (s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 4294967296;
 }
 
-const settle = () => { for (let i = 0; i < 3; i++) global.gc(); };
+/**
+ * Collect until RSS stops shrinking.
+ *
+ * A fixed pass count under-reports: V8 needs several sweeps to converge after
+ * a multi-megabyte burst, and external ArrayBuffer memory is released a pass
+ * behind the JS heap.  With three passes a freed document can still read as
+ * ~1.9MB resident — the same order as the growth being measured here.
+ */
+const settle = (minPasses = 5, maxPasses = 24) => {
+	let previous = Infinity;
+	for (let pass = 0; pass < maxPasses; pass++) {
+		global.gc();
+		const current = process.memoryUsage().rss;
+		if (pass + 1 >= minPasses && current >= previous) return;
+		previous = current;
+	}
+};
 const rss = () => process.memoryUsage().rss;
 const mib = (bytes) => Number((bytes / 1048576).toFixed(1));
 
