@@ -1,6 +1,21 @@
 const TRACE_KEY_PREFIX = "trace:";
 const TRACE_ELLIPSIS = "...";
 
+/**
+ * Second, disjoint key space for events that arrive at sync-message rate.
+ *
+ * With a single ring the noisiest class evicts every other: measured on a live
+ * vault after ~6,000 edits, 98 of the 100 entries the debug endpoint returned
+ * were `server.ydoc.update_observed`, and every save, compaction, cold-load and
+ * tombstone-reap event had been evicted within seconds.  The only diagnostic
+ * surface the room has was empty of diagnostics exactly when the room was busy.
+ *
+ * Two prefixes trim independently, so neither class can crowd out the other.
+ * "tracehot:" is deliberately NOT nested under "trace:", so a `list` of either
+ * prefix cannot see the other's keys.
+ */
+const TRACE_HIGH_VOLUME_KEY_PREFIX = "tracehot:";
+
 export const MAX_TRACE_ENTRY_BYTES = 16 * 1024;
 const MAX_TRACE_STRING_BYTES = 2048;
 const MAX_TRACE_ARRAY_ITEMS = 20;
@@ -229,12 +244,59 @@ export function prepareTraceEntryForStorage(entry: TraceEntry): TraceEntry {
 	};
 }
 
+/**
+ * Events recorded once per inbound sync message, so they outnumber every other
+ * event by orders of magnitude.
+ *
+ * Membership buys an entry its own storage budget, not a lower priority:
+ * nothing here is sampled or dropped.  Add an event when its rate is tied to
+ * client traffic rather than to a persistence decision — per-save events
+ * (`server.save.*`) fire once per flush and belong with the diagnostics.
+ */
+export const HIGH_VOLUME_TRACE_EVENTS: Record<string, true> = {
+	"server.ydoc.update_observed": true,
+};
+
+export function isHighVolumeTraceEvent(event: string): boolean {
+	return HIGH_VOLUME_TRACE_EVENTS[event] === true;
+}
+
+/**
+ * Share of a debug read reserved for low-volume events when both classes hold
+ * more than the window can show.
+ *
+ * Separate retention alone does not make rare events visible: during a flood
+ * the newest N timestamps in the room are all high-volume, so a strict
+ * newest-N-overall merge would still return nothing but `update_observed`.
+ * Unused reserve is handed back to the other class, so a quiet room still
+ * fills the window with whatever it has.
+ */
+export const LOW_VOLUME_TRACE_READ_RESERVE = 0.5;
+
+/**
+ * Appends a ring tolerates before it reconciles with storage.
+ *
+ * Seeding costs one `list` over the whole prefix, so doing it on the first
+ * append charges every short-lived instance ~maxEntries rows read.  That is the
+ * common case: a hibernating room wakes, writes a checkpoint-load trace or two,
+ * and is evicted again — measured at ~200 of the ~344 rows a single wake of a
+ * real room cost.  Amortising over appends does nothing for an instance that
+ * only ever makes two.
+ *
+ * Deferring instead means an instance that appends fewer than this never lists
+ * at all, and a busy one pays ~maxEntries rows per this many appends.  The
+ * price is bounded overshoot: a prefix holds at most maxEntries + this many
+ * entries between reconciliations, which does not affect reads because
+ * listRecentTraceEntries asks for the newest N regardless.
+ */
+export const TRACE_SEED_AFTER_APPENDS = 200;
+
 export function createTraceKey(ts = Date.now()): string {
 	return `${TRACE_KEY_PREFIX}${paddedTimestamp(ts)}:${randomSuffix()}`;
 }
 
 /**
- * Append-and-trim ring for trace entries.
+ * Append-and-trim ring over one key prefix.
  *
  * WHY THIS IS A CLASS AND NOT A FUNCTION
  *
@@ -258,46 +320,32 @@ export function createTraceKey(ts = Date.now()): string {
  * `list` seeds the ring per Durable Object instance, and eviction then deletes
  * known keys directly.
  */
-export class TraceRing {
+class TracePrefixRing {
 	/** Stored keys, oldest first.  null until seeded from storage. */
 	private keys: string[] | null = null;
 	/** Appends made by this instance while unseeded, or since the last re-seed. */
 	private appendsSinceSeed = 0;
 
-	/**
-	 * Appends tolerated before the ring reconciles with storage.
-	 *
-	 * Seeding costs one `list` over the whole prefix, so doing it on the first
-	 * append charges every short-lived instance ~maxEntries rows read.  That is
-	 * the common case: a hibernating room wakes, writes a checkpoint-load trace
-	 * or two, and is evicted again — measured at ~200 of the ~344 rows a single
-	 * wake of a real room cost.  Amortising over appends does nothing for an
-	 * instance that only ever makes two.
-	 *
-	 * Deferring instead means an instance that appends fewer than this never
-	 * lists at all, and a busy one pays ~maxEntries rows per SEED_AFTER_APPENDS
-	 * appends.  The price is bounded overshoot: storage holds at most
-	 * maxEntries + SEED_AFTER_APPENDS entries between reconciliations, which
-	 * does not affect reads because listRecentTraceEntries asks for the newest
-	 * N regardless.
-	 */
-	private static readonly SEED_AFTER_APPENDS = 200;
-
 	private readonly seedAfterAppends: number;
 
 	/**
 	 * @param seedAfterAppends appends tolerated before reconciling with storage.
-	 *   Defaults to SEED_AFTER_APPENDS.  Pass 1 to reconcile on every append,
-	 *   which is what the stateless helper needs to keep its exact retention
-	 *   semantics.
+	 *   Defaults to TRACE_SEED_AFTER_APPENDS.  Pass 1 to reconcile on every
+	 *   append, which is what the stateless helper needs to keep its exact
+	 *   retention semantics.
 	 */
-	constructor(private readonly maxEntries: number, seedAfterAppends = TraceRing.SEED_AFTER_APPENDS) {
+	constructor(
+		private readonly prefix: string,
+		private readonly maxEntries: number,
+		seedAfterAppends = TRACE_SEED_AFTER_APPENDS,
+	) {
 		this.seedAfterAppends = Math.max(1, seedAfterAppends);
 	}
 
 	async append(storage: TraceStorageLike, entry: TraceEntry): Promise<void> {
 		const traceTs = Date.parse(entry.ts);
-		const key = createTraceKey(Number.isFinite(traceTs) ? traceTs : Date.now());
+		const ts = Number.isFinite(traceTs) ? traceTs : Date.now();
+		const key = `${this.prefix}${paddedTimestamp(ts)}:${randomSuffix()}`;
 		await storage.put(key, entry);
 		if (this.maxEntries <= 0) return;
 
@@ -320,7 +368,7 @@ export class TraceRing {
 		}
 
 		// Reconcile with storage.  Listed AFTER the put, so `key` is included.
-		const stored = await storage.list<TraceEntry>({ prefix: TRACE_KEY_PREFIX });
+		const stored = await storage.list<TraceEntry>({ prefix: this.prefix });
 		const keys = Array.from(stored.keys());
 		this.appendsSinceSeed = 0;
 		this.keys = keys;
@@ -332,28 +380,85 @@ export class TraceRing {
 }
 
 /**
- * Stateless append.  Equivalent to a single-use TraceRing, so it still pays one
- * `list` per call — retained for callers that have nowhere to keep state, and
- * for tests that assert retention semantics directly.  Long-lived callers
- * should hold a TraceRing instead; see the note on that class.
+ * One ring per event class, so a flood of high-volume events cannot evict the
+ * rare ones that are actually diagnostic.
+ *
+ * Each class gets the full `maxEntriesPerClass` budget rather than a slice of a
+ * shared one: retention depth costs nothing in rows written (a trimmed entry is
+ * deleted either way) and reads are capped by `limit`, not by what is stored.
+ *
+ * Stored entries stay bounded at 2 * (maxEntriesPerClass +
+ * TRACE_SEED_AFTER_APPENDS) — 800 at the server's cap of 200 — because each
+ * prefix trims to its own budget plus one reconciliation window of overshoot.
+ */
+export class TraceRing {
+	private readonly highVolume: TracePrefixRing;
+	private readonly lowVolume: TracePrefixRing;
+
+	constructor(maxEntriesPerClass: number) {
+		this.highVolume = new TracePrefixRing(TRACE_HIGH_VOLUME_KEY_PREFIX, maxEntriesPerClass);
+		this.lowVolume = new TracePrefixRing(TRACE_KEY_PREFIX, maxEntriesPerClass);
+	}
+
+	async append(storage: TraceStorageLike, entry: TraceEntry): Promise<void> {
+		const ring = isHighVolumeTraceEvent(entry.event) ? this.highVolume : this.lowVolume;
+		await ring.append(storage, entry);
+	}
+}
+
+/**
+ * Stateless append.  Equivalent to a single-use ring over the low-volume
+ * prefix, so it still pays one `list` per call and keeps exact retention —
+ * retained for callers that have nowhere to keep state, and for tests that
+ * assert retention semantics directly.  Long-lived callers should hold a
+ * TraceRing instead; see the note on TracePrefixRing.
  */
 export async function appendTraceEntry(
 	storage: TraceStorageLike,
 	entry: TraceEntry,
 	maxEntries: number,
 ): Promise<void> {
-	await new TraceRing(maxEntries, 1).append(storage, entry);
+	await new TracePrefixRing(TRACE_KEY_PREFIX, maxEntries, 1).append(storage, entry);
 }
 
+interface TraceRow {
+	/** Key without its class prefix: `<paddedTs>:<rand>`, comparable across classes. */
+	suffix: string;
+	entry: TraceEntry;
+}
+
+async function listNewestByPrefix(
+	storage: TraceStorageLike,
+	prefix: string,
+	limit: number,
+): Promise<TraceRow[]> {
+	const listed = await storage.list<TraceEntry>({ prefix, reverse: true, limit });
+	return Array.from(listed, ([key, entry]) => ({ suffix: key.slice(prefix.length), entry }));
+}
+
+/**
+ * Newest `limit` entries, newest first, merged across both event classes with
+ * up to LOW_VOLUME_TRACE_READ_RESERVE of the window held for rare events.
+ *
+ * Costs two lists of `limit` rows.  This runs on a manual debug request, never
+ * on the sync path.
+ */
 export async function listRecentTraceEntries(
 	storage: TraceStorageLike,
 	limit: number,
 ): Promise<TraceEntry[]> {
 	if (limit <= 0) return [];
-	const recent = await storage.list<TraceEntry>({
-		prefix: TRACE_KEY_PREFIX,
-		reverse: true,
-		limit,
-	});
-	return Array.from(recent.values());
+	const [lowVolume, highVolume] = await Promise.all([
+		listNewestByPrefix(storage, TRACE_KEY_PREFIX, limit),
+		listNewestByPrefix(storage, TRACE_HIGH_VOLUME_KEY_PREFIX, limit),
+	]);
+	const reserved = Math.ceil(limit * LOW_VOLUME_TRACE_READ_RESERVE);
+	const lowTake = Math.min(lowVolume.length, Math.max(reserved, limit - highVolume.length));
+	const highTake = Math.min(highVolume.length, limit - lowTake);
+	const merged = [...lowVolume.slice(0, lowTake), ...highVolume.slice(0, highTake)];
+	// Both key spaces share the `<paddedTs>:<rand>` suffix, so suffix order is
+	// timestamp order across classes — the same ordering a single reverse list
+	// gave before the split.
+	merged.sort((a, b) => (a.suffix < b.suffix ? 1 : a.suffix > b.suffix ? -1 : 0));
+	return merged.map((row) => row.entry);
 }
