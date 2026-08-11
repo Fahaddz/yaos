@@ -12,6 +12,16 @@
 import * as Y from "yjs";
 import { bytesToHex } from "./hex.js";
 
+/**
+ * Short random identifier for a coordinator instance.  Only needs to differ
+ * from the previous instance's value, so collision resistance is not critical.
+ */
+function randomEpochId(): string {
+	const bytes = new Uint8Array(8);
+	crypto.getRandomValues(bytes);
+	return bytesToHex(bytes);
+}
+
 // Re-export for backwards compatibility with existing test imports
 export type { DocStoreJournalStats as JournalStats };
 
@@ -72,6 +82,24 @@ export interface PersistenceHealth {
 	 * load-bearing.
 	 */
 	dirty: boolean;
+	/**
+	 * Monotonic count of successful persists by THIS coordinator.
+	 *
+	 * Echoed to clients so a receipt can mean "durably stored" rather than
+	 * "applied in memory".  A state vector cannot serve that purpose: it tracks
+	 * insert clocks, so a deletion-only change leaves it identical and any echo
+	 * appears to confirm it.  A counter that only advances on a successful write
+	 * distinguishes the two.
+	 */
+	persistedGeneration: number;
+	/**
+	 * Identifies the coordinator instance the generation belongs to.
+	 *
+	 * The counter lives in memory, so a Durable Object eviction restarts it at
+	 * zero.  Without an epoch a client that had seen generation 40 would wait
+	 * forever for 41.  On an epoch change the client re-baselines instead.
+	 */
+	generationEpoch: string;
 }
 
 export interface SaveResult {
@@ -166,6 +194,8 @@ export class PersistenceCoordinator {
 		lastCompactionReason: null,
 		lastCompactionError: null,
 		dirty: true,
+		persistedGeneration: 0,
+		generationEpoch: "",
 	};
 
 	constructor(
@@ -182,6 +212,8 @@ export class PersistenceCoordinator {
 			options?.journalCompactMaxEntries ?? JOURNAL_COMPACT_MAX_ENTRIES;
 		this.journalCompactMaxBytes =
 			options?.journalCompactMaxBytes ?? JOURNAL_COMPACT_MAX_BYTES;
+
+		this.health.generationEpoch = randomEpochId();
 
 		this.document.on("update", this.onDocumentUpdate);
 	}
@@ -405,6 +437,7 @@ export class PersistenceCoordinator {
 			this.health.lastSaveSucceededAt = new Date().toISOString();
 			this.health.lastSaveError = null; // Clear stale error on recovery
 			this.health.successfulSaveCount++;
+			this.health.persistedGeneration++;
 			this.health.lastDeltaBytes = delta.byteLength;
 			this.health.lastPersistedStateVectorHash = checkpointSvHash;
 			this.health.checkpointFallbackCount++;
@@ -503,6 +536,7 @@ export class PersistenceCoordinator {
 		this.health.lastSaveSucceededAt = new Date().toISOString();
 		this.health.lastSaveError = null; // Clear stale error on recovery
 		this.health.successfulSaveCount++;
+		this.health.persistedGeneration++;
 		this.health.lastDeltaBytes = delta.byteLength;
 		this.health.lastPersistedStateVectorHash = svHash;
 		this.health.journalEntryCount = journalStats.entryCount;
@@ -543,6 +577,7 @@ export class PersistenceCoordinator {
 			this.health.lastSaveSucceededAt = new Date().toISOString();
 			this.health.lastSaveError = null; // Clear stale error on recovery
 			this.health.successfulSaveCount++;
+			this.health.persistedGeneration++;
 			this.health.lastDeltaBytes = delta.byteLength;
 			this.health.lastPersistedStateVectorHash = checkpointSvHash;
 			this.health.checkpointFallbackCount++;

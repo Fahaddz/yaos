@@ -45,6 +45,17 @@ export class ServerAckTracker {
 	private _lastCandidateSvHash: string | null = null;
 	private _lastCausedByOpId: string | null = null;
 
+	/**
+	 * Server persist counter observed when the pending candidate was captured.
+	 *
+	 * Confirmation requires the server to report a HIGHER value, which is what
+	 * distinguishes "stored" from "applied" and is the only signal that works
+	 * for deletion-only changes.
+	 */
+	private _generationAtCapture: number | null = null;
+	private _lastSeenServerGeneration: number | null = null;
+	private _lastServerGenerationEpoch: string | null = null;
+
 	private _encodeStateVector: (() => Uint8Array) | null = null;
 	private _store: CandidateStore | null = null;
 	private _scope: (ScopeKey & ScopeMetadata) | null = null;
@@ -96,6 +107,9 @@ export class ServerAckTracker {
 				this._lastUnconfirmedCandidateSv = encodeStateVector();
 				this._candidateCapturedAt = Date.now();
 				this._serverAppliedLocalState = false;
+				// Baseline for the durability check.  The candidate is confirmed
+				// only once the server reports a persist counter beyond this.
+				this._generationAtCapture = this._lastSeenServerGeneration;
 				this.trace?.("receipt", "receipt-candidate-captured", {
 					candidateBytes: this._lastUnconfirmedCandidateSv.byteLength,
 					candidateCapturedAt: this._candidateCapturedAt,
@@ -166,12 +180,62 @@ export class ServerAckTracker {
 	/**
 	 * Call when the server sends an SV echo (provider "custom-message" handler,
 	 * after parsing with parseSvEchoMessage).
+	 *
+	 * CONFIRMATION RULE
+	 *
+	 * A state vector describes inserts only; deletions live in the delete set,
+	 * which it does not describe.  So a deletion-only local change produces a
+	 * candidate state vector IDENTICAL to the previous one, which the server
+	 * already had — and `isStateVectorGe` then returns true on the very next
+	 * echo.  Deleting a paragraph was reported as "the server has your state"
+	 * without the server having received, let alone stored, anything.
+	 *
+	 * When the server supplies a durability marker we require its persist
+	 * counter to have ADVANCED past the value seen when the candidate was
+	 * captured.  That is true for deletions and insertions alike, and it raises
+	 * the meaning from "applied in memory" to "written to storage", which is
+	 * what the receipt has always claimed.
+	 *
+	 * The state-vector comparison remains the fallback for servers that predate
+	 * the marker, preserving their existing (weaker) behaviour rather than
+	 * withdrawing receipts from them.
 	 */
-	recordServerSvEcho(serverSv: Uint8Array): void {
+	recordServerSvEcho(
+		serverSv: Uint8Array,
+		durability: { generation: number; epoch: string } | null = null,
+	): void {
 		this._lastServerReceiptEchoAt = Date.now();
+
+		// A restart resets the counter, so a client holding generation 40 would
+		// otherwise wait forever for 41.  Re-baseline instead, and leave any
+		// pending candidate unconfirmed: the new instance loaded from storage and
+		// may not hold an unsaved change, so claiming otherwise would be a lie.
+		const epochChanged =
+			durability !== null
+			&& this._lastServerGenerationEpoch !== null
+			&& durability.epoch !== this._lastServerGenerationEpoch;
+		if (epochChanged) {
+			this._generationAtCapture = durability.generation;
+		}
+		if (durability !== null) {
+			this._lastServerGenerationEpoch = durability.epoch;
+			this._lastSeenServerGeneration = durability.generation;
+		}
+
 		let confirmed: boolean | null = null;
 		if (this._lastUnconfirmedCandidateSv !== null) {
-			confirmed = isStateVectorGe(serverSv, this._lastUnconfirmedCandidateSv);
+			if (durability !== null) {
+				// Cannot confirm until a baseline exists to advance past.
+				confirmed =
+					!epochChanged
+					&& this._generationAtCapture !== null
+					&& durability.generation > this._generationAtCapture;
+				if (this._generationAtCapture === null) {
+					this._generationAtCapture = durability.generation;
+				}
+			} else {
+				confirmed = isStateVectorGe(serverSv, this._lastUnconfirmedCandidateSv);
+			}
 			this._serverAppliedLocalState = confirmed;
 			if (confirmed) {
 				this._lastKnownServerReceiptEchoAt = this._lastServerReceiptEchoAt;
@@ -235,6 +299,7 @@ export class ServerAckTracker {
 	}
 
 	async clearLocalReceiptState(clearStore = true): Promise<void> {
+		this._generationAtCapture = null;
 		this._lastUnconfirmedCandidateSv = null;
 		this._candidateCapturedAt = null;
 		this._serverAppliedLocalState = null;

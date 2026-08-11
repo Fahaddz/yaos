@@ -473,10 +473,13 @@ export class VaultSync {
 			.on("custom-message", handleFatalAuthPayload);
 		(this.provider as unknown as { on: (event: string, cb: (payload: string) => void) => void })
 			.on("custom-message", (payload: string) => {
-				// SV echoes are Level 3 receipt signals only. They are not durable;
-				// ServerAckTracker's state-vector dominance check remains the truth gate.
-				handleSvEchoCustomMessage(payload, this._svEchoCounters, (sv) => {
-					this.serverAckTracker.recordServerSvEcho(sv);
+				// SV echoes are Level 3 receipt signals only. They are not durable.
+				// When the server supplies a durability marker, ServerAckTracker
+				// gates on its persist counter advancing; the state-vector
+				// dominance check is the fallback for servers without one, and
+				// cannot see deletion-only changes at all.
+				handleSvEchoCustomMessage(payload, this._svEchoCounters, (sv, durability) => {
+					this.serverAckTracker.recordServerSvEcho(sv, durability);
 					options?.onServerReceiptStatusChanged?.();
 				});
 			});

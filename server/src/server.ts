@@ -212,7 +212,7 @@ export class VaultSyncServer extends YServer {
 
 	async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
 		await super.onConnect(connection, ctx);
-		this.recordSvEchoResult(trySendSvEcho(connection, this.document, "baseline"));
+		this.recordSvEchoResult(trySendSvEcho(connection, this.document, "baseline", this.svEchoDurability()));
 	}
 
 	/**
@@ -284,7 +284,7 @@ export class VaultSyncServer extends YServer {
 			// "server durably received your state."  In fallback mode persistence
 			// is broken — sending echoes would give clients false confidence.
 			if (this.storageMode !== "kv-fallback") {
-				this.recordSvEchoResult(trySendSvEcho(connection, this.document, "postApply"));
+				this.recordSvEchoResult(trySendSvEcho(connection, this.document, "postApply", this.svEchoDurability()));
 			}
 			// Counted, not traced.
 			//
@@ -444,6 +444,17 @@ export class VaultSyncServer extends YServer {
 
 		await this.ensureDocumentLoaded();
 		return super.fetch(request);
+	}
+
+	/**
+	 * Durability marker for the sv-echo: how many times this coordinator has
+	 * successfully persisted, and which instance is counting.  Lets a client
+	 * distinguish "applied in memory" from "stored", which the state vector
+	 * cannot express for deletions.
+	 */
+	private svEchoDurability(): { generation: number; epoch: string } {
+		const health = this.getPersistenceCoordinator().health;
+		return { generation: health.persistedGeneration, epoch: health.generationEpoch };
 	}
 
 	private recordSvEchoResult(result: SvEchoSendResult): void {

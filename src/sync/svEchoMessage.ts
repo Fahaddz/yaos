@@ -21,7 +21,18 @@ export type SvEchoParseFailureReason =
 
 export type SvEchoParseResult =
 	| { kind: "not_sv_echo"; bytes: number }
-	| { kind: "valid_sv_echo"; sv: Uint8Array; bytes: number }
+	| {
+		kind: "valid_sv_echo";
+		sv: Uint8Array;
+		bytes: number;
+		/**
+		 * Server durability marker, when the server sends one.
+		 *
+		 * null from any server that predates it.  Callers MUST keep working
+		 * without it rather than treating its absence as an error.
+		 */
+		durability: { generation: number; epoch: string } | null;
+	}
 	| { kind: "invalid_sv_echo"; reason: SvEchoParseFailureReason; bytes: number };
 
 export type SvEchoCounters = {
@@ -66,11 +77,11 @@ export function recordSvEchoParseResult(counters: SvEchoCounters, result: SvEcho
 export function handleSvEchoCustomMessage(
 	payload: string,
 	counters: SvEchoCounters,
-	onAcceptedSvEcho: (sv: Uint8Array) => void,
+	onAcceptedSvEcho: (sv: Uint8Array, durability: { generation: number; epoch: string } | null) => void,
 ): SvEchoParseResult {
 	const result = parseSvEchoMessageDetailed(payload);
 	recordSvEchoParseResult(counters, result);
-	if (result.kind === "valid_sv_echo") onAcceptedSvEcho(result.sv);
+	if (result.kind === "valid_sv_echo") onAcceptedSvEcho(result.sv, result.durability);
 	return result;
 }
 
@@ -113,7 +124,21 @@ export function parseSvEchoMessageDetailed(msg: string): SvEchoParseResult {
 	} catch {
 		return { kind: "invalid_sv_echo", reason: "invalid_state_vector", bytes };
 	}
-	return { kind: "valid_sv_echo", sv: decoded, bytes };
+	// Optional and additive: the schema is intentionally not bumped, because the
+	// check above rejects on strict equality and a bump would make every
+	// existing client discard echoes it currently accepts.  A partial or
+	// malformed marker is treated as absent rather than as a parse failure.
+	const generation = p.gen;
+	const epoch = p.genEpoch;
+	const durability =
+		typeof generation === "number"
+		&& Number.isFinite(generation)
+		&& generation >= 0
+		&& typeof epoch === "string"
+		&& epoch.length > 0
+			? { generation, epoch }
+			: null;
+	return { kind: "valid_sv_echo", sv: decoded, bytes, durability };
 }
 
 /**
