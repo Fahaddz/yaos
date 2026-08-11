@@ -224,6 +224,17 @@ export class VaultSyncServer extends YServer {
 	private docUpdateCount = 0;
 	private docUpdateWatcherAttached = false;
 	private updatesAtLastRemat = 0;
+	/**
+	 * Durable counters for re-materialisation.
+	 *
+	 * Kept as fields rather than read back from the trace ring buffer: that
+	 * buffer holds 100 entries and a busy session fills it entirely with
+	 * per-update traces, so a rare event like this is evicted within seconds of
+	 * happening and becomes unobservable exactly when it matters most.
+	 */
+	private rematerializeCount = 0;
+	private lastRematerializedAt: string | null = null;
+	private lastRematerializeStructs: number | null = null;
 
 	private ensureDocUpdateWatcher(): void {
 		if (this.docUpdateWatcherAttached) return;
@@ -314,6 +325,13 @@ export class VaultSyncServer extends YServer {
 					migrationMeta: this.documentLoaded ? this.getSqlDocStore().getMigrationMeta() : null,
 				},
 				tombstoneReap: this.lastTombstoneReap,
+				rematerialize: {
+					count: this.rematerializeCount,
+					lastAt: this.lastRematerializedAt,
+					lastStructs: this.lastRematerializeStructs,
+					updatesSinceLast: this.docUpdateCount - this.updatesAtLastRemat,
+					thresholdUpdates: REMATERIALIZE_UPDATE_THRESHOLD,
+				},
 			});
 		}
 
@@ -798,6 +816,9 @@ export class VaultSyncServer extends YServer {
 
 				const structs = [...fresh.store.clients.values()]
 					.reduce((total, list) => total + list.length, 0);
+				this.rematerializeCount++;
+				this.lastRematerializedAt = new Date().toISOString();
+				this.lastRematerializeStructs = structs;
 				await this.recordTrace("document-rematerialized", {
 					reason,
 					encodedBytes: encoded.byteLength,
