@@ -3,7 +3,12 @@ import { YServer } from "y-partyserver";
 import type { Connection, ConnectionContext, WSMessage } from "partyserver";
 import { runSerialized, runSingleFlight } from "./asyncConcurrency";
 import { ChunkedDocStore } from "./chunkedDocStore";
-import { usesLegacyPathModel } from "./schemaModel";
+import {
+	buildDocumentSummary,
+	countActivePaths,
+	hasAnyFileState,
+	type DocumentSummary,
+} from "./documentSummary";
 import { reapTombstonedBodies, type ReapResult } from "./tombstoneReaper";
 import { SqlDocStore } from "./sqlDocStore";
 import { shouldUseSqlState } from "./sqlMigrationTrust";
@@ -872,61 +877,14 @@ export class VaultSyncServer extends YServer {
 		}
 	}
 
-	/** Count active (non-deleted) paths in a Y.Doc using the YAOS schema. Dual-reads flat and nested metadata. */
+	/** Count active (non-deleted) paths in a Y.Doc using the YAOS schema. */
 	private countActivePathsInDoc(doc: Y.Doc): number {
-		const meta = doc.getMap("meta");
-		let count = 0;
-		meta.forEach((value: unknown) => {
-			const path = this.readMetaPath(value);
-			if (!path) return;
-			if (!this.isMetaDeleted(value)) count++;
-		});
-		return count;
+		return countActivePaths(doc);
 	}
 
 	/** Check if doc has any semantic file state: meta entries, pathToId, or idToText. */
 	private hasAnyFileStateInDoc(doc: Y.Doc): boolean {
-		const meta = doc.getMap("meta");
-		if (meta.size > 0) return true;
-		const pathToId = doc.getMap("pathToId");
-		if (pathToId.size > 0) return true;
-		const idToText = doc.getMap("idToText");
-		if (idToText.size > 0) return true;
-		return false;
-	}
-
-	/**
-	 * Read the path from a metadata value. Handles both flat objects (v2) and nested Y.Map (v3).
-	 * Server must dual-read because persisted rooms may contain either shape.
-	 */
-	private readMetaPath(value: unknown): string | null {
-		if (value instanceof Y.Map) {
-			const path = value.get("path");
-			return typeof path === "string" && path.length > 0 ? path : null;
-		}
-		if (typeof value === "object" && value !== null && "path" in value) {
-			const path = (value as { path: unknown }).path;
-			return typeof path === "string" && path.length > 0 ? path : null;
-		}
-		return null;
-	}
-
-	/**
-	 * Check if a metadata value represents a deleted/tombstoned entry.
-	 * Handles both flat objects (v2) and nested Y.Map (v3).
-	 */
-	private isMetaDeleted(value: unknown): boolean {
-		if (value instanceof Y.Map) {
-			const deletedAt = value.get("deletedAt");
-			if (typeof deletedAt === "number" && Number.isFinite(deletedAt)) return true;
-			return value.get("deleted") === true;
-		}
-		if (typeof value === "object" && value !== null) {
-			const m = value as { deleted?: boolean; deletedAt?: unknown };
-			if (typeof m.deletedAt === "number" && Number.isFinite(m.deletedAt)) return true;
-			return m.deleted === true;
-		}
-		return false;
+		return hasAnyFileState(doc);
 	}
 
 	private getChunkedDocStore(): ChunkedDocStore {
@@ -1044,114 +1002,15 @@ export class VaultSyncServer extends YServer {
 		};
 	}
 
-	/** Decoded document summary for deployment validation and diagnostics. */
-	private getDocumentSummary(): {
-		activePathCount: number;
-		tombstonedPathCount: number;
-		metaCount: number;
-		pathToIdCount: number;
-		idToTextCount: number;
-		/** Active meta entries that have a corresponding pathToId + idToText entry. */
-		activePathsWithText: number;
-		/** Active meta entries missing from pathToId. */
-		activePathsMissingFromPathToId: number;
-		/** Active meta entries with pathToId but missing idToText. */
-		activePathsMissingText: number;
-		/** pathToId entries that have no corresponding active meta entry. */
-		pathToIdWithoutActiveMeta: number;
-		schemaVersion: unknown;
-		pathModel: "legacy" | "id-first";
-		/** v3 observability: metadata entries stored as flat JSON objects. */
-		flatMetaEntries: number;
-		/** v3 observability: metadata entries stored as nested Y.Map. */
-		nestedMetaEntries: number;
-		/** v3 observability: metadata entries that could not be decoded. */
-		invalidMetaEntries: number;
-	} {
-		const meta = this.document.getMap("meta");
-		const pathToId = this.document.getMap<string>("pathToId");
-		const idToText = this.document.getMap("idToText");
-
-		let activePathCount = 0;
-		let tombstonedPathCount = 0;
-		let activePathsWithText = 0;
-		let activePathsMissingFromPathToId = 0;
-		let activePathsMissingText = 0;
-		let flatMetaEntries = 0;
-		let nestedMetaEntries = 0;
-		let invalidMetaEntries = 0;
-
-		// Walk meta to count active/tombstoned and check consistency
-		// Which map authorises path -> fileId here.  Under the id-first model the
-		// client resolves from `meta` alone and stopped writing `pathToId`, so
-		// whatever survives migration is frozen at that instant and points into
-		// the pre-migration fileId space.  Resolving through it then reports a
-		// perfectly healthy vault as having zero files with text — which is
-		// exactly what one real 92-file vault reported.
-		const legacyPathModel = usesLegacyPathModel(this.document);
-		const activeMetaPaths = new Set<string>();
-		meta.forEach((value: unknown, fileId: string) => {
-			const path = this.readMetaPath(value);
-			if (!path) {
-				invalidMetaEntries++;
-				return;
-			}
-
-			// Classify shape
-			if (value instanceof Y.Map) {
-				nestedMetaEntries++;
-			} else {
-				flatMetaEntries++;
-			}
-			const isDeleted = this.isMetaDeleted(value);
-			if (isDeleted) {
-				tombstonedPathCount++;
-			} else {
-				activePathCount++;
-				activeMetaPaths.add(path);
-				// Legacy: the path must appear in pathToId, and that id must have
-				// a body.  id-first: the meta KEY *is* the fileId, so ask
-				// idToText directly and never consult the dead map.
-				const id = legacyPathModel ? pathToId.get(path) : fileId;
-				if (!id) {
-					activePathsMissingFromPathToId++;
-				} else if (!idToText.has(id)) {
-					activePathsMissingText++;
-				} else {
-					activePathsWithText++;
-				}
-			}
-		});
-
-		// Count pathToId entries without active meta
-		let pathToIdWithoutActiveMeta = 0;
-		pathToId.forEach((_id: string, path: string) => {
-			if (!activeMetaPaths.has(path)) {
-				pathToIdWithoutActiveMeta++;
-			}
-		});
-
-		return {
-			activePathCount,
-			tombstonedPathCount,
-			metaCount: meta.size,
-			pathToIdCount: pathToId.size,
-			idToTextCount: idToText.size,
-			activePathsWithText,
-			activePathsMissingFromPathToId,
-			activePathsMissingText,
-			pathToIdWithoutActiveMeta,
-			schemaVersion: this.document.getMap("sys").get("schemaVersion") ?? null,
-			/**
-			 * Which map the counters above resolved through.  Without this the
-			 * cross-map figures are uninterpretable: under "id-first" a nonzero
-			 * pathToIdWithoutActiveMeta is stale legacy residue, not drift.
-			 */
-			pathModel: usesLegacyPathModel(this.document) ? "legacy" : "id-first",
-			flatMetaEntries,
-			nestedMetaEntries,
-			invalidMetaEntries,
-		};
+	/**
+	 * Decoded document summary for deployment validation and diagnostics.
+	 *
+	 * Delegated to documentSummary.ts so the counting rules are testable against
+	 * a constructed document; they were not before, which is how a healthy
+	 * 92-file vault came to report activePathsWithText: 0 unchallenged.
+	 */
+	private getDocumentSummary(): DocumentSummary {
+		return buildDocumentSummary(this.document);
 	}
 
 	private async readRoomMetaCheap(): Promise<RoomMeta | null> {
