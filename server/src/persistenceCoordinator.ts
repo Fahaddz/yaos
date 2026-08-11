@@ -260,6 +260,55 @@ export class PersistenceCoordinator {
 		return run;
 	}
 
+	/**
+	 * Rewrite the checkpoint from the current document and clear the journal,
+	 * regardless of delta size or dirty state.
+	 *
+	 * Needed because a journal is replayed verbatim on every cold load.  After a
+	 * change that REMOVES content — a tombstone reap, say — the journal still
+	 * holds the entries that inserted it, so each subsequent cold load
+	 * re-materialises the removed content before the delete set collapses it
+	 * again.  Measured on a 2M-character body: replaying [insert, reap] leaves
+	 * ~6.3MiB resident, while loading the equivalent checkpoint leaves ~0.4MiB.
+	 * Appending the removal is therefore not enough; the entries that created
+	 * the content have to stop being replayed.
+	 *
+	 * Ordinary journal compaction eventually does this, but only at >50 entries
+	 * or >1MB, so a vault that reaps and then goes quiet can sit in the
+	 * expensive state indefinitely.
+	 *
+	 * Serialised through the same chain as enqueueSave so it cannot race a save.
+	 */
+	forceCheckpoint(reason: string): Promise<SaveResult> {
+		this.health.queuedSaveCount++;
+		this.health.pendingPersistence = true;
+
+		const run = this.saveChain.then(async (): Promise<SaveResult> => {
+			try {
+				// Cleared before encoding, for the same reason executeSave does:
+				// a change arriving mid-write must re-mark the document.
+				this.dirty = false;
+				this.health.dirty = false;
+				const full = Y.encodeStateAsUpdate(this.document);
+				const result = await this.executeCheckpointFallback(full, reason);
+				if (!result.success) {
+					this.dirty = true;
+					this.health.dirty = true;
+				}
+				return result;
+			} finally {
+				this.health.queuedSaveCount = Math.max(0, this.health.queuedSaveCount - 1);
+				this.health.pendingPersistence =
+					this.health.queuedSaveCount > 0
+					|| this.health.status === "degraded"
+					|| this.dirty;
+			}
+		});
+
+		this.saveChain = run.then(() => {}).catch(() => {});
+		return run;
+	}
+
 	private async executeSave(): Promise<SaveResult> {
 		this.health.lastSaveStartedAt = new Date().toISOString();
 
@@ -306,11 +355,15 @@ export class PersistenceCoordinator {
 		return this.executeAppend(delta, currentStateVector);
 	}
 
-	private async executeCheckpointFallback(delta: Uint8Array): Promise<SaveResult> {
+	private async executeCheckpointFallback(
+		delta: Uint8Array,
+		reasonOverride?: string,
+	): Promise<SaveResult> {
 		const reason =
-			delta.byteLength > this.checkpointFallbackDeltaBytes
+			reasonOverride ??
+			(delta.byteLength > this.checkpointFallbackDeltaBytes
 				? "delta_exceeds_threshold"
-				: "consecutive_failures";
+				: "consecutive_failures");
 
 		this.trace?.("save.checkpoint_fallback", {
 			reason,

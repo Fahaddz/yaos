@@ -372,6 +372,115 @@ console.log("\n--- Test 12: a reap is persisted, because it is a deletion-only c
 	reloaded.destroy();
 }
 
+console.log("\n--- Test 13: a forced checkpoint stops storage replaying reaped content ---");
+{
+	// The property that matters is NOT "the live doc shrank" — it is "a cold
+	// load never re-materialises the reaped bodies".  A journal is replayed
+	// verbatim, so appending the removal is not enough: the entries that
+	// inserted the content must stop being replayed.
+	const { PersistenceCoordinator } = await import("../server/src/persistenceCoordinator");
+
+	const build = () => {
+		const doc = buildVault([
+			{ id: "keep", path: "keep.md", chars: 10_000, legacyPathMap: true },
+			{ id: "old", path: "old.md", chars: 400_000, deletedAt: NOW - 60 * DAY },
+		]);
+		const journal: Uint8Array[] = [];
+		let snapshot: Uint8Array | null = null;
+		const store = {
+			appendUpdate(u: Uint8Array) {
+				journal.push(u.slice());
+				return { entryCount: journal.length, totalBytes: journal.reduce((s, e) => s + e.byteLength, 0) };
+			},
+			rewriteCheckpoint(u: Uint8Array) { snapshot = u.slice(); journal.length = 0; },
+			getJournalStats() {
+				return { entryCount: journal.length, totalBytes: journal.reduce((s, e) => s + e.byteLength, 0) };
+			},
+		};
+		return { doc, store, journal, peek: () => ({ snapshot, journal }) };
+	};
+
+	// Largest single update that a cold load must hold while replaying storage.
+	const worstReplayEntry = (snapshot: Uint8Array | null, journal: Uint8Array[]): number =>
+		Math.max(snapshot ? snapshot.byteLength : 0, ...journal.map((e) => e.byteLength), 0);
+
+	// (a) append-only: the insert stays in the journal forever
+	{
+		const { doc, store, peek } = build();
+		const c = new PersistenceCoordinator(doc, store);
+		await c.enqueueSave();
+		c.setInitialStateVector(Y.encodeStateVector(doc));
+		reapTombstonedBodies(doc, { now: NOW });
+		await c.enqueueSave();
+
+		const { snapshot, journal } = peek();
+		const worst = worstReplayEntry(snapshot, journal);
+		assert(worst > 300_000, `append-only storage still replays the big body (worst entry ${worst} bytes)`);
+
+		const reloaded = new Y.Doc();
+		if (snapshot) Y.applyUpdate(reloaded, snapshot);
+		for (const e of journal) Y.applyUpdate(reloaded, e);
+		assert(!reloaded.getMap("idToText").has("old"), "settles to the reaped state either way");
+		c.dispose(); doc.destroy(); reloaded.destroy();
+	}
+
+	// (b) forced checkpoint: storage no longer contains the body at all
+	{
+		const { doc, store, peek } = build();
+		const c = new PersistenceCoordinator(doc, store);
+		await c.enqueueSave();
+		c.setInitialStateVector(Y.encodeStateVector(doc));
+		const result = reapTombstonedBodies(doc, { now: NOW });
+		assert(result.reaped === 1, "reaped the body");
+		const save = await c.forceCheckpoint("tombstone-reap");
+		assert(save.success, "forced checkpoint succeeded");
+		assert(save.method === "checkpoint-fallback", `used the checkpoint path (got ${save.method})`);
+
+		const { snapshot, journal } = peek();
+		assert(journal.length === 0, `journal cleared (got ${journal.length} entries)`);
+		const worst = worstReplayEntry(snapshot, journal);
+		assert(worst < 60_000, `storage no longer replays the big body (worst entry ${worst} bytes)`);
+
+		const reloaded = new Y.Doc();
+		if (snapshot) Y.applyUpdate(reloaded, snapshot);
+		assert(!reloaded.getMap("idToText").has("old"), "reaped body absent after reload");
+		assert(reloaded.getMap("meta").has("old"), "tombstone survives");
+		assert((reloaded.getMap<Y.Text>("idToText").get("keep")?.length ?? 0) === 10_000, "active file intact");
+		c.dispose(); doc.destroy(); reloaded.destroy();
+	}
+}
+
+console.log("\n--- Test 14: forceCheckpoint leaves the document clean and retries on failure ---");
+{
+	const { PersistenceCoordinator } = await import("../server/src/persistenceCoordinator");
+	const doc = buildVault([{ id: "a", path: "a.md", chars: 1_000, legacyPathMap: true }]);
+	let fail = false;
+	const journal: Uint8Array[] = [];
+	let snapshot: Uint8Array | null = null;
+	const store = {
+		appendUpdate(u: Uint8Array) { journal.push(u.slice()); return { entryCount: journal.length, totalBytes: 0 }; },
+		rewriteCheckpoint(u: Uint8Array) {
+			if (fail) throw new Error("checkpoint failed (injected)");
+			snapshot = u.slice(); journal.length = 0;
+		},
+		getJournalStats() { return { entryCount: journal.length, totalBytes: 0 }; },
+	};
+	const c = new PersistenceCoordinator(doc, store);
+	await c.enqueueSave();
+
+	fail = true;
+	const bad = await c.forceCheckpoint("tombstone-reap");
+	assert(!bad.success, "failure surfaces");
+	assert(c.health.dirty, "document left dirty so the next save retries");
+
+	fail = false;
+	const good = await c.forceCheckpoint("tombstone-reap");
+	assert(good.success, "retry succeeds");
+	assert(!c.health.dirty, "clean after a successful checkpoint");
+	assert(snapshot !== null, "snapshot written");
+	c.dispose(); doc.destroy();
+}
+
 // ---------------------------------------------------------------------------
 
 console.log(`\n${"─".repeat(56)}`);
