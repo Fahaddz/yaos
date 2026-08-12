@@ -49,15 +49,19 @@ export const s02OfflineHandoffCreate: QaScenario = {
 		// Small delay to let Obsidian's file watcher fire
 		await new Promise((r) => setTimeout(r, 1500));
 
-		// 3. Release hold and reconnect
-		const reconnectTs = Date.now();
+		// 3. Capture A's pending offline-write candidate immediately before the
+		// reconnect action. This checkpoint can only pass if that candidate
+		// confirms after this point, or if reconnect creates and confirms a new
+		// candidate; an already-confirmed/stale echo cannot satisfy it.
+		const receiptCheckpoint = await ctx.yaos.captureReceiptCheckpoint();
 		ctx.yaos.setQaNetworkHold("online");
 
 		// 4. Wait for full idle (provider synced + reconciled)
 		await ctx.waitForIdle(30_000);
 
-		// 5. Wait for receipt that was confirmed AFTER we reconnected
-		await ctx.yaos.waitForReceiptAfter(reconnectTs, 30_000);
+		// 5. Prove confirmation of the pending offline candidate or a fresh
+		// post-checkpoint candidate, not a global/stale receipt.
+		await ctx.yaos.waitForReceiptAfterCheckpoint(receiptCheckpoint, 30_000);
 	},
 
 	async assert(ctx: QaContext): Promise<void> {

@@ -5,7 +5,7 @@ import WebSocket from "ws";
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "";
 const BASE_VAULT_ID = process.env.YAOS_TEST_VAULT_ID || "yaos-schema-guard";
-const ROOM_ID = `${BASE_VAULT_ID}-schema-guard`;
+const ROOM_PREFIX = `${BASE_VAULT_ID}-schema-guard`;
 
 if (!TOKEN) {
 	throw new Error("SYNC_TOKEN is required for schema-guard test");
@@ -15,8 +15,8 @@ function wait(ms) {
 	return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
-function buildWsUrl({ includeSchema, schemaVersion }) {
-	const url = new URL(`/vault/sync/${encodeURIComponent(ROOM_ID)}`, HOST);
+function buildWsUrl(roomId, { includeSchema, schemaVersion }) {
+	const url = new URL(`/vault/sync/${encodeURIComponent(roomId)}`, HOST);
 	url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
 	url.searchParams.set("token", TOKEN);
 	if (includeSchema && schemaVersion !== undefined) {
@@ -64,11 +64,11 @@ async function safeDestroy(provider, ydoc) {
 	}
 }
 
-async function seedRoomSchema(schemaVersion) {
+async function seedRoomSchema(roomId, schemaVersion) {
 	const ydoc = new Y.Doc();
-	const syncPrefix = `/vault/sync/${encodeURIComponent(ROOM_ID)}`;
+	const syncPrefix = `/vault/sync/${encodeURIComponent(roomId)}`;
 
-	const provider = new YSyncProvider(HOST, ROOM_ID, ydoc, {
+	const provider = new YSyncProvider(HOST, roomId, ydoc, {
 		prefix: syncPrefix,
 		params: {
 			token: TOKEN,
@@ -125,10 +125,11 @@ async function seedRoomSchema(schemaVersion) {
 	await safeDestroy(provider, ydoc);
 }
 
-async function expectRejected(label, wsUrl) {
+async function expectRejected(label, wsUrl, expectedReason = "client_schema_older_than_room") {
 	await new Promise((resolvePromise, rejectPromise) => {
 		const ws = new WebSocket(wsUrl);
 		let sawExpectedCode = false;
+		let sawExpectedReason = false;
 		let settled = false;
 
 		const timeout = setTimeout(() => {
@@ -158,6 +159,7 @@ async function expectRejected(label, wsUrl) {
 				const msg = JSON.parse(text);
 				if (msg?.type === "error" && msg?.code === "update_required") {
 					sawExpectedCode = true;
+					sawExpectedReason = msg.reason === expectedReason;
 				}
 			} catch {
 				// ignore non-json
@@ -165,8 +167,8 @@ async function expectRejected(label, wsUrl) {
 		});
 
 		ws.on("close", () => {
-			if (!sawExpectedCode) {
-				finish(new Error(`${label}: socket closed without update_required error`));
+			if (!sawExpectedCode || !sawExpectedReason) {
+				finish(new Error(`${label}: socket closed without update_required/${expectedReason} error`));
 				return;
 			}
 			finish();
@@ -178,10 +180,10 @@ async function expectRejected(label, wsUrl) {
 	});
 }
 
-async function expectAllowed(schemaVersion) {
+async function expectAllowed(roomId, schemaVersion) {
 	const ydoc = new Y.Doc();
-	const syncPrefix = `/vault/sync/${encodeURIComponent(ROOM_ID)}`;
-	const provider = new YSyncProvider(HOST, ROOM_ID, ydoc, {
+	const syncPrefix = `/vault/sync/${encodeURIComponent(roomId)}`;
+	const provider = new YSyncProvider(HOST, roomId, ydoc, {
 		prefix: syncPrefix,
 		params: {
 			token: TOKEN,
@@ -232,26 +234,36 @@ async function expectAllowed(schemaVersion) {
 
 async function main() {
 	try {
-		console.log(`Schema guard integration room: ${ROOM_ID}`);
-		await seedRoomSchema(2);
-		console.log("Seeded room with sys.schemaVersion=2");
+		console.log(`Schema guard integration rooms: ${ROOM_PREFIX}-v1..v3`);
+		for (const roomSchemaVersion of [1, 2, 3]) {
+			const roomId = `${ROOM_PREFIX}-room-v${roomSchemaVersion}`;
+			await seedRoomSchema(roomId, roomSchemaVersion);
+			console.log(`Seeded ${roomId} with sys.schemaVersion=${roomSchemaVersion}`);
 
-		await expectRejected("stale client schema", buildWsUrl({
-			includeSchema: true,
-			schemaVersion: 1,
-		}));
-		console.log("Rejected stale schemaVersion=1 client as expected");
+			for (const clientSchemaVersion of [1, 2, 3]) {
+				if (clientSchemaVersion < roomSchemaVersion) {
+					await expectRejected(
+						`room v${roomSchemaVersion} rejects client v${clientSchemaVersion}`,
+						buildWsUrl(roomId, { includeSchema: true, schemaVersion: clientSchemaVersion }),
+					);
+					console.log(`Rejected room v${roomSchemaVersion} / client v${clientSchemaVersion}`);
+				} else {
+					await expectAllowed(roomId, clientSchemaVersion);
+					console.log(`Accepted room v${roomSchemaVersion} / client v${clientSchemaVersion}`);
+				}
+			}
 
-		await expectRejected("missing schema (legacy default)", buildWsUrl({
-			includeSchema: false,
-		}));
-		console.log("Rejected missing schema client (legacy default v1) as expected");
-
-		await expectAllowed(2);
-		console.log("Accepted compatible schemaVersion=2 client");
+			if (roomSchemaVersion === 2) {
+				await expectRejected(
+					"room v2 rejects missing schema as legacy default v1",
+					buildWsUrl(roomId, { includeSchema: false }),
+				);
+				console.log("Rejected missing-schema client against room v2 (legacy default v1)");
+			}
+		}
 		process.exit(0);
 	} finally {
-		// Teardown handled by safeDestroy inside sub-calls
+		// Teardown handled by safeDestroy inside sub-calls.
 	}
 }
 

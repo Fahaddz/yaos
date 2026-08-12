@@ -23,6 +23,15 @@ import type { EditorBindingManager } from "../../src/sync/editorBinding";
 import { FLIGHT_KIND } from "../../src/telemetry/debug/flightEvents";
 import { yTextToString } from "../../src/utils/format";
 import { forceReplaceYText } from "../../src/sync/diff";
+import {
+	isReceiptWaitReadyAfter,
+	isReceiptWaitReadyAfterCheckpoint,
+	type ReceiptWaitCheckpoint,
+	type ReceiptWaitState,
+} from "./receiptWaitReadiness";
+
+export { isReceiptWaitReadyAfter, isReceiptWaitReadyAfterCheckpoint } from "./receiptWaitReadiness";
+export type { ReceiptWaitCheckpoint, ReceiptWaitState } from "./receiptWaitReadiness";
 
 /**
  * Health report for the CRDT editor binding on a given path.
@@ -46,7 +55,7 @@ export interface EditorBindingHealth {
 }
 
 export interface ReceiptSnapshot {
-	/** Opaque ID of the current unconfirmed candidate. Null if none. */
+	/** Opaque ID of the latest receipt candidate, retained after confirmation. */
 	candidateId: string | null;
 	/** Timestamp (ms) when the current candidate was captured. Null if no candidate. */
 	capturedAt: number | null;
@@ -54,6 +63,8 @@ export interface ReceiptSnapshot {
 	lastConfirmedCandidateId: string | null;
 	/** Timestamp (ms) of the last confirmed server receipt echo. Null if never confirmed. */
 	lastConfirmedAt: number | null;
+	/** Whether the current candidate still needs a matching server confirmation. */
+	hasUnconfirmedCandidate: boolean;
 }
 
 export interface YaosQaDebugApi {
@@ -82,13 +93,29 @@ export interface YaosQaDebugApi {
 	/** local ready + provider synced + reconciled + no reconcile in flight */
 	waitForIdle(timeoutMs: number): Promise<void>;
 	/**
-	 * Waits for a server receipt that was confirmed AFTER `afterTimestamp`.
-	 * Use this instead of the global `waitForMemoryReceipt()` to avoid
-	 * false-passes from stale confirmations.
+	 * Waits until a receipt candidate captured strictly AFTER `afterTimestamp`
+	 * is confirmed by matching candidate identity. This fails closed when the
+	 * action did not produce an ack-tracked local candidate.
 	 */
 	waitForReceiptAfter(afterTimestamp: number, timeoutMs: number): Promise<void>;
-	/** Snapshot the current receipt state for action-relative waiting. */
+	/** Snapshot the current receipt state for diagnostics. */
 	getReceiptSnapshot(): ReceiptSnapshot;
+	/**
+	 * Capture an opaque receipt checkpoint immediately before an action that may
+	 * confirm an already-pending candidate (such as reconnecting this device).
+	 * This renderer-local API snapshots synchronously; transport adapters expose
+	 * their own asynchronous bridge contract.
+	 */
+	captureReceiptCheckpoint(): ReceiptWaitCheckpoint;
+	/**
+	 * Wait for either the captured pending candidate's confirmation or a new
+	 * post-checkpoint candidate's confirmation. Never accepts a candidate that
+	 * was already confirmed when the checkpoint was captured.
+	 */
+	waitForReceiptAfterCheckpoint(
+		checkpoint: ReceiptWaitCheckpoint,
+		timeoutMs: number,
+	): Promise<void>;
 	/** @deprecated Use waitForReceiptAfter(timestamp). This checks global state and can give false-passes. */
 	waitForMemoryReceipt(timeoutMs: number): Promise<void>;
 	/** File appears in the vault (disk) */
@@ -371,6 +398,17 @@ function waitFor(
 	});
 }
 
+function readReceiptWaitState(vaultSync: VaultSync | null): ReceiptWaitState | null {
+	if (!vaultSync) return null;
+	return {
+		candidateId: vaultSync.serverReceiptCandidateId,
+		capturedAt: vaultSync.serverReceiptCandidateCapturedAt,
+		lastConfirmedCandidateId: vaultSync.lastConfirmedReceiptCandidateId,
+		lastConfirmedAt: vaultSync.lastKnownServerReceiptEchoAt,
+		hasUnconfirmedCandidate: vaultSync.hasUnconfirmedServerReceiptCandidate,
+	};
+}
+
 // -----------------------------------------------------------------------
 // Factory
 // -----------------------------------------------------------------------
@@ -378,6 +416,21 @@ function waitFor(
 export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 	const { app } = plugin;
 	const POLL_INTERVAL = 250;
+
+	/**
+	 * Copy external QA-harness scenario state into the passive witness tracker.
+	 * The tracker only records this annotation in telemetry; scenario control
+	 * remains owned by qa/harness and never alters sync state.
+	 */
+	function applyScenarioContextToTracker(): void {
+		const state = plugin.getScenarioController?.()?.getScenarioStepState();
+		plugin.getDeviceWitnessTracker?.()?.setScenarioContext({
+			scenarioRunId: state?.scenarioRunId ?? null,
+			scenarioId: state?.scenarioId ?? null,
+			stepIndex: state?.stepIndex ?? null,
+			stepLabel: state?.stepLabel,
+		});
+	}
 
 	async function sha256(text: string): Promise<string> {
 		return plugin.sha256Hex(text);
@@ -453,40 +506,44 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 		},
 
 		getReceiptSnapshot(): ReceiptSnapshot {
-			const vs = plugin.getVaultSync();
+			const receipt = readReceiptWaitState(plugin.getVaultSync());
 			return {
-				candidateId: vs?.serverReceiptCandidateId ?? null,
-				capturedAt: vs?.serverReceiptCandidateCapturedAt ?? null,
-				lastConfirmedCandidateId: vs?.lastConfirmedReceiptCandidateId ?? null,
-				lastConfirmedAt: vs?.lastKnownServerReceiptEchoAt ?? null,
+				candidateId: receipt?.candidateId ?? null,
+				capturedAt: receipt?.capturedAt ?? null,
+				lastConfirmedCandidateId: receipt?.lastConfirmedCandidateId ?? null,
+				lastConfirmedAt: receipt?.lastConfirmedAt ?? null,
+				hasUnconfirmedCandidate: receipt?.hasUnconfirmedCandidate ?? false,
+			};
+		},
+
+		captureReceiptCheckpoint(): ReceiptWaitCheckpoint {
+			const receipt = readReceiptWaitState(plugin.getVaultSync());
+			return {
+				checkpointAt: Date.now(),
+				candidateId: receipt?.candidateId ?? null,
+				candidateWasUnconfirmed: receipt?.hasUnconfirmedCandidate ?? false,
 			};
 		},
 
 		waitForReceiptAfter(afterTimestamp: number, timeoutMs: number): Promise<void> {
 			return waitFor(
 				() => {
-					const vs = plugin.getVaultSync();
-					if (!vs) return false;
-					const capturedAt = vs.serverReceiptCandidateCapturedAt;
-					const confirmedId = vs.lastConfirmedReceiptCandidateId;
-					const candidateId = vs.serverReceiptCandidateId;
-					const confirmedAt = vs.lastKnownServerReceiptEchoAt;
+					const receipt = readReceiptWaitState(plugin.getVaultSync());
+					return receipt !== null && isReceiptWaitReadyAfter(afterTimestamp, receipt);
+				},
+				POLL_INTERVAL,
+				timeoutMs,
+			);
+		},
 
-					// A candidate must have been captured AFTER the action.
-					// That same candidate (by ID) must then be confirmed.
-					if (capturedAt !== null && capturedAt > afterTimestamp) {
-						if (confirmedId !== null && confirmedId === candidateId) {
-							return true;
-						}
-					}
-
-					// Fallback: if no pending candidate but confirmed timestamp is recent,
-					// the server already processed everything before we could observe the ID.
-					if (confirmedAt !== null && confirmedAt > afterTimestamp) {
-						return true;
-					}
-
-					return false;
+		waitForReceiptAfterCheckpoint(
+			checkpoint: ReceiptWaitCheckpoint,
+			timeoutMs: number,
+		): Promise<void> {
+			return waitFor(
+				() => {
+					const receipt = readReceiptWaitState(plugin.getVaultSync());
+					return receipt !== null && isReceiptWaitReadyAfterCheckpoint(checkpoint, receipt);
 				},
 				POLL_INTERVAL,
 				timeoutMs,
@@ -675,6 +732,7 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 				}
 			}
 			await plugin.startQaFlightTrace(mode);
+			applyScenarioContextToTracker();
 		},
 
 		async stopFlightTrace(): Promise<void> {
@@ -881,6 +939,7 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 
 		__qaOnlySetScenarioRunIdUnsafe(scenarioRunId: string, scenarioId: string): void {
 			plugin.getScenarioController?.()?.setScenarioRunId(scenarioRunId, scenarioId);
+			applyScenarioContextToTracker();
 		},
 
 		__qaOnlyAdvanceScenarioStepUnsafe(stepIndex: number, label?: string): void {
@@ -901,6 +960,7 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 			}
 			const ok = scenarioCtrl.advanceScenarioStep(stepIndex, label);
 			if (!ok) return;
+			applyScenarioContextToTracker();
 			// Emit qa.scenario.step flight event
 			plugin.getFlightTraceController()?.record({
 				priority: "important",

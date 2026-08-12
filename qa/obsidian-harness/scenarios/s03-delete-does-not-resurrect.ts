@@ -37,9 +37,9 @@ export const s03DeleteDoesNotResurrect: QaScenario = {
 
 	async run(ctx: QaContext): Promise<void> {
 		// 1. Create and confirm receipt
+		const createTs = Date.now();
 		await ctx.createFile(SCRATCH, CONTENT);
 		await ctx.waitForIdle(8000);
-		const createTs = Date.now();
 		await ctx.yaos.waitForReceiptAfter(createTs, 30_000);
 
 		// 2. Delete via vault API (permanent)

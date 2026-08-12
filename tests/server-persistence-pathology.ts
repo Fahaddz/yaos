@@ -1006,12 +1006,19 @@ console.log("\n--- Test 14: PersistenceCoordinator — queued saves cannot regre
 	const { PersistenceCoordinator } = await import("../server/src/persistenceCoordinator.js");
 
 	let savedUpdates: Uint8Array[] = [];
+	// The store contract has two write paths and a coordinator is free to choose
+	// either, so a mock that only records appends cannot tell "persisted via
+	// checkpoint" from "lost".  Record both and rebuild the way a cold load does.
+	let savedCheckpoint: Uint8Array | null = null;
 	const mockStore = {
 		async appendUpdate(update: Uint8Array) {
 			savedUpdates.push(update);
 			return { entryCount: savedUpdates.length, totalBytes: update.byteLength };
 		},
-		async rewriteCheckpoint(_update: Uint8Array, _sv: Uint8Array) {},
+		async rewriteCheckpoint(update: Uint8Array, _sv?: Uint8Array) {
+			savedCheckpoint = update;
+			savedUpdates = [];
+		},
 		async getJournalStats() {
 			return { entryCount: savedUpdates.length, totalBytes: 0 };
 		},
@@ -1046,6 +1053,7 @@ console.log("\n--- Test 14: PersistenceCoordinator — queued saves cannot regre
 
 	// Cold load should have all content
 	const coldDoc = new Y.Doc();
+	if (savedCheckpoint) Y.applyUpdate(coldDoc, savedCheckpoint);
 	for (const update of savedUpdates) {
 		Y.applyUpdate(coldDoc, update);
 	}
@@ -1053,6 +1061,187 @@ console.log("\n--- Test 14: PersistenceCoordinator — queued saves cannot regre
 	assert(content.includes("A"), "cold load has content A");
 	assert(content.includes("B"), "cold load has content B");
 	assert(content.includes("C"), "cold load has content C");
+}
+
+// ── Test 14b: entry pressure coalesces instead of rewriting the snapshot ────
+
+console.log("\n--- Test 14b: PersistenceCoordinator — entry pressure coalesces, byte pressure checkpoints ---");
+{
+	const { PersistenceCoordinator } = await import("../server/src/persistenceCoordinator.js");
+
+	let journal: Uint8Array[] = [];
+	let checkpoints = 0;
+	let coalesces = 0;
+	let snapshotBytes = 4000;
+	const store = {
+		appendUpdate(u: Uint8Array) {
+			journal.push(u);
+			return { entryCount: journal.length, totalBytes: journal.reduce((a, b) => a + b.byteLength, 0) };
+		},
+		rewriteCheckpoint(u: Uint8Array) { checkpoints++; journal = []; snapshotBytes = u.byteLength; },
+		getJournalStats() {
+			return { entryCount: journal.length, totalBytes: journal.reduce((a, b) => a + b.byteLength, 0) };
+		},
+		getSnapshotBytes() { return snapshotBytes; },
+		coalesceJournal() {
+			coalesces++;
+			journal = [Y.mergeUpdates(journal)];
+			return { status: "ok" as const, stats: { entryCount: 1, totalBytes: journal[0].byteLength } };
+		},
+	};
+
+	const doc = new Y.Doc();
+	const coordinator = new PersistenceCoordinator(doc, store as never, undefined, {
+		journalCompactMaxEntries: 5,
+		journalCompactMaxBytes: 1024,
+		journalCompactAmplificationBound: 4,
+	});
+	// Establish a baseline so saves take the append path rather than seeding.
+	coordinator.setInitialStateVector(Y.encodeStateVector(doc));
+
+	for (let i = 0; i < 30; i++) {
+		doc.getText("t").insert(0, "x");
+		await coordinator.enqueueSave();
+	}
+
+	assert(coalesces > 0, `entry pressure coalesced (got ${coalesces})`);
+	assert(checkpoints === 0, `entry pressure did NOT rewrite the snapshot (got ${checkpoints})`);
+	assert(coordinator.health.coalesceCount === coalesces, "coalesce count surfaced in health");
+
+	coordinator.dispose(); doc.destroy();
+}
+
+console.log("\n--- Test 14b2: PersistenceCoordinator — the byte arm scales with the snapshot ---");
+{
+	const { PersistenceCoordinator } = await import("../server/src/persistenceCoordinator.js");
+
+	let journal: Uint8Array[] = [];
+	let checkpoints = 0;
+	let coalesces = 0;
+	// Small enough that snapshotBytes/4 clears the absolute floor, so the
+	// relative arm is the one under test rather than the fixed 1MB default.
+	const snapshotBytes = 400;
+	const store = {
+		appendUpdate(u: Uint8Array) {
+			journal.push(u);
+			return { entryCount: journal.length, totalBytes: journal.reduce((a, b) => a + b.byteLength, 0) };
+		},
+		rewriteCheckpoint() { checkpoints++; journal = []; },
+		getJournalStats() {
+			return { entryCount: journal.length, totalBytes: journal.reduce((a, b) => a + b.byteLength, 0) };
+		},
+		getSnapshotBytes() { return snapshotBytes; },
+		coalesceJournal() {
+			coalesces++;
+			journal = [Y.mergeUpdates(journal)];
+			return { status: "ok" as const, stats: { entryCount: 1, totalBytes: journal[0].byteLength } };
+		},
+	};
+
+	const doc = new Y.Doc();
+	const coordinator = new PersistenceCoordinator(doc, store as never, undefined, {
+		journalCompactMaxEntries: 1000,   // keep the entry arm out of the way
+		journalCompactMaxBytes: 16,       // floor below snapshotBytes/4 = 100
+		journalCompactAmplificationBound: 4,
+	});
+	coordinator.setInitialStateVector(Y.encodeStateVector(doc));
+
+	for (let i = 0; i < 40 && checkpoints === 0; i++) {
+		doc.getText("t").insert(0, "abcdefghij");
+		await coordinator.enqueueSave();
+	}
+
+	assert(checkpoints === 1, `journal past snapshotBytes/4 triggers a checkpoint (got ${checkpoints})`);
+	assert(coalesces === 0, `the entry arm stayed out of it (got ${coalesces})`);
+
+	coordinator.dispose(); doc.destroy();
+}
+
+// ── Test 14c: a failed append does not drop the buffered updates ─────────────
+
+console.log("\n--- Test 14c: PersistenceCoordinator — failed append retains updates for retry ---");
+{
+	const { PersistenceCoordinator } = await import("../server/src/persistenceCoordinator.js");
+
+	let checkpoint: Uint8Array | null = null;
+	let journal: Uint8Array[] = [];
+	let failNext = false;
+	const store = {
+		appendUpdate(u: Uint8Array) {
+			if (failNext) throw new Error("simulated append failure");
+			journal.push(u);
+			return { entryCount: journal.length, totalBytes: 0 };
+		},
+		rewriteCheckpoint(u: Uint8Array) { checkpoint = u; journal = []; },
+		getJournalStats() { return { entryCount: journal.length, totalBytes: 0 }; },
+	};
+
+	const doc = new Y.Doc();
+	const coordinator = new PersistenceCoordinator(doc, store as never, undefined, {
+		// Keep failures from escalating to a checkpoint, so the retry has to be
+		// the append path replaying the very bytes the failure could have lost.
+		checkpointFallbackAfterFailures: 99,
+	});
+	doc.getText("t").insert(0, "seed");
+	await coordinator.enqueueSave();          // seeds the checkpoint baseline
+
+	failNext = true;
+	doc.getText("t").insert(0, "LOST?");
+	const failed = await coordinator.enqueueSave();
+	assert(!failed.success, "append failure reported");
+
+	failNext = false;
+	doc.getText("t").insert(0, "later-");
+	const retried = await coordinator.enqueueSave();
+	assert(retried.success, "retry succeeds");
+
+	const cold = new Y.Doc();
+	if (checkpoint) Y.applyUpdate(cold, checkpoint);
+	for (const u of journal) Y.applyUpdate(cold, u);
+	const text = cold.getText("t").toJSON();
+	assert(text.includes("LOST?"), `content from the failed save survives (got ${JSON.stringify(text)})`);
+	assert(text.includes("later-"), "content from the retry is present");
+	assert(text === doc.getText("t").toJSON(), "cold load matches the live document exactly");
+
+	coordinator.dispose(); doc.destroy(); cold.destroy();
+}
+
+// ── Test 14d: delete-only changes travel through the update stream ───────────
+
+console.log("\n--- Test 14d: PersistenceCoordinator — delete-only change reaches storage ---");
+{
+	const { PersistenceCoordinator } = await import("../server/src/persistenceCoordinator.js");
+
+	let checkpoint: Uint8Array | null = null;
+	let journal: Uint8Array[] = [];
+	const store = {
+		appendUpdate(u: Uint8Array) { journal.push(u); return { entryCount: journal.length, totalBytes: 0 }; },
+		rewriteCheckpoint(u: Uint8Array) { checkpoint = u; journal = []; },
+		getJournalStats() { return { entryCount: journal.length, totalBytes: 0 }; },
+	};
+
+	const doc = new Y.Doc();
+	const coordinator = new PersistenceCoordinator(doc, store as never);
+	doc.getText("t").insert(0, "delete me entirely");
+	await coordinator.enqueueSave();
+
+	// A deletion leaves the state vector byte-identical: it is recorded in the
+	// delete set, which the state vector does not describe.  The update event
+	// still fires, so the stream must carry it.
+	const svBefore = Buffer.from(Y.encodeStateVector(doc)).toString("hex");
+	doc.getText("t").delete(0, doc.getText("t").length);
+	const svAfter = Buffer.from(Y.encodeStateVector(doc)).toString("hex");
+	assert(svBefore === svAfter, "state vector unchanged by the deletion (precondition)");
+
+	const result = await coordinator.enqueueSave();
+	assert(result.success && result.method !== "skipped", `delete-only save was written (got ${result.method})`);
+
+	const cold = new Y.Doc();
+	if (checkpoint) Y.applyUpdate(cold, checkpoint);
+	for (const u of journal) Y.applyUpdate(cold, u);
+	assert(cold.getText("t").toJSON() === "", `deletion survives a cold load (got ${JSON.stringify(cold.getText("t").toJSON())})`);
+
+	coordinator.dispose(); doc.destroy(); cold.destroy();
 }
 
 // ── Test 15: PersistenceCoordinator — pendingPersistence tracks degraded state ───────

@@ -3,6 +3,10 @@ import { getSocketAuthToken, isAuthorized } from "./auth";
 import { json, withCors } from "./http";
 import { fetchVaultSchemaVersion } from "./trace";
 import { verifyTicket } from "./ticket";
+import {
+	SERVER_MAX_SCHEMA_VERSION,
+	SERVER_MIN_SCHEMA_VERSION,
+} from "../version";
 import type { AuthState, Env, FatalAuthCode } from "./types";
 
 const LEGACY_CLIENT_SCHEMA_VERSION = 1;
@@ -39,7 +43,7 @@ function rejectSocket(
 ): Response {
 	if (!isWebSocketRequest(req)) {
 		return json(
-			{ error: code },
+			{ error: code, ...details },
 			code === "unauthorized"
 				? 401
 				: code === "update_required"
@@ -199,6 +203,33 @@ export async function handleSyncSocketRoute(
 			reason: "invalid_client_schema",
 			clientSchemaVersion: null,
 			roomSchemaVersion: null,
+		}));
+	}
+
+	if (
+		clientSchema.version < SERVER_MIN_SCHEMA_VERSION ||
+		clientSchema.version > SERVER_MAX_SCHEMA_VERSION
+	) {
+		// Enforce the server's declared capability envelope before probing the
+		// room Durable Object. Cached plugin preflight is helpful UX, but this is
+		// the authoritative protection against unsupported writers.
+		console.warn(
+			`[yaos-sync:worker] ws rejected (update_required): ` +
+			JSON.stringify({
+				vaultIdHint: vaultId.slice(0, 8),
+				reason: "client_schema_unsupported",
+				clientSchemaVersion: clientSchema.version,
+				clientSchemaSource: clientSchema.source,
+				minSchemaVersion: SERVER_MIN_SCHEMA_VERSION,
+				maxSchemaVersion: SERVER_MAX_SCHEMA_VERSION,
+			}),
+		);
+		return returnSocketResponse(req, rejectSocket(req, "update_required", {
+			reason: "client_schema_unsupported",
+			clientSchemaVersion: clientSchema.version,
+			roomSchemaVersion: null,
+			minSchemaVersion: SERVER_MIN_SCHEMA_VERSION,
+			maxSchemaVersion: SERVER_MAX_SCHEMA_VERSION,
 		}));
 	}
 

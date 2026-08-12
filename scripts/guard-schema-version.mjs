@@ -75,7 +75,7 @@ if (!existsSync("src/sync/vaultSync.ts")) {
 
 // 5-7. Server schema version range must include plugin schema
 if (!existsSync("server/src/version.ts")) {
-	console.warn("WARN: server/src/version.ts not found — skipping server schema check");
+	fail("server/src/version.ts is missing — server schema compatibility cannot be validated. Restore it.");
 } else {
 	const serverContent = readFileSync("server/src/version.ts", "utf8");
 	const minMatch = serverContent.match(/SERVER_MIN_SCHEMA_VERSION\s*=\s*(\d+)/);

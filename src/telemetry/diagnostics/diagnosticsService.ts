@@ -1,9 +1,7 @@
 import { App, Notice, normalizePath } from "obsidian";
 import { deriveSyncFacts } from "../../runtime/connectionFacts";
 import { formatUnknown } from "../../utils/format";
-import { BlobSyncManager } from "../../sync/blobSync";
-import { DiskMirror } from "../../sync/diskMirror";
-import type { SyncReadPort } from "../telemetryRuntimeHost";
+import type { BlobSyncSnapshot, DiskMirrorSnapshot, SyncReadPort } from "../telemetryRuntimeHost";
 import type { TraceHttpContext } from "../debug/trace";
 import type { VaultSyncSettings } from "../../settings";
 import {
@@ -48,8 +46,8 @@ interface DiagnosticsServiceDeps {
 	getSettings(): VaultSyncSettings;
 	getTraceHttpContext(): TraceHttpContext | undefined;
 	getSyncState(): SyncReadPort | null;
-	getDiskMirror(): DiskMirror | null;
-	getBlobSync(): BlobSyncManager | null;
+	getDiskMirrorSnapshot(): DiskMirrorSnapshot | null;
+	getBlobSyncSnapshot(): BlobSyncSnapshot | null;
 	getEventRing(): EventEntry[];
 	getRecentServerTrace(): unknown[];
 	getFrontmatterQuarantineEntries(): FrontmatterQuarantineEntry[];
@@ -77,7 +75,7 @@ export class DiagnosticsService {
 		if (!vaultSync) return "Sync not initialized";
 		const settings = this.deps.getSettings();
 		const state = this.deps.getState();
-		const blobSync = this.deps.getBlobSync();
+		const blobSyncSnapshot = this.deps.getBlobSyncSnapshot();
 		const trace = this.deps.getTraceHttpContext();
 
 		const facts = deriveSyncFacts(
@@ -88,7 +86,7 @@ export class DiagnosticsService {
 				lastLocalUpdateAt: vaultSync.lastLocalUpdateAt,
 				lastLocalUpdateWhileConnectedAt: vaultSync.lastLocalUpdateWhileConnectedAt,
 				lastRemoteUpdateAt: vaultSync.lastRemoteUpdateAt,
-				pendingBlobUploads: blobSync?.pendingUploads ?? 0,
+				pendingBlobUploads: blobSyncSnapshot?.pendingUploads ?? 0,
 				serverAppliedLocalState: vaultSync.serverAppliedLocalState,
 				lastServerReceiptEchoAt: vaultSync.lastServerReceiptEchoAt,
 				lastKnownServerReceiptEchoAt: vaultSync.lastKnownServerReceiptEchoAt,
@@ -161,11 +159,11 @@ export class DiagnosticsService {
 			`CRDT paths: ${vaultSync.getActiveMarkdownPaths().length}`,
 			`Blob paths: ${vaultSync.blobPathCount}`,
 			`Untracked files: ${state.untrackedFileCount}`,
-			`Active disk observers: ${this.deps.getDiskMirror()?.activeObserverCount ?? 0}`,
+			`Active disk observers: ${this.deps.getDiskMirrorSnapshot()?.activeObserverCount ?? 0}`,
 			`External edit policy: ${settings.externalEditPolicy}`,
 			`Attachment sync: ${settings.enableAttachmentSync ? "enabled" : "disabled"}`,
-			...(blobSync ? [
-				`Pending downloads: ${blobSync.pendingDownloads}`,
+			...(blobSyncSnapshot ? [
+				`Pending downloads: ${blobSyncSnapshot.pendingDownloads}`,
 			] : []),
 			`Open files: ${state.openFileCount}`,
 			`Server trace events: ${this.deps.getRecentServerTrace().length}`,
@@ -274,7 +272,7 @@ export class DiagnosticsService {
 			});
 		}
 
-		const blobSync = this.deps.getBlobSync();
+		const blobSyncSnapshot = this.deps.getBlobSyncSnapshot();
 		const syncFacts = deriveSyncFacts(
 			{
 				connected: vaultSync.connected,
@@ -283,7 +281,7 @@ export class DiagnosticsService {
 				lastLocalUpdateAt: vaultSync.lastLocalUpdateAt,
 				lastLocalUpdateWhileConnectedAt: vaultSync.lastLocalUpdateWhileConnectedAt,
 				lastRemoteUpdateAt: vaultSync.lastRemoteUpdateAt,
-				pendingBlobUploads: blobSync?.pendingUploads ?? 0,
+				pendingBlobUploads: blobSyncSnapshot?.pendingUploads ?? 0,
 				serverAppliedLocalState: vaultSync.serverAppliedLocalState,
 				lastServerReceiptEchoAt: vaultSync.lastServerReceiptEchoAt,
 				lastKnownServerReceiptEchoAt: vaultSync.lastKnownServerReceiptEchoAt,
@@ -345,8 +343,8 @@ export class DiagnosticsService {
 			syncEvents: vaultSync.getRecentEvents(240) as Array<{ ts: string; msg: string }>,
 			serverTrace: this.deps.getRecentServerTrace(),
 			openFiles: await this.deps.collectOpenFileTraceState(),
-			diskMirrorSnapshot: this.deps.getDiskMirror()?.getDebugSnapshot() ?? null,
-			blobSyncSnapshot: blobSync?.getDebugSnapshot() ?? null,
+			diskMirrorSnapshot: this.deps.getDiskMirrorSnapshot(),
+			blobSyncSnapshot: blobSyncSnapshot,
 			frontmatterQuarantine: this.deps.getFrontmatterQuarantineEntries(),
 			sha256Hex: this.deps.sha256Hex.bind(this.deps),
 		};

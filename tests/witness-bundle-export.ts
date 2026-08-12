@@ -1,23 +1,21 @@
 /**
- * Verification Gate 5 — Bundle export (Phase 3 Requirement 2)
+ * Verification Gate 5 — active safe witness-bundle contract.
  *
- * Tests that:
- *   - bundle.header first line has all required fields
- *   - safe/qa-safe bundles contain no secrets or raw paths
- *   - bundle parses as valid NDJSON with header on line 1
- *   - bundle includes all retained segment lines
- *   - round-trip: events parse back to FlightEvent-compatible shape
- *
- * Architecture note:
- *   Scenario state mutation was moved OUT of DeviceWitnessTracker (Observer)
- *   into ScenarioStateController (Puppeteer). The buildBundleString helper
- *   now reads scenario state from the controller, not the tracker.
+ * These tests exercise the production formatter used by the telemetry command,
+ * rather than a test-only copy of its schema. They also prove that the bundle
+ * is accepted by the real offline analyzer CLI and excludes unsafe fields.
  */
 
 import assert from "node:assert/strict";
-import { DeviceWitnessTracker } from "../src/telemetry/diagnostics/deviceWitnessTracker";
-import type { WitnessTrackerConfig } from "../src/telemetry/diagnostics/deviceWitnessTracker";
-import { ScenarioStateController } from "../qa/harness/scenarioStateController";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DeviceWitnessTracker, type WitnessTrackerConfig } from "../src/telemetry/diagnostics/deviceWitnessTracker";
+import {
+	buildSafeWitnessBundle,
+	copyWitnessBundleToClipboard,
+} from "../src/telemetry/diagnostics/witnessBundleFormat";
 
 let passed = 0;
 let failed = 0;
@@ -27,14 +25,16 @@ function test(name: string, fn: () => Promise<void>): void {
 	tests.push([name, fn]);
 }
 
-function makeConfig(
-	scenario?: ScenarioStateController,
-	overrides: Partial<WitnessTrackerConfig> = {},
-): WitnessTrackerConfig {
+const SENSITIVE_PATH = "Private Vault/medical-notes.md";
+const SENSITIVE_CONTENT = "TOP_SECRET_WITNESS_FIXTURE";
+const SENSITIVE_QA_SECRET = "qa-secret-SUPER_SECRET";
+const SENSITIVE_TOKEN = "token_SUPER_SECRET";
+
+function makeConfig(overrides: Partial<WitnessTrackerConfig> = {}): WitnessTrackerConfig {
 	return {
-		stateSecret: "test-state-secret",
+		stateSecret: "state-secret-SUPER_SECRET",
 		flightMode: "qa-safe",
-		qaTraceSecret: "qa-trace-secret-sentinel",
+		qaTraceSecret: SENSITIVE_QA_SECRET,
 		platform: "desktop",
 		sink: { record: () => {}, recordPath: async () => {} },
 		traceContext: {
@@ -45,298 +45,166 @@ function makeConfig(
 			serverHostHash: "server-hash",
 			pluginVersion: "1.6.1",
 		},
-		readCrdtContent: () => "bundle test content",
+		readCrdtContent: () => SENSITIVE_CONTENT,
 		isCrdtTombstoned: () => false,
 		getFileId: () => "file-bundle-001",
-		readDiskContent: async () => "bundle test content",
+		readDiskContent: async () => SENSITIVE_CONTENT,
 		sampleEditor: () => ({ kind: "not_open", content: null }),
-		stableAfterMs: 50,
-		getScenarioContext: scenario ? () => scenario : undefined,
+		stableAfterMs: 20,
+		getPathId: async () => "p:bundle-test",
 		...overrides,
 	};
 }
 
-const WAIT_FOR_SEGMENT_MS = 150;
-
-function buildBundleString(
-	tracker: DeviceWitnessTracker,
-	scenario: ScenarioStateController | null,
-	opts: {
-		traceId: string;
-		deviceId: string;
-		pluginVersion: string;
-		deviceLabel: string;
-		qaTraceSecretHash: string;
-		scenarioRunId?: string | null;
-		scenarioId?: string | null;
-		privacyMode: "safe" | "unsafe-local";
-		flightMode: string;
-	},
-): string {
-	const segments = tracker.getCheckpointSegments();
-	const eventCount = segments.reduce((n, s) => {
-		return n + s.content.split("\n").filter((l) => {
-			if (!l.trim()) return false;
-			try {
-				const o = JSON.parse(l) as Record<string, unknown>;
-				return o.kind !== "checkpoint.segment.header";
-			} catch { return false; }
-		}).length;
-	}, 0);
-	// Read scenario state from the Puppeteer controller, not the Observer tracker
-	const scenarioState = scenario?.getScenarioStepState() ?? null;
-	const header = {
-		kind: "bundle.header",
-		bundleSchemaVersion: 1,
-		createdAt: new Date().toISOString(),
-		pluginVersion: opts.pluginVersion,
-		deviceId: opts.deviceId,
-		deviceLabel: opts.deviceLabel,
-		platform: "desktop",
-		runtimeState: tracker.getRuntimeState(),
-		localTraceId: opts.traceId,
-		scenarioRunId: opts.scenarioRunId ?? scenarioState?.scenarioRunId ?? null,
-		scenarioId: opts.scenarioId ?? scenarioState?.scenarioId ?? null,
-		qaTraceSecretHash: opts.qaTraceSecretHash,
-		flightMode: opts.flightMode,
-		eventCount,
-		containsRawPaths: opts.privacyMode === "unsafe-local",
-		hashDomain: "witness-state-v1",
-		privacyMode: opts.privacyMode,
-	};
-	const lines = [JSON.stringify(header)];
-	for (const seg of segments) {
-		lines.push(seg.content.trimEnd());
-	}
-	return lines.join("\n") + "\n";
+async function makeTrackerWithSegment(): Promise<DeviceWitnessTracker> {
+	const tracker = new DeviceWitnessTracker(makeConfig());
+	tracker.markDirty(SENSITIVE_PATH, "local-edit");
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.ok(tracker.getCheckpointSegments().length > 0, "fixture emits checkpoint segment");
+	return tracker;
 }
 
-// -----------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------
-
-test("bundle.header first line has all required fields", async () => {
-	const tracker = new DeviceWitnessTracker(makeConfig());
-	tracker.markDirty("Notes/test.md", "local-edit");
-	await new Promise((r) => setTimeout(r, WAIT_FOR_SEGMENT_MS));
-
-	const bundle = buildBundleString(tracker, null, {
-		traceId: "trace-bundle-test",
-		deviceId: "device-bundle-001",
+function buildFromTracker(tracker: DeviceWitnessTracker) {
+	return buildSafeWitnessBundle({
 		pluginVersion: "1.6.1",
-		deviceLabel: "Test Device",
-		qaTraceSecretHash: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		privacyMode: "safe",
-		flightMode: "qa-safe",
+		deviceId: "device-bundle-001",
+		localTraceId: "trace-bundle-test",
+		platform: "desktop",
+		runtimeState: tracker.getRuntimeState(),
+		flightMode: tracker.getFlightMode(),
+		qaTraceSecretHash: "sha256:fixture-hash",
+		segments: tracker.getCheckpointSegments(),
+		createdAt: "2026-08-09T00:00:00.000Z",
 	});
+}
 
-	const firstLine = bundle.split("\n")[0]!;
-	const header = JSON.parse(firstLine) as Record<string, unknown>;
+test("production formatter emits the analyzer-compatible NDJSON header", async () => {
+	const tracker = await makeTrackerWithSegment();
+	const { bundle, eventCount, droppedUnsafeLineCount } = buildFromTracker(tracker);
+	const lines = bundle.split("\n").filter(Boolean);
+	const header = JSON.parse(lines[0]!) as Record<string, unknown>;
 
-	const requiredFields = [
-		"kind", "bundleSchemaVersion", "createdAt", "pluginVersion", "deviceId",
-		"deviceLabel", "platform", "runtimeState", "localTraceId", "scenarioRunId",
-		"scenarioId", "qaTraceSecretHash", "flightMode", "eventCount",
-		"containsRawPaths", "hashDomain", "privacyMode",
-	];
-	for (const field of requiredFields) {
-		assert.ok(field in header, `Missing required field: ${field}`);
-	}
 	assert.equal(header.kind, "bundle.header");
 	assert.equal(header.bundleSchemaVersion, 1);
-	assert.equal(header.hashDomain, "witness-state-v1");
 	assert.equal(header.privacyMode, "safe");
 	assert.equal(header.containsRawPaths, false);
-	tracker.dispose();
-});
-
-test("safe bundle contains no sentinel secret values", async () => {
-	const SENTINEL_SECRET = "qa-trace-secret-sentinel";
-	const SENTINEL_STATE = "test-state-secret";
-	const SENTINEL_TOKEN = "sync-token-sentinel";
-
-	const tracker = new DeviceWitnessTracker(makeConfig());
-	tracker.markDirty("Notes/test.md", "local-edit");
-	await new Promise((r) => setTimeout(r, WAIT_FOR_SEGMENT_MS));
-
-	const bundle = buildBundleString(tracker, null, {
-		traceId: "trace-bundle-test",
-		deviceId: "device-bundle-001",
-		pluginVersion: "1.6.1",
-		deviceLabel: "Test Device",
-		qaTraceSecretHash: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		privacyMode: "safe",
-		flightMode: "qa-safe",
-	});
-
-	assert.ok(!bundle.includes(SENTINEL_SECRET), "Bundle must not contain qaTraceSecret");
-	assert.ok(!bundle.includes(SENTINEL_STATE), "Bundle must not contain stateSecret");
-	assert.ok(!bundle.includes(SENTINEL_TOKEN), "Bundle must not contain sync token");
-	tracker.dispose();
-});
-
-test("bundle parses as valid NDJSON with header on line 1", async () => {
-	const tracker = new DeviceWitnessTracker(makeConfig());
-	tracker.markDirty("Notes/test.md", "local-edit");
-	await new Promise((r) => setTimeout(r, WAIT_FOR_SEGMENT_MS));
-
-	const bundle = buildBundleString(tracker, null, {
-		traceId: "trace-bundle-test",
-		deviceId: "device-bundle-001",
-		pluginVersion: "1.6.1",
-		deviceLabel: "Test Device",
-		qaTraceSecretHash: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		privacyMode: "safe",
-		flightMode: "qa-safe",
-	});
-
-	const lines = bundle.split("\n").filter((l) => l.trim());
-	assert.ok(lines.length >= 1, "Bundle must have at least one line");
-
-	// Every line must be valid JSON
-	for (const line of lines) {
-		assert.doesNotThrow(() => JSON.parse(line), `Invalid JSON line: ${line.slice(0, 80)}`);
+	assert.equal(header.deviceLabel, "(redacted)");
+	assert.equal(header.eventCount, eventCount);
+	assert.equal(header.droppedUnsafeLineCount, droppedUnsafeLineCount);
+	for (const field of [
+		"createdAt", "pluginVersion", "deviceId", "platform", "runtimeState",
+		"localTraceId", "scenarioRunId", "scenarioId", "qaTraceSecretHash",
+		"flightMode", "hashDomain",
+	]) {
+		assert.ok(field in header, `header includes ${field}`);
 	}
-
-	// First line must be bundle.header
-	const first = JSON.parse(lines[0]!) as Record<string, unknown>;
-	assert.equal(first.kind, "bundle.header");
+	for (const line of lines) assert.doesNotThrow(() => JSON.parse(line));
 	tracker.dispose();
 });
 
-test("bundle includes all retained segment lines", async () => {
-	const tracker = new DeviceWitnessTracker(makeConfig());
-	tracker.markDirty("Notes/test.md", "local-edit");
-	await new Promise((r) => setTimeout(r, WAIT_FOR_SEGMENT_MS));
-
-	const segments = tracker.getCheckpointSegments();
-	const bundle = buildBundleString(tracker, null, {
-		traceId: "trace-bundle-test",
-		deviceId: "device-bundle-001",
+test("safe formatter excludes raw paths, content, tokens, secrets, and unknown checkpoint fields", async () => {
+	const tracker = await makeTrackerWithSegment();
+	const trackerResult = buildFromTracker(tracker);
+	const injectedResult = buildSafeWitnessBundle({
 		pluginVersion: "1.6.1",
-		deviceLabel: "Test Device",
-		qaTraceSecretHash: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		privacyMode: "safe",
+		deviceId: "device-bundle-001",
+		localTraceId: "trace-bundle-test",
+		platform: "desktop",
+		runtimeState: "foreground",
 		flightMode: "qa-safe",
+		qaTraceSecretHash: "sha256:fixture-hash",
+		segments: [{
+			index: 99,
+			content: `${JSON.stringify({ kind: "checkpoint.segment.header", traceId: "trace-bundle-test", deviceId: "device-bundle-001", segmentIndex: 99, firstSeq: 1 })}\n${JSON.stringify({
+				kind: "device.witness.settled",
+				seq: 1,
+				path: SENSITIVE_PATH,
+				fileId: "file-bundle-001",
+				pathId: "p:bundle-test",
+				data: {
+					stateHash: "h:safe",
+					scenarioStepLabel: SENSITIVE_PATH,
+					noteContent: SENSITIVE_CONTENT,
+					syncToken: SENSITIVE_TOKEN,
+				},
+			})}\n`,
+		}],
+		createdAt: "2026-08-09T00:00:00.000Z",
 	});
-
-	// All segment content should appear in the bundle
-	for (const seg of segments) {
-		const segLines = seg.content.split("\n").filter((l) => l.trim());
-		for (const line of segLines) {
-			assert.ok(bundle.includes(line), `Segment line missing from bundle: ${line.slice(0, 80)}`);
-		}
+	const serialized = `${trackerResult.bundle}${injectedResult.bundle}`;
+	for (const sensitiveValue of [
+		SENSITIVE_PATH,
+		SENSITIVE_CONTENT,
+		SENSITIVE_QA_SECRET,
+		SENSITIVE_TOKEN,
+		"state-secret-SUPER_SECRET",
+	]) {
+		assert.ok(!serialized.includes(sensitiveValue), `safe bundle excludes ${sensitiveValue}`);
 	}
+	assert.equal(injectedResult.droppedUnsafeLineCount, 0, "unknown fields are projected out, not treated as malformed records");
+	assert.ok(injectedResult.bundle.includes('"stateHash":"h:safe"'), "allowlisted witness evidence remains");
 	tracker.dispose();
 });
 
-test("bundle eventCount matches actual event lines", async () => {
-	const tracker = new DeviceWitnessTracker(makeConfig());
-	tracker.markDirty("Notes/test.md", "local-edit");
-	await new Promise((r) => setTimeout(r, WAIT_FOR_SEGMENT_MS));
-
-	const bundle = buildBundleString(tracker, null, {
-		traceId: "trace-bundle-test",
-		deviceId: "device-bundle-001",
-		pluginVersion: "1.6.1",
-		deviceLabel: "Test Device",
-		qaTraceSecretHash: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		privacyMode: "safe",
-		flightMode: "qa-safe",
-	});
-
-	const lines = bundle.split("\n").filter((l) => l.trim());
-	const header = JSON.parse(lines[0]!) as Record<string, unknown>;
-	const eventLines = lines.slice(1).filter((l) => {
-		try {
-			const o = JSON.parse(l) as Record<string, unknown>;
-			return o.kind !== "checkpoint.segment.header";
-		} catch { return false; }
-	});
-	assert.equal(header.eventCount, eventLines.length);
-	tracker.dispose();
-});
-
-test("round-trip: event lines parse to FlightEvent-compatible shape", async () => {
-	const tracker = new DeviceWitnessTracker(makeConfig());
-	tracker.markDirty("Notes/test.md", "local-edit");
-	await new Promise((r) => setTimeout(r, WAIT_FOR_SEGMENT_MS));
-
-	const bundle = buildBundleString(tracker, null, {
-		traceId: "trace-bundle-test",
-		deviceId: "device-bundle-001",
-		pluginVersion: "1.6.1",
-		deviceLabel: "Test Device",
-		qaTraceSecretHash: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		privacyMode: "safe",
-		flightMode: "qa-safe",
-	});
-
-	const lines = bundle.split("\n").filter((l) => l.trim()).slice(1);
-	for (const line of lines) {
-		const obj = JSON.parse(line) as Record<string, unknown>;
-		if (obj.kind === "checkpoint.segment.header") continue;
-		// Must have kind field (FlightEvent-compatible)
-		assert.ok(typeof obj.kind === "string", `Event line missing kind: ${line.slice(0, 80)}`);
+test("production bundle is accepted by the real offline analyzer CLI", async () => {
+	const tracker = await makeTrackerWithSegment();
+	const { bundle } = buildFromTracker(tracker);
+	const directory = mkdtempSync(join(tmpdir(), "yaos-witness-bundle-"));
+	const bundlePath = join(directory, "bundle.ndjson");
+	const reportPath = join(directory, "report.json");
+	try {
+		writeFileSync(bundlePath, bundle);
+		execFileSync("bun", ["run", "qa/scripts/analyze-bundles.ts", "--", bundlePath, "--out", reportPath], {
+			cwd: process.cwd(),
+			stdio: "pipe",
+		});
+		const report = JSON.parse(readFileSync(reportPath, "utf8")) as { summary: { ok: boolean; bundleCount: number } };
+		assert.equal(report.summary.ok, true, "offline analyzer accepts production bundle");
+		assert.equal(report.summary.bundleCount, 1, "offline analyzer accepts one production bundle");
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+		tracker.dispose();
 	}
-	tracker.dispose();
 });
 
-test("unsafe-local bundle sets containsRawPaths: true and privacyMode: unsafe-local", async () => {
-	const tracker = new DeviceWitnessTracker(makeConfig());
-
-	const bundle = buildBundleString(tracker, null, {
-		traceId: "trace-bundle-test",
-		deviceId: "device-bundle-001",
-		pluginVersion: "1.6.1",
-		deviceLabel: "Test Device",
-		qaTraceSecretHash: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		privacyMode: "unsafe-local",
-		flightMode: "full",
-	});
-
-	const header = JSON.parse(bundle.split("\n")[0]!) as Record<string, unknown>;
-	assert.equal(header.privacyMode, "unsafe-local");
-	assert.equal(header.containsRawPaths, true);
-	tracker.dispose();
+test("clipboard delivery copies only the supplied safe bundle and fails closed", async () => {
+	const copied: string[] = [];
+	const bundle = "safe witness bundle";
+	assert.equal(await copyWitnessBundleToClipboard(bundle, {
+		writeText: async (value) => { copied.push(value); },
+	}), true, "clipboard success is reported");
+	assert.deepEqual(copied, [bundle], "clipboard receives the exact safe bundle");
+	assert.equal(await copyWitnessBundleToClipboard(bundle, {
+		writeText: async () => { throw new Error("denied"); },
+	}), false, "clipboard failure requests UI fallback");
+	assert.equal(await copyWitnessBundleToClipboard(bundle, null), false, "missing clipboard requests UI fallback");
 });
 
-test("empty bundle (no segments) still has valid header with eventCount: 0", async () => {
-	const tracker = new DeviceWitnessTracker(makeConfig());
-	// No markDirty — no segments
-
-	const bundle = buildBundleString(tracker, null, {
-		traceId: "trace-bundle-test",
-		deviceId: "device-bundle-001",
-		pluginVersion: "1.6.1",
-		deviceLabel: "Test Device",
-		qaTraceSecretHash: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		privacyMode: "safe",
-		flightMode: "qa-safe",
-	});
-
-	const lines = bundle.split("\n").filter((l) => l.trim());
-	assert.equal(lines.length, 1, "Empty bundle should have exactly 1 line (header)");
-	const header = JSON.parse(lines[0]!) as Record<string, unknown>;
-	assert.equal(header.eventCount, 0);
-	tracker.dispose();
+test("active export command neither logs nor persists the raw bundle", async () => {
+	const runtimeSource = readFileSync(join(process.cwd(), "src/telemetry/installTelemetryRuntime.ts"), "utf8");
+	const start = runtimeSource.indexOf("async function exportSafeWitnessBundle");
+	const end = runtimeSource.indexOf("function showDeviceIdentity", start);
+	assert.ok(start >= 0 && end > start, "active export command source is located");
+	const commandBody = runtimeSource.slice(start, end);
+	for (const forbidden of ["console.", "vault.adapter", "vault.create", "vault.modify", "saveData(", "prompt("]) {
+		assert.ok(!commandBody.includes(forbidden), `active export command excludes ${forbidden}`);
+	}
+	assert.ok(commandBody.includes("buildSafeWitnessBundle"), "active export uses the production formatter");
+	assert.ok(commandBody.includes("copyWitnessBundleToClipboard"), "active export uses clipboard delivery");
+	assert.ok(commandBody.includes("WitnessBundleExportModal"), "active export has a selectable fallback modal");
 });
-
-// -----------------------------------------------------------------------
-// Runner
-// -----------------------------------------------------------------------
 
 for (const [name, fn] of tests) {
 	try {
 		await fn();
-		console.log(`  ✓ ${name}`);
+		console.log(`  PASS  ${name}`);
 		passed++;
-	} catch (e) {
-		console.error(`  ✗ ${name}`);
-		console.error(`    ${e instanceof Error ? e.message : String(e)}`);
+	} catch (error) {
+		console.error(`  FAIL  ${name}`);
+		console.error(`    ${error instanceof Error ? error.message : String(error)}`);
 		failed++;
 	}
 }
 
-console.log(`\nGate 5 (bundle export): ${passed} passed, ${failed} failed`);
+console.log(`\nGate 5 (active witness bundle export): ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

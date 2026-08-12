@@ -12,6 +12,7 @@
 		"@noble/hashes": "1.7.1",
 		"fflate": "^0.8.2",
 		"partyserver": "0.3.2",
+		"qrcode-generator": "2.0.4",
 		"y-partyserver": "2.1.2",
 		"yjs": "^13.6.20"
 	},
@@ -20,5 +21,8 @@
 		"tsx": "^4.22.3",
 		"typescript": "^5.8.3",
 		"wrangler": "4.69.0"
+	},
+	"overrides": {
+		"nanoid": "5.1.16"
 	}
 }

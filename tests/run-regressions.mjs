@@ -71,6 +71,8 @@ const suites = [
 	[JITI, "tests/controller-recovery-orchestration.ts"],
 	[JITI, "tests/controller-recovery-orchestration-amplifier.ts"],
 	[JITI, "tests/blob-download-conflicts.ts"],
+	[JITI, "tests/attachment-orchestrator-queue-lifecycle.ts"],
+	[JITI, "tests/teardown-lifecycle.ts"],
 	[JITI, "tests/markdown-remote-delete-trash-preference.ts"],
 	[JITI, "tests/closed-file-conflict.ts"],
 	[JITI, "tests/preserved-unresolved-registry.ts"],
@@ -78,6 +80,14 @@ const suites = [
 	[JITI, "tests/closed-file-mirror.ts"],
 	[JITI, "tests/folder-rename.ts"],
 	[JITI, "tests/chunked-doc-store.ts"],
+	[JITI, "tests/sql-doc-store.ts"],
+	[JITI, "tests/sql-migration-edge-cases.ts"],
+	[JITI, "tests/sql-oversized-delta-e2e.ts"],
+	[JITI, "tests/admin-route-gating.ts"],
+	[JITI, "tests/meta-v3-schema-gate-and-stats.ts"],
+	[NODE, "tests/schema-version-guard.mjs"],
+	[JITI, "tests/meta-observer-integration.ts"],
+	[JITI, "tests/release-compatibility-matrix.ts"],
 	[JITI, "tests/trace-store.ts"],
 	[JITI, "tests/server-hardening.ts"],
 	[JITI, "tests/settings-hardening.ts"],
@@ -87,10 +97,12 @@ const suites = [
 	[JITI, "tests/sync-facts.ts"],
 	[JITI, "tests/offline-handoff.ts"],
 	[JITI, "tests/status-label.ts"],
+	[JITI, "tests/coalesced-status-refresh.ts"],
 	[JITI, "tests/recovery-amplifier.ts"],
 	[JITI, "tests/disk-mirror-observer.ts"],
 	[JITI, "tests/meta-diskmirror-integration.ts"],
 	[JITI, "tests/server-pre-auth-runtime.ts"],
+	[JITI, "tests/setup-page-qr.ts"],
 	[JITI, "tests/server-route-classification-runtime.ts"],
 	[JITI, "tests/server-sync-message-classifier.ts"],
 	[JITI, "tests/server-sv-echo.ts"],
@@ -101,14 +113,22 @@ const suites = [
 	[JITI, "tests/sv-echo-message.ts"],
 	[JITI, "tests/sv-echo-client-receiver.ts"],
 	[JITI, "tests/server-ack-tracker.ts"],
+	[JITI, "tests/receipt-wait-readiness.ts"],
 	[JITI, "tests/indexed-db-candidate-store.ts"],
 	[JITI, "tests/tombstone-revive.ts"],
 	[JITI, "tests/flight-recorder.ts"],
 	[JITI, "tests/flight-trace-privacy.ts"],
 	[JITI, "tests/flight-lifecycle-local-disk-to-server-receipt.ts"],
 	[JITI, "tests/server-persistence-pathology.ts"],
+	[JITI, "tests/persistence-delete-only.ts"],
+	[JITI, "tests/tombstone-reaper.ts"],
+	[JITI, "tests/document-rematerialization.ts"],
+	[JITI, "tests/schema-path-model.ts"],
+	[JITI, "tests/receipt-durability.ts"],
+	[JITI, "tests/diff-surrogate-safety.ts"],
 	[JITI, "tests/device-witness-tracker.ts"],
 	[JITI, "tests/device-witness-tracker-lifecycle.ts"],
+	[JITI, "tests/telemetry-witness-content-observer.ts"],
 	[JITI, "tests/device-witness-qa-api.ts"],
 	// Phase 2 verification gates
 	[JITI, "tests/witness-schema.ts"],
@@ -133,6 +153,7 @@ const suites = [
 	// Autophagy: canonical path identity
 	[JITI, "tests/canonical-path.ts"],
 	[JITI, "tests/path-collision.ts"],
+	[JITI, "tests/path-index-collision.ts"],
 	[JITI, "tests/path-category.ts"],
 	// Autophagy: TraceSink dependency inversion
 	[JITI, "tests/trace-sink.ts"],
@@ -140,6 +161,7 @@ const suites = [
 	[JITI, "tests/qa-port-fencing.ts"],
 	// Autophagy: ReconciliationController planner/executor
 	[JITI, "tests/closed-file-planner.ts"],
+	[JITI, "tests/open-bound-reconcile-deferral.ts"],
 	// Autophagy: Baseline advancement policy
 	[JITI, "tests/baseline-advancement-policy.ts"],
 	// Autophagy: Safety brake policy
@@ -150,6 +172,8 @@ const suites = [
 	[JITI, "tests/amplification-quarantine-policy.ts"],
 	// Telemetry loader failure-mode tests (no Obsidian, no fs, injected readFileFn)
 	[JITI, "tests/telemetry-loader.ts"],
+	// QA vault preparation safety and deterministic workspace contract
+	[JITI, "tests/prepare-vault.ts"],
 ];
 
 let totalPassed = 0;

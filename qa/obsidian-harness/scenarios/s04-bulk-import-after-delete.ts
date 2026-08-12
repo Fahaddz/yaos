@@ -55,6 +55,7 @@ export const s04aBulkImportSmoke: QaScenario = {
 		const files = makeFiles(10);
 
 		// Write sequentially (smoke: verify basic correctness)
+		const importTs = Date.now();
 		for (const { path, content } of files) {
 			await ctx.writeAdapterFile(path, content);
 		}
@@ -63,7 +64,6 @@ export const s04aBulkImportSmoke: QaScenario = {
 		await new Promise((r) => setTimeout(r, 2000));
 		await ctx.waitForIdle(20_000);
 
-		const importTs = Date.now();
 		await ctx.yaos.waitForReceiptAfter(importTs, 30_000);
 	},
 
@@ -100,6 +100,7 @@ export const s04bBulkImportStorm: QaScenario = {
 		const files = makeFiles(50);
 
 		// Write CONCURRENTLY — stress-tests the reconciler's batching
+		const importTs = Date.now();
 		await Promise.all(
 			files.map(({ path, content }) => ctx.writeAdapterFile(path, content)),
 		);
@@ -108,7 +109,6 @@ export const s04bBulkImportStorm: QaScenario = {
 		await new Promise((r) => setTimeout(r, 3000));
 		await ctx.waitForIdle(30_000);
 
-		const importTs = Date.now();
 		await ctx.yaos.waitForReceiptAfter(importTs, 30_000);
 	},
 

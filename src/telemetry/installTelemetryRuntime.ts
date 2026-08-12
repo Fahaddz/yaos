@@ -19,8 +19,8 @@
  * Mutation harness (Puppeteer) lives in qa/ and is never imported from here.
  */
 
-import type { App, MarkdownView, Plugin } from "obsidian";
-import { Notice } from "obsidian";
+import type { App, Plugin } from "obsidian";
+import { Notice, Platform } from "obsidian";
 import type { TelemetryRuntimeHost } from "./telemetryRuntimeHost";
 import { FlightTraceController } from "./debug/flightTraceController";
 import { FlightTraceSink } from "./debug/flightTraceSink";
@@ -30,6 +30,7 @@ import type { FlightMode, FlightPathEventInput, FlightEventInput } from "./debug
 import type { ProductFlightPathEventInput } from "../observability/traceSink";
 import { PersistentTraceLogger } from "./debug/trace";
 import type { TraceLoggerPort, TraceLoggerConfig } from "../observability/traceLogger";
+export { TELEMETRY_RUNTIME_ABI_VERSION as telemetryRuntimeAbiVersion } from "./telemetryRuntimeAbi";
 
 /**
  * Handle returned to main.ts after telemetry runtime is installed.
@@ -113,10 +114,14 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	let deviceWitnessTracker: DeviceWitnessTracker | null = null;
 	let _qaTraceSecretHash: string | null = null;
 
+	function getSafeBundlePlatform(): "desktop" | "ios" | "android" | "unknown" {
+		if (Platform.isIosApp) return "ios";
+		if (Platform.isAndroidApp) return "android";
+		return Platform.isMobile ? "unknown" : "desktop";
+	}
+
 	// Witness observer refs for cleanup
-	let _witnessTextObservers: Map<string, { ytext: import("yjs").Text; handler: (...args: unknown[]) => void }> | null = null;
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	let _witnessIdToTextHandler: (() => void) | null = null;
+	let _witnessContentUnsubscribe: (() => void) | null = null;
 	let _witnessMetaHandler: (() => void) | null = null;
 
 	// -----------------------------------------------------------------------
@@ -127,8 +132,8 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 		app: host.app,
 		getSettings: () => host.getSettings(),
 		getSyncState: () => host.getSyncState(),
-		getDiskMirror: () => host.getDiskMirror(),
-		getBlobSync: () => host.getBlobSync(),
+		getDiskMirrorSnapshot: () => host.getDiskMirrorSnapshot(),
+		getBlobSyncSnapshot: () => host.getBlobSyncSnapshot(),
 		getTraceHttpContext: () => host.getTraceHttpContext(),
 		getEventRing: () => host.getEventRing() as Array<{ ts: string; msg: string }>,
 		getRecentServerTrace: () => host.getRecentServerTrace() as unknown[],
@@ -217,7 +222,7 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			sink,
 			qaTraceSecret: host.getSettings().qaTraceSecret || null,
 			stateSecret: ctx.deviceId,
-			platform: "desktop",
+			platform: Platform.isMobile ? "mobile" : "desktop",
 			getPathId: async (path: string) => {
 				try {
 					const result = await flightTrace?.getPathId(path);
@@ -246,33 +251,19 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			getFileId: (path: string) => {
 				return host.getSyncState()?.getFileIdForPath(path);
 			},
-			sampleEditor: (path: string) => {
-				try {
-					const leaf = host.app.workspace.getLeavesOfType("markdown").find(
-						(l) => (l.view as MarkdownView).file?.path === path
-					);
-					if (!leaf) return { kind: "not_open" as const, content: null };
-					const content = (leaf.view as MarkdownView).editor?.getValue() ?? null;
-					return { kind: "healthy_sampled" as const, content };
-				} catch {
-					return { kind: "not_open" as const, content: null };
-				}
-			},
+			sampleEditor: (path: string) => host.getEditorSample(path),
 		});
 
-		// Wire Y.Doc observers
+		// Wire passive Engine subscriptions. The Engine owns all Y.Text handles;
+		// telemetry receives only path/origin primitives through SyncReadPort.
 		if (vaultSync) {
-			_witnessTextObservers = new Map();
-			// NOTE: per-Y.Text content observers (attachTextObserver in v3 main.ts)
-			// are not wired here — that logic was in main.ts before P1 refactor and
-			// was not moved to installTelemetryRuntime.ts.  The idToText handler
-			// below provides a coarser fallback that marks all paths dirty on any
-			// idToText change.  Fine-grained per-text origin attribution is a
-			// follow-up item.
+			_witnessContentUnsubscribe = vaultSync.observePathContentChanges((path, isLocal) => {
+				deviceWitnessTracker?.markDirty(path, isLocal ? "local-edit" : "remote-apply");
+			});
 
 			// Use observeMetaChanges (observeDeep-backed, handles both v2 flat
 			// and v3 nested Y.Map entries) instead of a shallow meta.observe.
-			const unsubscribeMeta = vaultSync.observeMetaChanges((batch) => {
+			_witnessMetaHandler = vaultSync.observeMetaChanges((batch) => {
 				// Witness tracker observes BOTH local and remote changes — it tracks
 				// what this device believes about each file's state.
 				for (const change of batch.changes) {
@@ -293,28 +284,18 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 					// "removed" — entry fully expunged; skip
 				}
 			});
-			// Store as an unsubscribe function (not a Yjs callback)
-			_witnessMetaHandler = unsubscribeMeta;
-
-			const idToTextHandler = () => {
-				deviceWitnessTracker?.markDirty("*", "remote-apply");
-			};
-			_witnessIdToTextHandler = idToTextHandler;
 		}
 	}
 
 	function _stopDeviceWitnessTracker(): void {
+		if (_witnessContentUnsubscribe) {
+			try { _witnessContentUnsubscribe(); } catch { /* ignore */ }
+			_witnessContentUnsubscribe = null;
+		}
 		if (_witnessMetaHandler) {
 			// _witnessMetaHandler is the unsubscribe function returned by observeMetaChanges
 			try { _witnessMetaHandler(); } catch { /* ignore */ }
 			_witnessMetaHandler = null;
-		}
-		_witnessIdToTextHandler = null;
-		if (_witnessTextObservers) {
-			for (const [, { ytext, handler }] of _witnessTextObservers) {
-				ytext.unobserve(handler as Parameters<typeof ytext.unobserve>[0]);
-			}
-			_witnessTextObservers = null;
 		}
 		deviceWitnessTracker?.dispose();
 		deviceWitnessTracker = null;
@@ -323,28 +304,6 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	// -----------------------------------------------------------------------
 	// Witness bundle / export helpers (safe mode only — no unsafe-local)
 	// -----------------------------------------------------------------------
-
-	function _buildBundleHeader(privacyMode: "safe"): Record<string, unknown> {
-		const ftc = flightTrace;
-		const ctx = ftc?.context;
-		const tracker = deviceWitnessTracker;
-		return {
-			bundleVersion: 1,
-			privacyMode,
-			traceId: ctx?.traceId ?? null,
-			deviceId: ctx?.deviceId ?? null,
-			witnessSeq: tracker?.currentWitnessSeq() ?? null,
-			exportedAt: new Date().toISOString(),
-		};
-	}
-
-	function _buildBundleString(privacyMode: "safe"): string {
-		const tracker = deviceWitnessTracker;
-		const header = _buildBundleHeader(privacyMode);
-		const segments = tracker?.getCheckpointSegments() ?? [];
-		const lines = [JSON.stringify(header), ...segments.map(s => s.content)];
-		return lines.join("\n");
-	}
 
 	async function _persistCheckpointSegmentsIfSafe(): Promise<void> {
 		const tracker = deviceWitnessTracker;
@@ -409,9 +368,37 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			new Notice("No active witness tracker. Start a telemetry trace first.", 5000);
 			return;
 		}
-		const bundleStr = _buildBundleString("safe");
-		new Notice(`Witness bundle ready (${bundleStr.length} chars). Check console.`, 4000);
-		console.debug("[yaos:telemetry] witness bundle:", bundleStr);
+
+		try {
+			const { buildSafeWitnessBundle, copyWitnessBundleToClipboard } = await import("./diagnostics/witnessBundleFormat");
+			const ctx = ftc.context;
+			const scenario = tracker.getScenarioContext();
+			const result = buildSafeWitnessBundle({
+				pluginVersion: host.getPluginVersion(),
+				deviceId: ctx?.deviceId ?? "unavailable",
+				localTraceId: ctx?.traceId ?? "unavailable",
+				platform: getSafeBundlePlatform(),
+				runtimeState: tracker.getRuntimeState(),
+				flightMode: tracker.getFlightMode(),
+				qaTraceSecretHash: _qaTraceSecretHash ?? "not-configured",
+				scenarioRunId: scenario?.scenarioRunId ?? null,
+				scenarioId: scenario?.scenarioId ?? null,
+				segments: tracker.getCheckpointSegments(),
+			});
+
+			if (await copyWitnessBundleToClipboard(result.bundle)) {
+				const omission = result.droppedUnsafeLineCount > 0
+					? ` ${result.droppedUnsafeLineCount} unsafe checkpoint line(s) were omitted.`
+					: "";
+				new Notice(`Safe witness bundle copied (${result.bundle.length} chars).${omission}`, 5000);
+				return;
+			}
+
+			const { WitnessBundleExportModal } = await import("./diagnostics/witnessBundleExportModal");
+			new WitnessBundleExportModal(host.app, result.bundle).open();
+		} catch {
+			new Notice("Could not prepare a safe witness bundle.", 5000);
+		}
 	}
 
 	function showDeviceIdentity(): void {

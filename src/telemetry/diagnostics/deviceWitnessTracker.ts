@@ -284,10 +284,13 @@ export class DeviceWitnessTracker {
 	/** In-memory checkpoint segments: segmentIndex → NDJSON string */
 	private checkpointSegments = new Map<number, string>();
 
-	// Phase 3: scenario context is read from config.getScenarioContext() (injected by Puppeteer).
-	// The tracker does NOT own scenario mutation — that lives in qa/.
+	// Phase 3: scenario context is normally read from config.getScenarioContext().
+	// The QA harness may also inject a snapshot after a trace starts so manual mobile
+	// runs can annotate witness events without product-owned scenario mutation.
+	private scenarioContextOverride: ScenarioContext | null = null;
+
 	private get _scenarioContext(): ScenarioContext | null {
-		return this.config.getScenarioContext?.() ?? null;
+		return this.scenarioContextOverride ?? this.config.getScenarioContext?.() ?? null;
 	}
 
 	constructor(private readonly config: WitnessTrackerConfig) {
@@ -418,6 +421,29 @@ export class DeviceWitnessTracker {
 	/** Phase 2: Get current runtime state for mobile-background detection. */
 	getRuntimeState(): RuntimeState {
 		return this._getRuntimeState();
+	}
+
+	/**
+	 * QA-only scenario annotation supplied by the external harness. It changes
+	 * witness metadata only; it never changes the vault, CRDT, editor, or sync.
+	 */
+	setScenarioContext(context: ScenarioContext | null): void {
+		this.scenarioContextOverride = context === null ? null : {
+			scenarioRunId: context.scenarioRunId,
+			scenarioId: context.scenarioId,
+			stepIndex: context.stepIndex,
+			stepLabel: context.stepLabel,
+		};
+	}
+
+	/** Returns the active scenario annotation for safe bundle metadata. */
+	getScenarioContext(): ScenarioContext | null {
+		return this._scenarioContext;
+	}
+
+	/** Flight mode captured when this passive tracker was created. */
+	getFlightMode(): WitnessTrackerConfig["flightMode"] {
+		return this.config.flightMode;
 	}
 
 	/**

@@ -18,6 +18,56 @@ class FakeSqlStorage {
 	private tables: Map<string, Array<Record<string, unknown>>> = new Map();
 	private autoIncrements: Map<string, number> = new Map();
 
+	/**
+	 * Test hook: offset applied to the snapshot_chunks byte total reported by
+	 * the pre-sizing aggregate, so a disagreement between the aggregate and the
+	 * row scan can be exercised.  Real SQLite cannot disagree with itself, but
+	 * loadState must still fail closed if it ever does.
+	 */
+	snapshotTotalBias = 0;
+
+	/** Rows handed back to the caller across every SELECT. */
+	rowsRead = 0;
+
+	/**
+	 * Journal rows SQLite would have to touch.  An aggregate over `journal`
+	 * returns a single row but visits the whole table (SQLite has no O(1)
+	 * COUNT), and a SQLite-backed Durable Object bills rows touched — so this
+	 * is the number that actually spends the free-tier read budget.
+	 */
+	journalRowsScanned = 0;
+
+	/**
+	 * Test hook: ground truth straight from the table, bypassing exec() so
+	 * reading it never perturbs the counters above.
+	 */
+	journalTruth(): { entryCount: number; totalBytes: number } {
+		const table = this.tables.get("journal") ?? [];
+		return {
+			entryCount: table.length,
+			totalBytes: table.reduce((sum, row) => sum + (row.byte_length as number), 0),
+		};
+	}
+
+	/** Test hook: pre-populate the journal, as a cold load would find it. */
+	seedJournalRows(byteLengths: number[]): void {
+		if (!this.tables.has("journal")) {
+			this.tables.set("journal", []);
+			this.autoIncrements.set("journal", 1);
+		}
+		const table = this.tables.get("journal")!;
+		for (const byteLength of byteLengths) {
+			const id = this.autoIncrements.get("journal")!;
+			this.autoIncrements.set("journal", id + 1);
+			table.push({
+				id,
+				data: new Uint8Array(byteLength).buffer,
+				byte_length: byteLength,
+				created_at: new Date().toISOString(),
+			});
+		}
+	}
+
 	exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): FakeSqlCursor<T> {
 		const trimmed = query.trim().replace(/\s+/g, " ");
 
@@ -59,14 +109,37 @@ class FakeSqlStorage {
 		if (trimmed.startsWith("SELECT data FROM snapshot_chunks")) {
 			const table = this.tables.get("snapshot_chunks") ?? [];
 			const sorted = [...table].sort((a, b) => (a.chunk_index as number) - (b.chunk_index as number));
+			this.rowsRead += sorted.length;
 			return new FakeSqlCursor<T>(sorted as T[]);
 		}
 
 		// SELECT from journal
-		if (trimmed.startsWith("SELECT data, byte_length FROM journal")) {
+		// coalesceJournal reads payloads only.
+		if (trimmed.startsWith("SELECT data FROM journal")) {
 			const table = this.tables.get("journal") ?? [];
 			const sorted = [...table].sort((a, b) => (a.id as number) - (b.id as number));
 			return new FakeSqlCursor<T>(sorted as T[]);
+		}
+
+		if (trimmed.startsWith("SELECT data, byte_length FROM journal")) {
+			const table = this.tables.get("journal") ?? [];
+			const sorted = [...table].sort((a, b) => (a.id as number) - (b.id as number));
+			this.rowsRead += sorted.length;
+			this.journalRowsScanned += sorted.length;
+			return new FakeSqlCursor<T>(sorted as T[]);
+		}
+
+		// COUNT/SUM from snapshot_chunks — used by loadState to pre-size the
+		// contiguous snapshot buffer before streaming the rows.
+		if (trimmed.includes("COUNT(*)") && trimmed.includes("snapshot_chunks")) {
+			const table = this.tables.get("snapshot_chunks") ?? [];
+			const cnt = table.length;
+			const total = table.reduce(
+				(sum, row) => sum + (row.data instanceof ArrayBuffer ? row.data.byteLength : 0),
+				0,
+			) + this.snapshotTotalBias;
+			this.rowsRead += 1;
+			return new FakeSqlCursor<T>([{ cnt, total } as T]);
 		}
 
 		// COUNT/SUM from journal
@@ -74,6 +147,8 @@ class FakeSqlStorage {
 			const table = this.tables.get("journal") ?? [];
 			const cnt = table.length;
 			const total = table.reduce((sum, row) => sum + (row.byte_length as number), 0);
+			this.rowsRead += 1;
+			this.journalRowsScanned += table.length;
 			return new FakeSqlCursor<T>([{ cnt, total } as T]);
 		}
 
@@ -302,6 +377,322 @@ console.log("\n--- Test 7: KV-to-SQL migration simulation ---");
 	assert(meta2.size === 200, `migrated doc has 200 entries (got ${meta2.size})`);
 	kvDoc.destroy();
 	doc2.destroy();
+}
+
+console.log("\n--- Test 8: snapshot size mismatch fails loudly ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	// FakeDurableObjectStorage structurally implements the subset of the DO
+	// storage surface SqlDocStore uses; the worker-types interface is private.
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	const doc = makeDoc(20);
+	store.rewriteCheckpoint(Y.encodeStateAsUpdate(doc));
+
+	// A snapshot buffer sized from a wrong total would silently truncate the
+	// Y.Doc update, which Yjs would then fail to decode or — worse — decode
+	// partially.  loadState must refuse to return a buffer it could not fill
+	// exactly, in either direction.
+	storage.sql.snapshotTotalBias = -1;
+	let shortMessage = "";
+	try {
+		store.loadState();
+	} catch (err) {
+		shortMessage = err instanceof Error ? err.message : String(err);
+	}
+	assert(
+		shortMessage.includes("size mismatch"),
+		`under-reported total throws (got ${shortMessage || "no throw"})`,
+	);
+
+	storage.sql.snapshotTotalBias = 1;
+	let longMessage = "";
+	try {
+		store.loadState();
+	} catch (err) {
+		longMessage = err instanceof Error ? err.message : String(err);
+	}
+	assert(
+		longMessage.includes("size mismatch"),
+		`over-reported total throws (got ${longMessage || "no throw"})`,
+	);
+
+	doc.destroy();
+}
+
+console.log("\n--- Test 9: journal stats never drift from storage ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	// getJournalStats() is now answered from in-memory counters.  They are the
+	// only source of truth callers see, so the one thing that must never happen
+	// is drift from the table — check against a full scan after every mutation.
+	let drifts = 0;
+	const checkAgainstStorage = (label: string): void => {
+		const stats = store.getJournalStats();
+		const truth = storage.sql.journalTruth();
+		if (stats.entryCount !== truth.entryCount || stats.totalBytes !== truth.totalBytes) {
+			drifts++;
+			console.log(
+				`    drift at ${label}: reported ${stats.entryCount}/${stats.totalBytes}, `
+				+ `storage has ${truth.entryCount}/${truth.totalBytes}`,
+			);
+		}
+	};
+
+	checkAgainstStorage("cold instance");
+
+	// A realistic cycle: appends of varying size, a mid-cycle load, a
+	// zero-length update, and a compaction that empties the journal.
+	for (let i = 1; i <= 25; i++) {
+		store.appendUpdate(new Uint8Array(i * 7 + 1));
+		checkAgainstStorage(`append ${i}`);
+
+		if (i === 8) {
+			store.appendUpdate(new Uint8Array(0));
+			checkAgainstStorage("zero-length append");
+		}
+		if (i === 12) {
+			store.loadState();
+			checkAgainstStorage("after loadState");
+		}
+		if (i === 18) {
+			store.rewriteCheckpoint(Y.encodeStateAsUpdate(makeDoc(5)));
+			checkAgainstStorage("after rewriteCheckpoint");
+		}
+	}
+
+	assert(drifts === 0, `in-memory stats match a full scan at every step (${drifts} drifts)`);
+
+	const finalStats = store.getJournalStats();
+	assert(finalStats.entryCount === 7, `7 entries survive the compaction (got ${finalStats.entryCount})`);
+}
+
+console.log("\n--- Test 10: getJournalStats is O(1) ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	const APPENDS = 60;
+	// Before the fix, appendUpdate and the explicit call each ran a COUNT/SUM
+	// over the whole journal, so the Nth save touched 2N rows.
+	const preChangeRows = APPENDS * (APPENDS + 1);
+
+	storage.sql.rowsRead = 0;
+	storage.sql.journalRowsScanned = 0;
+	for (let i = 0; i < APPENDS; i++) {
+		store.appendUpdate(new Uint8Array(64));
+		store.getJournalStats();
+	}
+
+	assert(
+		storage.sql.journalRowsScanned <= 4,
+		`${APPENDS} save cycles touch ≤4 journal rows (got ${storage.sql.journalRowsScanned}; `
+		+ `pre-change cost was ${preChangeRows} rows read)`,
+	);
+	assert(
+		storage.sql.rowsRead <= 4,
+		`${APPENDS} save cycles issue ≤4 rows of SELECT output (got ${storage.sql.rowsRead})`,
+	);
+	assert(
+		store.getJournalStats().entryCount === APPENDS,
+		"the O(1) path still reports the true entry count",
+	);
+}
+
+console.log("\n--- Test 11: oversized update leaves stats untouched ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	store.appendUpdate(new Uint8Array(100));
+	store.appendUpdate(new Uint8Array(250));
+	const before = store.getJournalStats();
+
+	// Over MAX_JOURNAL_ENTRY_BYTES (1.5MB): rejected without an INSERT, so the
+	// counters must not move — otherwise every oversized paste would inflate
+	// them permanently and force spurious compactions.
+	const rejected = store.appendUpdate(new Uint8Array(2 * 1024 * 1024));
+	assert(rejected === null, "oversized append still returns null");
+
+	const after = store.getJournalStats();
+	assert(
+		after.entryCount === before.entryCount && after.totalBytes === before.totalBytes,
+		`stats unchanged by rejected append (${after.entryCount}/${after.totalBytes})`,
+	);
+	const truth = storage.sql.journalTruth();
+	assert(
+		after.entryCount === truth.entryCount && after.totalBytes === truth.totalBytes,
+		"stats still match storage after a rejected append",
+	);
+}
+
+console.log("\n--- Test 12: rewriteCheckpoint resets the counters ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	for (let i = 0; i < 5; i++) store.appendUpdate(new Uint8Array(128));
+	store.rewriteCheckpoint(Y.encodeStateAsUpdate(makeDoc(3)));
+
+	const cleared = store.getJournalStats();
+	assert(cleared.entryCount === 0, `entryCount zeroed by checkpoint (got ${cleared.entryCount})`);
+	assert(cleared.totalBytes === 0, `totalBytes zeroed by checkpoint (got ${cleared.totalBytes})`);
+
+	const next = store.appendUpdate(new Uint8Array(42));
+	assert(next?.entryCount === 1, `first post-checkpoint append reports 1 entry (got ${next?.entryCount})`);
+	assert(next?.totalBytes === 42, `first post-checkpoint append reports 42 bytes (got ${next?.totalBytes})`);
+}
+
+console.log("\n--- Test 13: stats seed lazily from an existing journal ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	storage.sql.seedJournalRows([10, 20, 30]);
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	// A fresh instance over a warm journal (the cold-start case) must not
+	// report zero just because it has not loaded yet.
+	storage.sql.journalRowsScanned = 0;
+	const seeded = store.getJournalStats();
+	assert(seeded.entryCount === 3, `seeded entryCount from storage (got ${seeded.entryCount})`);
+	assert(seeded.totalBytes === 60, `seeded totalBytes from storage (got ${seeded.totalBytes})`);
+
+	const afterFirstCall = storage.sql.journalRowsScanned;
+	store.getJournalStats();
+	store.getJournalStats();
+	assert(
+		storage.sql.journalRowsScanned === afterFirstCall,
+		`seed scan runs at most once per instance (${afterFirstCall} rows, then ${storage.sql.journalRowsScanned})`,
+	);
+
+	const grown = store.appendUpdate(new Uint8Array(5));
+	assert(grown?.entryCount === 4 && grown?.totalBytes === 65, `append builds on the seed (got ${grown?.entryCount}/${grown?.totalBytes})`);
+}
+
+console.log("\n--- Test 9: coalesceJournal collapses entries without changing state ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+
+	const doc = makeDoc(5);
+	store.rewriteCheckpoint(Y.encodeStateAsUpdate(doc));
+
+	// Twelve incremental deltas, exactly as the save path would produce them.
+	let sv = Y.encodeStateVector(doc);
+	for (let i = 0; i < 12; i++) {
+		doc.getMap("meta").set(`extra-${i}`, { path: `extra-${i}.md`, mtime: i });
+		store.appendUpdate(Y.encodeStateAsUpdate(doc, sv));
+		sv = Y.encodeStateVector(doc);
+	}
+	assert(store.getJournalStats().entryCount === 12, `12 entries before coalesce (got ${store.getJournalStats().entryCount})`);
+
+	// Replay the pre-coalesce state so the two can be compared byte for byte.
+	const before = store.loadState();
+	const beforeDoc = new Y.Doc();
+	if (before.snapshot) Y.applyUpdate(beforeDoc, before.snapshot);
+	for (const u of before.journalUpdates) Y.applyUpdate(beforeDoc, u);
+
+	const result = store.coalesceJournal();
+	assert(result.status === "ok", `coalesce succeeded (got ${result.status})`);
+	assert(result.stats.entryCount === 1, `journal collapsed to one row (got ${result.stats.entryCount})`);
+	assert(store.getJournalStats().entryCount === 1, "cached counters follow the collapse");
+	assert(store.getJournalStats().totalBytes === result.stats.totalBytes, "cached bytes follow the collapse");
+
+	const after = store.loadState();
+	const afterDoc = new Y.Doc();
+	if (after.snapshot) Y.applyUpdate(afterDoc, after.snapshot);
+	for (const u of after.journalUpdates) Y.applyUpdate(afterDoc, u);
+
+	assert(
+		Buffer.from(Y.encodeStateVector(afterDoc)).toString("hex")
+			=== Buffer.from(Y.encodeStateVector(beforeDoc)).toString("hex"),
+		"state vector identical across coalesce",
+	);
+	assert(afterDoc.getMap("meta").size === beforeDoc.getMap("meta").size, "same entry count in replayed doc");
+	assert(afterDoc.getMap("meta").has("extra-11"), "last delta survives the coalesce");
+
+	doc.destroy(); beforeDoc.destroy(); afterDoc.destroy();
+}
+
+console.log("\n--- Test 10: coalesceJournal is a no-op below two entries ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+	assert(store.coalesceJournal().status === "noop", "empty journal coalesces to noop");
+
+	const doc = makeDoc(2);
+	store.appendUpdate(Y.encodeStateAsUpdate(doc));
+	assert(store.coalesceJournal().status === "noop", "single entry coalesces to noop");
+	doc.destroy();
+}
+
+console.log("\n--- Test 11: snapshot size is tracked for the compaction trigger ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+	assert(store.getSnapshotBytes() === 0, "unknown before anything is written");
+
+	const doc = makeDoc(40);
+	const update = Y.encodeStateAsUpdate(doc);
+	store.rewriteCheckpoint(update);
+	assert(store.getSnapshotBytes() === update.byteLength, `checkpoint sets snapshot bytes (got ${store.getSnapshotBytes()})`);
+
+	// A fresh instance over the same storage must recover it from the load.
+	const reopened = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+	reopened.loadState();
+	assert(reopened.getSnapshotBytes() === update.byteLength, `load recovers snapshot bytes (got ${reopened.getSnapshotBytes()})`);
+	doc.destroy();
+}
+
+console.log("\n--- Test 12: loadState returns journal rows unmerged ---");
+{
+	const storage = new FakeDurableObjectStorage();
+	const store = new SqlDocStore(
+		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
+	const doc = makeDoc(3);
+	store.rewriteCheckpoint(Y.encodeStateAsUpdate(doc));
+	let sv = Y.encodeStateVector(doc);
+	for (let i = 0; i < 6; i++) {
+		doc.getMap("meta").set(`n-${i}`, { path: `n-${i}.md`, mtime: i });
+		store.appendUpdate(Y.encodeStateAsUpdate(doc, sv));
+		sv = Y.encodeStateVector(doc);
+	}
+
+	const state = store.loadState();
+	// loadState returns rows verbatim: merging on read costs more than it saves
+	// (143ms to save 10ms at 4,000 rows).  Coalescing at write time is what keeps
+	// this list short in practice.
+	assert(state.journalUpdates.length === 6, `rows returned unmerged (got ${state.journalUpdates.length})`);
+	assert(state.journalStats.entryCount === 6, `journalStats reports six rows (got ${state.journalStats.entryCount})`);
+
+	const replay = new Y.Doc();
+	if (state.snapshot) Y.applyUpdate(replay, state.snapshot);
+	for (const u of state.journalUpdates) Y.applyUpdate(replay, u);
+	assert(replay.getMap("meta").size === doc.getMap("meta").size, "replay reproduces the document");
+	assert(replay.getMap("meta").has("n-5"), "last delta present after replay");
+	doc.destroy(); replay.destroy();
 }
 
 // ── Results ─────────────────────────────────────────────────────────────────

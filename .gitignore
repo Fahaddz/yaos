@@ -78,6 +78,7 @@ tools/
 .codex/
 .claude/
 .antigravitycli/
+.opencode/
 WITNESS-PHASE-2-VERIFICATION.md
 WITNESS-PHASE-3-VERIFICATION.md
 tests/regression-baseline.md
@@ -86,19 +87,6 @@ tests/witness-checkpoint-offline.ts
 tests/witness-quorum-eventually.ts
 tests/witness-offline-analyzer-integrity.ts
 
-# Engineering docs hidden from public (volatile / QA-related)
-engineering/do-hardening-implementation.md
-engineering/do-hardening-rfc.md
-engineering/flight-recorder-spec.md
-engineering/frontmatter-integrity-rfc.md
-engineering/mobile-qa-checklist.md
-engineering/multi-device-witness-runbook.md
-engineering/phase-1-followups.md
-engineering/qa-history.md
-engineering/server-ack-design.md
-engineering/server-ack-spike.md
-engineering/sync-contract.md
-engineering/sync-invariants.md
-engineering/sync-verification-v0.5.md
-engineering/sync-vocabulary.md
-engineering/update-pipeline-implementation-1.4.0.md
+# Local workstation notes and incomplete working specifications.
+# Durable documentation belongs in docs/.
+notes/

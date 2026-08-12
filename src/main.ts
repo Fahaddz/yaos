@@ -17,6 +17,7 @@ import {
 import { isMarkdownSyncable, isBlobSyncable } from "./types";
 import { planCategoryRenameAction } from "./sync/policy/renameAdmissionPolicy";
 import { classifySyncPath } from "./paths/pathCategory";
+import { isCanonicalPathFileIdCollision } from "./paths/pathCollision";
 import type { TraceSink, ProductFlightPathEventInput } from "./observability/traceSink";
 import { NoopTraceSink } from "./observability/noopTraceSink";
 import { PRODUCT_EVENT_KIND } from "./observability/productEventKinds";
@@ -68,6 +69,10 @@ import {
 	ReconciliationController,
 } from "./runtime/reconciliationController";
 import { AttachmentOrchestrator } from "./runtime/attachmentOrchestrator";
+import {
+	RuntimeTeardownCoordinator,
+	runTeardownStages,
+} from "./runtime/teardownLifecycle";
 import { EditorWorkspaceOrchestrator } from "./runtime/editorWorkspaceOrchestrator";
 import { SetupLinkController } from "./runtime/setupLinkController";
 import { TraceRuntimeController } from "./runtime/traceRuntimeController";
@@ -78,6 +83,7 @@ import {
 	renderSyncStatus,
 	type SyncStatus,
 } from "./status/statusBarController";
+import { CoalescedStatusRefresh } from "./status/coalescedStatusRefresh";
 import { formatUnknown, yTextToString } from "./utils/format";
 import { randomBase64Url } from "./utils/base64url";
 import { ConfirmModal } from "./ui/ConfirmModal";
@@ -161,6 +167,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private traceSink: TraceSink = new NoopTraceSink();
 	private statusBarEl: HTMLElement | null = null;
 	private statusInterval: ReturnType<typeof setInterval> | null = null;
+	private readonly receiptStatusRefresh = new CoalescedStatusRefresh(() => {
+		if (!this.teardownLifecycle.isClosing) this.refreshStatusBar();
+	});
 
 	/** Parsed exclude patterns from settings. */
 	private excludePatterns: string[] = [];
@@ -200,6 +209,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private idbDegradedHandled = false;
 	private frontmatterGuardCoordinator!: FrontmatterGuardCoordinator;
 	private frontmatterQuarantineEntries: FrontmatterQuarantineEntry[] = [];
+	private readonly teardownLifecycle = new RuntimeTeardownCoordinator();
 
 	/**
 	 * True when startup timed out waiting for provider sync.
@@ -357,7 +367,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			triggerDailySnapshot: () => { void this.snapshotService?.triggerDailySnapshot(); },
 			stopSyncRuntimeForCompatibility: () => {
 				if (this.vaultSync) {
-					void this.teardownSync();
+					void this.teardownSync().catch((error: unknown) => {
+						console.error("[yaos] Compatibility teardown completed with errors:", error);
+					});
 				}
 			},
 			setStatusError: () => this.updateStatusBar("error"),
@@ -484,12 +496,38 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 							getRecentEvents: (limit?: number) => vs.getRecentEvents(limit),
 							getSafeReconcileMode: () => vs.getSafeReconcileMode(),
 							observeMetaChanges: (cb) => vs.observeMetaChanges(cb),
+							observePathContentChanges: (cb) => vs.observePathContentChanges(cb),
 						};  // satisfies SyncReadPort — narrower union types on VaultSync are compatible
 					},
 					getTraceSink: () => this.traceSink,
 					getTraceHttpContext: () => this.getTraceHttpContext(),
-					getDiskMirror: () => this.diskMirror,
-					getBlobSync: () => this.getBlobSync(),
+					getDiskMirrorSnapshot: () => {
+						const diskMirror = this.diskMirror;
+						return diskMirror ? { activeObserverCount: diskMirror.activeObserverCount } : null;
+					},
+					getBlobSyncSnapshot: () => {
+						const blobSync = this.getBlobSync();
+						return blobSync
+							? {
+								pendingUploads: blobSync.pendingUploads,
+								pendingDownloads: blobSync.pendingDownloads,
+							}
+							: null;
+					},
+					getEditorSample: (path) => {
+						try {
+							const leaf = this.app.workspace.getLeavesOfType("markdown").find(
+								(candidate) => (candidate.view as MarkdownView).file?.path === path,
+							);
+							if (!leaf) return { kind: "not_open" as const, content: null };
+							return {
+								kind: "healthy_sampled" as const,
+								content: (leaf.view as MarkdownView).editor?.getValue() ?? null,
+							};
+						} catch {
+							return { kind: "not_open" as const, content: null };
+						}
+					},
 					getEventRing: () => this.eventRing,
 					getRecentServerTrace: () => this.traceRuntime?.getRecentServerTrace() ?? [],
 					getFrontmatterQuarantineEntries: () => this.frontmatterQuarantineEntries,
@@ -613,19 +651,42 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			} catch { /* invalid URL, will fail at connect */ }
 		}
 
-		void this.initSync().then(() => this.mountQaDebugApi());
+		void this.initSync().then(() => {
+			if (!this.teardownLifecycle.isClosing) this.mountQaDebugApi();
+		}).catch((error: unknown) => {
+			console.error("[yaos] Startup sync continuation failed:", error);
+		});
 		finishOnload("sync-started");
 	}
 
-	private async initSync(): Promise<void> {
+	private async initSync(reopenAfterTeardown = false): Promise<void> {
+		if (reopenAfterTeardown && !this.teardownLifecycle.reopenAfterTeardown()) {
+			this.log("initSync: lifecycle remains closed; skipping restart");
+			return;
+		}
+		const generation = this.teardownLifecycle.beginInitialization();
+		if (generation === null) {
+			this.log("initSync: lifecycle is closing; skipping initialization");
+			return;
+		}
+
 		const initSyncStartedAt = Date.now();
-		this.attachmentOrchestrator?.destroy();
-		this.trace("trace", "startup-init-sync-start", {
-			hostConfigured: !!this.settings.host,
-			tokenConfigured: !!this.settings.token,
-			hasCachedCapabilities: this.capabilityUpdateService?.hasCachedCapabilities ?? false,
-		});
+		const abortIfStale = (boundary: string): boolean => {
+			if (this.teardownLifecycle.isInitializationCurrent(generation)) return false;
+			this.log(`initSync: shutdown began before ${boundary}; abandoning stale continuation`);
+			return true;
+		};
 		try {
+			// Destruction durably snapshots or clears the active queue before any
+			// replacement runtime can attach a new BlobSyncManager.
+			await this.attachmentOrchestrator?.destroy();
+			if (abortIfStale("attachment teardown")) return;
+			this.trace("trace", "startup-init-sync-start", {
+				hostConfigured: !!this.settings.host,
+				tokenConfigured: !!this.settings.token,
+				hasCachedCapabilities: this.capabilityUpdateService?.hasCachedCapabilities ?? false,
+			});
+
 			this.idbDegradedHandled = false;
 			this.applyRuntimeSettings("init-sync");
 			if (this.enforceCompatibilityGuard("init-sync-preflight")) {
@@ -638,7 +699,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				trace: (source, msg, details) => this.trace(source, msg, details),
 				onFlightEvent: (event) => this.recordFlightEvent(event as import("./telemetry/debug/flightEvents").FlightEventInput),
 				onFlightPathEvent: (event) => this.recordFlightPathEvent(event),
-			getSocketTicket: (() => {
+				onServerReceiptStatusChanged: () => this.queueReceiptStatusRefresh(),
+				getSocketTicket: (() => {
 				// Each VaultSync instance gets its own ticket cache.  The cache
 				// is discarded when VaultSync is torn down and recreated.
 				const ticketCache = createSocketTicketCache();
@@ -720,7 +782,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				bindingPropagationGate,
 			);
 
-			// 3. Global CM6 extension
+			// 3. Global CM6 extension.
+			//
+			// registerEditorExtension applies to editors that already exist:
+			// Obsidian calls Workspace.updateOptions() internally, which
+			// reconfigures every live EditorView in place. Verified on Obsidian
+			// 1.13.4 — registering from an async onload on a warm workspace
+			// constructed our ViewPlugin on all 6 open editors. So no explicit
+			// updateOptions() call is needed here.
 			this.registerEditorExtension(
 				this.editorBindings.getBaseExtension(),
 			);
@@ -860,6 +929,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			}, 3000);
 			this.register(() => {
 				if (this.statusInterval) clearInterval(this.statusInterval);
+				this.receiptStatusRefresh.cancel();
 			});
 
 			// 6. Vault events (gated by reconciliation state)
@@ -940,10 +1010,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			this.updateStatusBar("loading");
 			this.log("Waiting for IndexedDB persistence...");
 			const localLoaded = await this.vaultSync.waitForLocalPersistence();
+			if (abortIfStale("local persistence")) return;
 			this.log(`IndexedDB: ${localLoaded ? "loaded" : "timed out"}`);
 			await this.vaultSync.initializeServerAckTracking(this.settings, this.manifest.version, {
 				localYjsPersistenceLoaded: localLoaded,
 			});
+			if (abortIfStale("server acknowledgement initialization")) return;
 
 			// Schema version check — refuse to run if a newer plugin wrote this data
 			const schemaError = this.vaultSync.checkSchemaVersion();
@@ -970,12 +1042,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				// Still reconcile with whatever we have locally
 				const mode = this.vaultSync.getSafeReconcileMode();
 				await this.runReconciliation(mode);
+				if (abortIfStale("fatal-auth reconciliation")) return;
 				return;
 			}
 
 			this.updateStatusBar("syncing");
 			this.log("Waiting for provider sync...");
 			const providerSynced = await this.vaultSync.waitForProviderSync();
+			if (abortIfStale("provider synchronization")) return;
 			this.log(`Provider: ${providerSynced ? "synced" : "timed out (offline)"}`);
 			this.awaitingFirstProviderSyncAfterStartup = !providerSynced;
 			this.log(
@@ -993,6 +1067,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			this.log(`Reconciliation mode: ${mode}`);
 
 			await this.runReconciliation(mode);
+			if (abortIfStale("startup reconciliation")) return;
 			this.reconciliationController.lastGeneration = this.vaultSync.connectionGeneration;
 			if (providerSynced) {
 				this.awaitingFirstProviderSyncAfterStartup = false;
@@ -1239,9 +1314,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 						// This does NOT resolve the collision — resolution is future work.
 						if (this.vaultSync) {
 							const vs = this.vaultSync;
-							const oldHasEntry = vs.getTextForPath(oldPath) !== null;
-							const newHasEntry = vs.getTextForPath(file.path) !== null;
-							if (oldHasEntry && newHasEntry && oldPath !== file.path) {
+							const oldFileId = vs.getFileId(oldPath);
+							const newFileId = vs.getFileId(file.path);
+							if (isCanonicalPathFileIdCollision({
+								oldCanonicalKey: oldCategory.path.canonicalKey,
+								newCanonicalKey: newCategory.path.canonicalKey,
+								oldFileId,
+								newFileId,
+							})) {
 								this.recordFlightPathEvent({
 									priority: "important",
 									kind: PRODUCT_EVENT_KIND.renameAdmissionCanonicalCollision,
@@ -1366,48 +1446,99 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	// -------------------------------------------------------------------
 	// Teardown + reinit (for reset commands)
+	//
+	// There is deliberately no scheduled rebuild.  It ran on the status tick,
+	// gated on being disconnected, to shed accumulated V8 rope.  A soak of a
+	// live 12.5MB vault through Obsidian — full save path, real GC — reclaimed
+	// 0.02 MiB of rope after 20,602 updates, because y-indexeddb's periodic
+	// encodeStateAsUpdate trim already flattens the strings.  And on a
+	// fragmented document a rebuild left struct count unchanged while making
+	// heap 15% worse.  The rebuild is gone entirely rather than kept as a manual
+	// command, because the case that would tempt someone into running it -- a
+	// vault near the memory limit -- is the fragmented case, where it spikes
+	// rather than saves.  See scripts/bench-interventions.mjs.
+
 	// -------------------------------------------------------------------
 
+
 	/**
-	 * Cleanly tear down all sync state: unbind editors, stop disk mirror,
-	 * destroy provider + persistence + ydoc, reset all flags.
-	 * After this, the plugin is in the same state as before initSync().
+	 * Begin one orderly runtime teardown. The returned promise remains shared by
+	 * every concurrent disable/reset path until an intentional reset reopens the
+	 * lifecycle, so resources cannot be double-destroyed.
 	 */
-	private async teardownSync(): Promise<void> {
+	private teardownSync(): Promise<void> {
+		return this.teardownLifecycle.beginTeardown(() => this.runTeardownSync());
+	}
+
+	private async runTeardownSync(): Promise<void> {
 		this.log("teardownSync: tearing down all sync state");
 
-		// Safe teardown ordering for disk index baseline persistence:
-		//   1. Flush all pending disk writes (callbacks fire, hashes recorded in memory)
-		//   2. Save disk index to data.json (hashes now current for next startup)
-		//   3. Destroy sync state (nothing pending left to flush)
-		if (this.diskMirror) {
-			await this.diskMirror.flushAllPendingWrites();
-		}
-		await this.saveDiskIndex();
-
-		this.editorBindings?.unbindAll();
-		this.diskMirror?.destroy();
-
-		this.attachmentOrchestrator?.destroy();
-
-		if (this.statusInterval) {
-			clearInterval(this.statusInterval);
-			this.statusInterval = null;
-		}
-		this.reconciliationController.reset();
-		this.connectionController?.stop();
-
-		await this.vaultSync?.destroy();
-
-		this.vaultSync = null;
-		this.connectionController = null;
-		this.editorBindings = null;
-		this.diskMirror = null;
-		this.awaitingFirstProviderSyncAfterStartup = false;
-		this.editorWorkspace?.reset();
-		this.idbDegradedHandled = false;
-
-		this.updateStatusBar("disconnected");
+		await runTeardownStages([
+			// Safe baseline order: flush callbacks update memory, then persist the
+			// resulting disk index before DiskMirror clears its write state.
+			{
+				name: "disk-pending-writes",
+				run: () => this.diskMirror?.flushAllPendingWrites(),
+			},
+			{
+				name: "disk-index-persistence",
+				run: () => this.saveDiskIndex(),
+			},
+			{
+				name: "editor-bindings",
+				run: () => this.editorBindings?.unbindAll(),
+			},
+			{
+				name: "disk-mirror",
+				run: () => this.diskMirror?.destroy(),
+			},
+			{
+				// Await terminal queue persist/clear before destroying its manager.
+				name: "attachments",
+				run: () => this.attachmentOrchestrator?.destroy(),
+			},
+			{
+				name: "status-interval",
+				run: () => {
+					if (this.statusInterval) clearInterval(this.statusInterval);
+					this.statusInterval = null;
+					this.receiptStatusRefresh.cancel();
+				},
+			},
+			{
+				name: "reconciliation-controller",
+				run: () => this.reconciliationController?.reset(),
+			},
+			{
+				name: "connection-controller",
+				run: () => this.connectionController?.stop(),
+			},
+			{
+				name: "vault-sync",
+				run: () => this.vaultSync?.destroy(),
+			},
+			{
+				name: "runtime-references",
+				run: () => {
+					this.vaultSync = null;
+					this.connectionController = null;
+					this.editorBindings = null;
+					this.diskMirror = null;
+					this.awaitingFirstProviderSyncAfterStartup = false;
+					this.editorWorkspace?.reset();
+					this.idbDegradedHandled = false;
+				},
+			},
+			{
+				name: "status-ui",
+				run: () => this.updateStatusBar("disconnected"),
+			},
+		], ({ stage, error }) => {
+			const details = formatUnknown(error);
+			console.error(`[yaos] teardown stage failed (${stage}):`, error);
+			this.log(`teardown stage failed (${stage}): ${details}`);
+			this.trace("trace", "teardown-stage-failed", { stage, error: details });
+		});
 	}
 
 	private resetLocalCache(): void {
@@ -1426,7 +1557,13 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				this.log("Reset cache: starting");
 				new Notice("Clearing cache and syncing again...");
 
-				await this.teardownSync();
+				try {
+					await this.teardownSync();
+				} catch (err) {
+					console.error("[yaos] Reset teardown completed with errors:", err);
+					new Notice("Sync cleanup completed with errors; local cache was not reset.");
+					return;
+				}
 
 				try {
 					await VaultSync.deleteIdb(vaultId);
@@ -1436,7 +1573,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				}
 
 				this.log("Reset cache: reinitializing");
-				await this.initSync();
+				await this.initSync(true);
 				new Notice("Cache reset complete.");
 			},
 		).open();
@@ -1470,7 +1607,13 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				await new Promise((r) => setTimeout(r, 500));
 
 				const vaultId = this.settings.vaultId;
-				await this.teardownSync();
+				try {
+					await this.teardownSync();
+				} catch (err) {
+					console.error("[yaos] Reset teardown completed with errors:", err);
+					new Notice("Sync cleanup completed with errors; local cache was not reset.");
+					return;
+				}
 
 				try {
 					await VaultSync.deleteIdb(vaultId);
@@ -1480,7 +1623,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				}
 
 				this.log("Nuclear reset: reinitializing (will re-seed from disk)");
-				await this.initSync();
+				await this.initSync(true);
 				new Notice(
 					`YAOS: nuclear reset complete. ` +
 					`Re-seeded ${this.vaultSync?.getActiveMarkdownPaths().length ?? 0} files from disk.`,
@@ -1599,6 +1742,15 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		this.updateStatusBar(state);
 	}
 
+	/**
+	 * Batch receipt echoes delivered in the same provider turn into one redraw.
+	 * The accepted-echo callback runs after ServerAckTracker updates its facts,
+	 * so this always renders the current receipt state rather than stale data.
+	 */
+	private queueReceiptStatusRefresh(): void {
+		this.receiptStatusRefresh.request();
+	}
+
 	private computeSyncStatus(): SyncStatus {
 		if (this.vaultSync?.idbError) {
 			return "error";
@@ -1650,12 +1802,33 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			lastKnownServerReceiptEchoAt: vaultSync.lastKnownServerReceiptEchoAt,
 			candidatePersistenceHealthy: vaultSync.candidatePersistenceHealthy,
 			serverReceiptStartupValidation: vaultSync.serverReceiptStartupValidation,
+			receiptGuaranteeIsDurable: vaultSync.receiptGuaranteeIsDurable,
+			serverPersistenceDegraded: vaultSync.serverPersistenceDegraded,
 		} : null;
+		this.noticeServerPersistenceHealth(vaultSync?.serverPersistenceDegraded ?? false);
 		if (connectionState) {
 			renderConnectionState(this.statusBarEl, connectionState, transferStatus, serverReceipt, attentionCount);
 		} else {
 			renderSyncStatus(this.statusBarEl, _coarseState, transferStatus, attentionCount);
 		}
+	}
+
+	/**
+	 * Server durability is the one failure the user cannot otherwise see: the
+	 * socket stays green, edits appear on other devices, and the writes are only
+	 * missing after the room is evicted from memory.  The status bar carries the
+	 * standing indicator; this fires once per transition so a persistent fault
+	 * does not become wallpaper.
+	 */
+	private serverPersistenceDegradedNotified = false;
+
+	private noticeServerPersistenceHealth(degraded: boolean): void {
+		if (degraded === this.serverPersistenceDegradedNotified) return;
+		this.serverPersistenceDegradedNotified = degraded;
+		const notice = degraded
+			? "YAOS: The server is not saving changes. Edits still sync between open devices, but anything made now may be lost. Avoid bulk edits or deletions until this clears."
+			: "YAOS: The server is saving changes again.";
+		new Notice(notice, degraded ? 15000 : 6000);
 	}
 
 	private buildFilesNeedingAttentionText(): string {
@@ -1870,6 +2043,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	}
 
 	onunload() {
+		// Obsidian invokes unload synchronously. Set this gate before any cleanup
+		// so a late init continuation cannot attach a replacement runtime.
+		this.teardownLifecycle.requestPermanentShutdown();
 		this.log("Unloading plugin");
 		this.lab?.dispose();   // dispose stops flight trace, witness, and QA API
 		void this.traceRuntime?.shutdown();
@@ -1880,7 +2056,15 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		if (win.__YAOS_DEBUG__) {
 			delete win.__YAOS_DEBUG__;
 		}
-		void this.teardownSync();
+
+		// This starts and retains the shared teardown promise, but synchronous
+		// onunload is not an async completion barrier: a host shutdown/cold kill
+		// can still end the process before pending durable writes settle.
+		const teardown = this.teardownSync();
+		void teardown.catch((error: unknown) => {
+			console.error("[yaos] Teardown during unload completed with errors:", error);
+			this.log(`Teardown during unload completed with errors: ${formatUnknown(error)}`);
+		});
 	}
 
 	async loadSettings() {
@@ -2020,6 +2204,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	}
 
 	async refreshAttachmentSyncRuntime(reason = "settings-change"): Promise<void> {
+		if (this.teardownLifecycle.isClosing) return;
 		await this.attachmentOrchestrator?.refresh(reason);
 	}
 

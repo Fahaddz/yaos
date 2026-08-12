@@ -243,7 +243,7 @@ export function renderSetupPage(options: SetupPageOptions): string {
     .action-box p { font-size: 13px; margin-bottom: 4px;}
 
     #qr { background: #fff; padding: 8px; border-radius: 12px; display: inline-block;}
-    #qr canvas { display: block; border-radius: 4px; width: 120px; height: 120px;}
+    #qr img { display: block; border-radius: 4px; width: 120px; height: 120px;}
 
     /* Manual Fallback Accordion */
     details {
@@ -382,7 +382,6 @@ export function renderSetupPage(options: SetupPageOptions): string {
 
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js"></script>
   <script>
     const initialView = document.getElementById("initial-view");
     const successFlow = document.getElementById("success-flow");
@@ -394,45 +393,34 @@ export function renderSetupPage(options: SetupPageOptions): string {
     const openBtn = document.getElementById("open");
     const qrEl = document.getElementById("qr");
 
-	    const hostInput = document.getElementById("host-input");
-	    const tokenInput = document.getElementById("token-input");
-	    const vaultInput = document.getElementById("vault-input");
-	    const copyHostBtn = document.getElementById("copy-host");
-	    const copyTokenBtn = document.getElementById("copy-token");
-	    const copyVaultBtn = document.getElementById("copy-vault");
+    const hostInput = document.getElementById("host-input");
+    const tokenInput = document.getElementById("token-input");
+    const vaultInput = document.getElementById("vault-input");
+    const copyHostBtn = document.getElementById("copy-host");
+    const copyTokenBtn = document.getElementById("copy-token");
+    const copyVaultBtn = document.getElementById("copy-vault");
 
-	    function randomToken() {
-	      const bytes = new Uint8Array(32);
-	      crypto.getRandomValues(bytes);
-	      return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
-	    }
+    function randomToken() {
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    }
 
-	    function randomVaultId() {
-	      const bytes = new Uint8Array(16);
-	      crypto.getRandomValues(bytes);
-	      let binary = "";
-	      for (const b of bytes) binary += String.fromCharCode(b);
-	      return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
-	    }
+    function randomVaultId() {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      let binary = "";
+      for (const b of bytes) binary += String.fromCharCode(b);
+      return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+    }
 
-	    function buildMobileSetupUrl(host, token, vaultId) {
-	      const hash = new URLSearchParams({ host: host, token: token, vaultId: vaultId }).toString();
-	      return host + "/mobile-setup#" + hash;
-	    }
-
-    function renderQr(text) {
-      if (!text || !window.QRious) return;
-      qrEl.innerHTML = "";
-      const canvas = document.createElement("canvas");
-      qrEl.appendChild(canvas);
-      new window.QRious({
-        element: canvas,
-        value: text,
-        size: 240,
-        level: "M",
-        foreground: "#08111d",
-        background: "#ffffff",
-      });
+    function renderQr(dataUrl) {
+      if (!dataUrl || !dataUrl.startsWith("data:image/svg+xml;base64,")) return;
+      qrEl.replaceChildren();
+      const image = document.createElement("img");
+      image.src = dataUrl;
+      image.alt = "YAOS mobile setup QR";
+      qrEl.appendChild(image);
     }
 
     // Toggle Step 2 state based on checkbox
@@ -489,9 +477,12 @@ export function renderSetupPage(options: SetupPageOptions): string {
 	          body: JSON.stringify({ token, vaultId }),
 	        });
 
+        const data = await res.json().catch(() => null);
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || "Claim failed");
+          throw new Error(data?.error || "Claim failed");
+        }
+        if (!data || typeof data.mobileSetupQrDataUrl !== "string") {
+          throw new Error("Setup QR generation failed");
         }
 
 	        // Setup the UI state
@@ -503,8 +494,8 @@ export function renderSetupPage(options: SetupPageOptions): string {
 	        const deepLink = "obsidian://yaos?" + new URLSearchParams({ action: "setup", host: window.location.origin, token: token, vaultId: vaultId }).toString();
 	        openBtn.href = deepLink;
 
-	        // QR Code pointing to the trampoline page
-	        renderQr(buildMobileSetupUrl(window.location.origin, token, vaultId));
+	        // QR Code pointing to the trampoline page, generated locally by the Worker.
+	        renderQr(data.mobileSetupQrDataUrl);
 
         // Switch Views
         initialView.style.display = "none";

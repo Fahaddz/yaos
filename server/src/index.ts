@@ -406,7 +406,8 @@ const worker = {
 			if (authFailure) {
 				response = withCors(authFailure);
 			} else if (resource === "debug" && req.method === "GET" && rest[0] === "recent") {
-				response = withCors(await fetchVaultDebug(env, vaultId));
+				const census = new URL(req.url).searchParams.get("census") === "1";
+				response = withCors(await fetchVaultDebug(env, vaultId, census));
 			} else if (resource === "debug" && req.method === "POST" && rest[0] === "compact") {
 				response = withCors(await compactVault(env, vaultId));
 			} else if (resource === "debug" && req.method === "POST" && rest[0] === "cleanup-kv") {

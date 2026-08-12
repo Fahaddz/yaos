@@ -3,7 +3,15 @@ import { YServer } from "y-partyserver";
 import type { Connection, ConnectionContext, WSMessage } from "partyserver";
 import { runSerialized, runSingleFlight } from "./asyncConcurrency";
 import { ChunkedDocStore } from "./chunkedDocStore";
+import {
+	buildDocumentSummary,
+	countActivePaths,
+	hasAnyFileState,
+	type DocumentSummary,
+} from "./documentSummary";
+import { reapTombstonedBodies, type ReapResult } from "./tombstoneReaper";
 import { SqlDocStore } from "./sqlDocStore";
+import { shouldUseSqlState } from "./sqlMigrationTrust";
 import { readRoomMeta, type RoomMeta, writeRoomMeta } from "./roomMeta";
 import {
 	createSnapshot,
@@ -15,7 +23,7 @@ import {
 	type SnapshotResult,
 } from "./snapshot";
 import {
-	appendTraceEntry,
+	TraceRing,
 	listRecentTraceEntries,
 	prepareTraceEntryForStorage,
 	TRACE_RATE_THROTTLE_EVENT,
@@ -36,6 +44,8 @@ const MAX_DEBUG_TRACE_EVENTS = 200;
 const JOURNAL_COMPACT_MAX_ENTRIES = 50;
 const JOURNAL_COMPACT_MAX_BYTES = 1 * 1024 * 1024;
 const TRACE_DEBUG_LIMIT = 100;
+
+
 const LOG_PREFIX = "[yaos-sync:server]";
 
 /**
@@ -125,6 +135,28 @@ export class VaultSyncServer extends YServer {
 	private legacyDocumentMigrated = false;
 
 	/** Storage migration observability fields. */
+	private tombstoneReapAttempted = false;
+	private lastTombstoneReap: ReapResult | null = null;
+	/**
+	 * Cumulative reap history, persisted across instances.
+	 *
+	 * `lastTombstoneReap` alone is actively misleading.  Reaping runs once per
+	 * instance, so every instance AFTER a successful reap reports
+	 * `reaped: 0, alreadyReaped: N` — indistinguishable at a glance from a
+	 * reaper that has never worked.  The durable trace holds the real event but
+	 * is a 200-entry ring that a busy room evicts within minutes.
+	 *
+	 * These totals are the answer to "has reaping ever reclaimed anything, and
+	 * how much".  One storage write per EFFECTIVE reap only — reaps that free
+	 * nothing, which is almost all of them, cost nothing.
+	 */
+	private reapTotals: {
+		effectiveRuns: number;
+		bodiesReaped: number;
+		charsFreed: number;
+		lastEffectiveAt: string | null;
+		lastEffective: ReapResult | null;
+	} | null = null;
 	private storageMode: "sql" | "kv-migrated" | "fresh" | "kv-fallback" | null = null;
 	private migrationStatus: "not_started" | "migrated" | "already_sql" | "failed" | null = null;
 	private migrationAt: string | null = null;
@@ -169,29 +201,119 @@ export class VaultSyncServer extends YServer {
 		await this.syncRoomMetaFromDocument();
 	}
 
+	/**
+	 * NOTE — there is deliberately no automatic re-materialisation.
+	 *
+	 * It was scheduled here, on an update threshold and an age backstop, to shed
+	 * accumulated V8 rope.  Measurement in a real deployment removed the reason:
+	 *
+	 *   - `Y.encodeStateAsUpdate` flattens ropes as a side effect, because it
+	 *     reads every ContentString and V8 materialises the flat form.  The save
+	 *     path already encodes on every debounced save, so a server that saves
+	 *     never accumulates rope.  Measured on 1M chars: 30.9 MiB with no saves,
+	 *     1.15 MiB with one delta encode per 2,000 updates.
+	 *   - A soak of a live 12.5MB vault through Obsidian, with the full save
+	 *     path running, reclaimed 0.02 MiB of rope after 20,602 updates.
+	 *   - Where memory genuinely grows — item fragmentation, ~117 bytes per
+	 *     unmergeable struct — re-materialisation cannot help, because the
+	 *     structs survive the round trip.  Measured on a fragmented document it
+	 *     left struct count unchanged and made heap 15% WORSE, since the rebuild
+	 *     reloads state before the old allocation is released.
+	 *
+	 * The swap itself is gone too, not merely unscheduled.  Keeping it as a
+	 * manual escape hatch would have been worse than useless: the one situation
+	 * that would tempt an operator into using it — a document approaching the
+	 * memory limit — is a fragmented one, and there the swap needs the old
+	 * document, the encoded update and the new document resident at once.  It
+	 * would spike the very object it was invoked to rescue.
+	 * See scripts/bench-interventions.mjs and docs/architecture/monolith.md.
+	 */
+
 	async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
 		await super.onConnect(connection, ctx);
-		this.recordSvEchoResult(trySendSvEcho(connection, this.document, "baseline"));
+		this.recordSvEchoResult(trySendSvEcho(connection, this.document, "baseline", this.svEchoDurability()));
+	}
+
+	/**
+	 * Monotonic count of Y.Doc "update" events.
+	 *
+	 * Used to tell whether applying a message actually changed the document.
+	 * A state-vector diff cannot answer that: the SV tracks insert clocks only,
+	 * so a delete-only update leaves it byte-identical and `docChanged` would
+	 * report false for a 2KB deletion.  One long-lived listener avoids
+	 * attaching and detaching per message, which would need a finally block and
+	 * leak a listener whenever the parent handler throws.
+	 */
+	private docUpdateCount = 0;
+	private docUpdateWatcherAttached = false;
+	/**
+	 * Aggregate for update-bearing WebSocket messages.
+	 *
+	 * Replaces a per-message trace: see the note in handleMessage.  Lives
+	 * outside `recent` so it survives trace eviction, which is the entire point.
+	 */
+	private readonly updateStats = {
+		messages: 0,
+		changed: 0,
+		unchanged: 0,
+		bytesTotal: 0,
+		bytesMax: 0,
+	};
+	/**
+	 * One ring per instance so trimming needs no per-trace `list`.  See
+	 * TraceRing: the naive form cost ~201 rows read per trace and was the whole
+	 * of this room's read amplification.
+	 */
+	private readonly traceRing = new TraceRing(MAX_DEBUG_TRACE_EVENTS);
+
+	private ensureDocUpdateWatcher(): void {
+		if (this.docUpdateWatcherAttached) return;
+		this.docUpdateWatcherAttached = true;
+		this.document.on("update", () => { this.docUpdateCount++; });
 	}
 
 	handleMessage(connection: Connection, message: WSMessage): void {
 		const shouldEcho = isUpdateBearingSyncMessage(message);
+		this.ensureDocUpdateWatcher();
 		const svBefore = shouldEcho ? Y.encodeStateVector(this.document) : null;
+		const updatesBefore = this.docUpdateCount;
 		super.handleMessage(connection, message);
 		if (shouldEcho) {
 			const svAfter = Y.encodeStateVector(this.document);
-			const docChanged = svBefore !== null && !equalBytes(svBefore, svAfter);
+			// The counter is the signal that sees deletions; the state-vector
+			// comparison is a second opinion for inserts.
+			const docChanged =
+				this.docUpdateCount !== updatesBefore
+				|| (svBefore !== null && !equalBytes(svBefore, svAfter));
 			// Do NOT send SV echoes in kv-fallback mode.  SV echoes signal
 			// "server durably received your state."  In fallback mode persistence
 			// is broken — sending echoes would give clients false confidence.
 			if (this.storageMode !== "kv-fallback") {
-				this.recordSvEchoResult(trySendSvEcho(connection, this.document, "postApply"));
+				this.recordSvEchoResult(trySendSvEcho(connection, this.document, "postApply", this.svEchoDurability()));
 			}
-			// Fire-and-forget trace: do not block message processing.
-			void this.recordTrace("server.ydoc.update_observed", {
-				updateBytes: typeof message === "string" ? message.length : (message as ArrayBuffer).byteLength,
-				docChanged,
-			});
+			// Counted, not traced.
+			//
+			// This is the only per-message trace site in the server, and it was
+			// drowning everything else.  Each recordTrace costs a put, a
+			// list(cap+1) and a delete inside appendTraceEntry — roughly 2 rows
+			// written and 200 rows read EVERY time — so tracing per message both
+			// evicted every rare event from the 100-entry read window (98 of 100
+			// entries observed on a live vault) and produced ~100:1 read
+			// amplification against a daily row budget shared with sync.
+			//
+			// The aggregate is what anyone actually reads, and it lives in
+			// updateStats below, outside `recent`, where trace eviction cannot
+			// hide it.  Per-message detail remains in the Workers log via
+			// console.debug, matching how syncSocket.ts handles its own hot-path
+			// admission events.
+			const updateBytes = typeof message === "string"
+				? message.length
+				: (message as ArrayBuffer).byteLength;
+			this.updateStats.messages++;
+			if (docChanged) this.updateStats.changed++;
+			else this.updateStats.unchanged++;
+			this.updateStats.bytesTotal += updateBytes;
+			if (updateBytes > this.updateStats.bytesMax) this.updateStats.bytesMax = updateBytes;
 		}
 	}
 
@@ -221,6 +343,11 @@ export class VaultSyncServer extends YServer {
 			// Debug polling is periodic and must not trigger a checkpoint load
 			// on every poll.  documentSummary is conditionally included only if
 			// the document is already in memory.
+			//
+			// crdtFootprint is opt-in (?census=1) for the same reason: it walks
+			// every struct and re-encodes the whole document, which is far too
+			// expensive to run on a poll.
+			const wantCensus = url.searchParams.get("census") === "1";
 			const recent = await listRecentTraceEntries(this.ctx.storage, TRACE_DEBUG_LIMIT);
 			const coordinator = this.getPersistenceCoordinator();
 			const serverHealth: ServerPersistenceHealth = {
@@ -235,6 +362,7 @@ export class VaultSyncServer extends YServer {
 				svEcho: { ...this.svEchoCounters },
 				persistence: serverHealth,
 				documentSummary: this.documentLoaded ? this.getDocumentSummary() : null,
+				crdtFootprint: wantCensus && this.documentLoaded ? this.getCrdtFootprint() : null,
 				storage: {
 					mode: this.storageMode,
 					migrationStatus: this.migrationStatus,
@@ -244,6 +372,14 @@ export class VaultSyncServer extends YServer {
 					oversizedDeltaCount: this.oversizedDeltaCount,
 					migrationMeta: this.documentLoaded ? this.getSqlDocStore().getMigrationMeta() : null,
 				},
+				updateStats: { ...this.updateStats },
+				// Cheap enough to poll; see getCheapFootprint.  This is the
+				// series to watch for rope drift in production.
+				footprint: this.documentLoaded ? this.getCheapFootprint() : null,
+				tombstoneReap: this.lastTombstoneReap,
+				// Cumulative, durable, and the only reap figure that is not
+				// misleading after the work has already been done.
+				tombstoneReapTotals: await this.loadReapTotals(),
 			});
 		}
 
@@ -270,6 +406,7 @@ export class VaultSyncServer extends YServer {
 			await this.ensureDocumentLoaded();
 			return json(await this.executeEmergencyCompact());
 		}
+
 
 		if (request.method === "POST" && url.pathname === "/__yaos/cleanup-kv") {
 			if (!(this.env as any).YAOS_ENABLE_ADMIN_ROUTES) {
@@ -304,6 +441,25 @@ export class VaultSyncServer extends YServer {
 
 		await this.ensureDocumentLoaded();
 		return super.fetch(request);
+	}
+
+	/**
+	 * Durability marker for the sv-echo: how many times this coordinator has
+	 * successfully persisted, and which instance is counting.  Lets a client
+	 * distinguish "applied in memory" from "stored", which the state vector
+	 * cannot express for deletions.
+	 */
+	private svEchoDurability(): { generation: number; epoch: string; degraded?: boolean } {
+		const health = this.getPersistenceCoordinator().health;
+		// kv-fallback suppresses echoes entirely, so a client in that state sees
+		// silence rather than a flag; "degraded" covers the case where echoes
+		// still flow but writes are failing.
+		const degraded = health.status === "degraded";
+		return {
+			generation: health.persistedGeneration,
+			epoch: health.generationEpoch,
+			...(degraded ? { degraded: true } : {}),
+		};
 	}
 
 	private recordSvEchoResult(result: SvEchoSendResult): void {
@@ -345,8 +501,31 @@ export class VaultSyncServer extends YServer {
 			// Evaluated AFTER the try/catch: a null sqlState (SQL failure) correctly
 			// reports no SQL data and routes to the KV fallback below.
 			const sqlHasData = sqlState !== null && (sqlState.snapshot !== null || sqlState.journalUpdates.length > 0);
+			const sqlMigrationReceipt = sqlHasData && sqlStore.isMigrated();
+			let unverifiedSqlHasLegacySource = false;
 
-			if (sqlHasData) {
+			if (sqlHasData && !sqlMigrationReceipt) {
+				// A fresh SQL-native room has no receipt. It is only unsafe to trust an
+				// unreceipted SQL checkpoint when a retained legacy source proves this
+				// room is in (or was interrupted during) KV-to-SQL migration.
+				const kvState = await this.getChunkedDocStore().loadState();
+				const kvHasData = kvState.checkpoint !== null || kvState.journalUpdates.length > 0;
+				const legacyRaw = await this.ctx.storage.get<unknown>(LEGACY_DOCUMENT_KEY);
+				const legacyBytes = legacyRaw instanceof Uint8Array
+					? legacyRaw
+					: legacyRaw instanceof ArrayBuffer
+						? new Uint8Array(legacyRaw)
+						: ArrayBuffer.isView(legacyRaw)
+							? new Uint8Array(
+								legacyRaw.buffer,
+								legacyRaw.byteOffset,
+								legacyRaw.byteLength,
+							)
+							: null;
+				unverifiedSqlHasLegacySource = kvHasData || (legacyBytes?.byteLength ?? 0) > 0;
+			}
+
+			if (shouldUseSqlState(sqlHasData, sqlMigrationReceipt, unverifiedSqlHasLegacySource)) {
 				// ── Normal SQL path ──────────────────────────────────────────
 				// sqlState is guaranteed non-null here (sqlHasData implies sqlState !== null)
 				if (sqlState!.snapshot) {
@@ -375,7 +554,7 @@ export class VaultSyncServer extends YServer {
 				return;
 			}
 
-			// ── SQL failed: attempt KV fallback (read-only, no SQL write-back) ──
+			// ── SQL unreadable: attempt KV fallback (read-only, no SQL write-back) ──
 			if (sqlState === null) {
 				// SQL load threw — check if KV still has usable data.
 				const kvStore = this.getChunkedDocStore();
@@ -484,9 +663,19 @@ export class VaultSyncServer extends YServer {
 					for (const update of kvState.journalUpdates) Y.applyUpdate(this.document, update);
 				}
 
-				// Migrate to SQL: write full state as a clean snapshot
+				// Migrate to SQL: write full state as a clean snapshot, then prove the
+				// checkpoint can be read back byte-for-byte before recording migration
+				// completion or allowing any later KV cleanup.
 				const migratedUpdate = Y.encodeStateAsUpdate(this.document);
 				sqlStore.rewriteCheckpoint(migratedUpdate);
+				const verifiedSqlState = sqlStore.loadState();
+				if (
+					verifiedSqlState.snapshot === null ||
+					verifiedSqlState.journalUpdates.length !== 0 ||
+					!equalBytes(verifiedSqlState.snapshot, migratedUpdate)
+				) {
+					throw new Error("KV-to-SQL checkpoint verification failed; retaining legacy KV data");
+				}
 
 				const loadedSV = Y.encodeStateVector(this.document);
 				this.getPersistenceCoordinator().setInitialStateVector(loadedSV);
@@ -521,10 +710,9 @@ export class VaultSyncServer extends YServer {
 					migrationDurationMs: this.migrationDurationMs,
 				});
 
-				// Best-effort: delete legacy key (don't fail if this errors)
-				if (legacyBytes) {
-					try { await this.ctx.storage.delete([LEGACY_DOCUMENT_KEY]); } catch {}
-				}
+				// Legacy KV is intentionally retained here. The feature-gated cleanup
+				// route requires both this verified checkpoint and the migration receipt
+				// before it can delete any legacy source keys.
 				return;
 			}
 
@@ -553,63 +741,135 @@ export class VaultSyncServer extends YServer {
 		} finally {
 			this.loadPromise = gate.inFlight;
 		}
+
+		// Every load path funnels through here, so this is the one place the
+		// reaper can run exactly once per instance without duplicating the call
+		// across the sql / kv-migrated / kv-fallback / fresh branches.
+		await this.maybeReapTombstonedBodies();
 	}
 
-	/** Count active (non-deleted) paths in a Y.Doc using the YAOS schema. Dual-reads flat and nested metadata. */
+	/**
+	 * Reclaim the Y.Text bodies of long-tombstoned files, once per instance.
+	 *
+	 * Deleting a file leaves its body in `idToText` forever — see
+	 * tombstoneReaper.ts for why that happens and why removing it is safe.  The
+	 * resulting update is an ordinary document change, so the framework's
+	 * debounced save picks it up like any edit; the persistence coordinator's
+	 * dirty flag is what guarantees a deletion-only change is actually written.
+	 *
+	 * Cold load is the trigger rather than an alarm: hibernation makes cold
+	 * loads frequent enough to be effectively periodic, and every setAlarm()
+	 * costs a row written against a daily free-tier budget shared with sync.
+	 */
+	private async maybeReapTombstonedBodies(): Promise<void> {
+		if (this.tombstoneReapAttempted) return;
+		this.tombstoneReapAttempted = true;
+		if (!this.documentLoaded) return;
+
+		// In kv-fallback the store is broken.  Reaping would delete content in
+		// memory, broadcast it to every client, and never record it durably —
+		// the one situation where a reap could actually lose data.
+		if (this.storageMode === "kv-fallback") return;
+
+		try {
+			const result = reapTombstonedBodies(this.document);
+			this.lastTombstoneReap = result;
+			if (result.tombstones > 0) {
+				await this.recordTrace("tombstone-reap", { ...result });
+			}
+
+			// Persist explicitly rather than relying on the framework's
+			// debounced save.  y-partyserver registers its document "update"
+			// listener AFTER awaiting onLoad(), and this runs inside onLoad, so
+			// the reap's update predates that listener and would otherwise wait
+			// for an unrelated edit to flush it — or be discarded on eviction and
+			// redone on the next load.
+			if (result.reaped > 0) {
+				// A forced checkpoint, not an append.  Appending the removal
+				// leaves the entries that INSERTED the reaped bodies in the
+				// journal, and a journal is replayed verbatim on every cold
+				// load — so each subsequent load would re-materialise exactly
+				// the content the reap just removed.  Measured: ~6.3MiB
+				// resident replaying [insert, reap] versus ~0.4MiB loading the
+				// equivalent checkpoint.  Without this the reaper reclaims
+				// memory only for the instance that ran it.
+				const save = await this.getPersistenceCoordinator()
+					.forceCheckpoint("tombstone-reap");
+				if (!save.success) {
+					console.error(
+						`${LOG_PREFIX} tombstone reap could not be persisted; ` +
+						`bodies remain until the next attempt:`, save.error,
+					);
+				}
+
+				// Only an effective reap updates the durable totals, and only
+				// after the bodies are actually gone from storage — recording a
+				// reclaim that failed to persist would overstate what the next
+				// instance will find.
+				if (save.success) await this.recordEffectiveReap(result);
+			}
+		} catch (err) {
+			// Maintenance must never break a room load.
+			console.error(`${LOG_PREFIX} tombstone reap failed:`, err);
+		}
+	}
+
+	/** Storage key for the durable reap totals. */
+	private static readonly REAP_TOTALS_KEY = "tombstone:reap:totals";
+
+	/**
+	 * Load the cumulative reap history, once per instance.
+	 *
+	 * Falls back to zeros on a read failure rather than throwing: these are
+	 * observability counters, and losing them must never fail a debug response
+	 * or, worse, a room load.
+	 */
+	private async loadReapTotals(): Promise<NonNullable<VaultSyncServer["reapTotals"]>> {
+		if (this.reapTotals) return this.reapTotals;
+		const empty = {
+			effectiveRuns: 0,
+			bodiesReaped: 0,
+			charsFreed: 0,
+			lastEffectiveAt: null as string | null,
+			lastEffective: null as ReapResult | null,
+		};
+		try {
+			const stored = await this.ctx.storage.get(VaultSyncServer.REAP_TOTALS_KEY);
+			if (stored && typeof stored === "object") {
+				this.reapTotals = { ...empty, ...(stored as Partial<typeof empty>) };
+				return this.reapTotals;
+			}
+		} catch {
+			// Unreadable — report zeros rather than failing the caller.
+		}
+		this.reapTotals = empty;
+		return this.reapTotals;
+	}
+
+	/** Fold an effective reap into the durable totals. */
+	private async recordEffectiveReap(result: ReapResult): Promise<void> {
+		try {
+			const totals = await this.loadReapTotals();
+			totals.effectiveRuns++;
+			totals.bodiesReaped += result.reaped;
+			totals.charsFreed += result.charsFreed;
+			totals.lastEffectiveAt = new Date().toISOString();
+			totals.lastEffective = result;
+			await this.ctx.storage.put(VaultSyncServer.REAP_TOTALS_KEY, totals);
+		} catch (err) {
+			console.error(`${LOG_PREFIX} could not record reap totals:`, err);
+		}
+	}
+
+
+	/** Count active (non-deleted) paths in a Y.Doc using the YAOS schema. */
 	private countActivePathsInDoc(doc: Y.Doc): number {
-		const meta = doc.getMap("meta");
-		let count = 0;
-		meta.forEach((value: unknown) => {
-			const path = this.readMetaPath(value);
-			if (!path) return;
-			if (!this.isMetaDeleted(value)) count++;
-		});
-		return count;
+		return countActivePaths(doc);
 	}
 
 	/** Check if doc has any semantic file state: meta entries, pathToId, or idToText. */
 	private hasAnyFileStateInDoc(doc: Y.Doc): boolean {
-		const meta = doc.getMap("meta");
-		if (meta.size > 0) return true;
-		const pathToId = doc.getMap("pathToId");
-		if (pathToId.size > 0) return true;
-		const idToText = doc.getMap("idToText");
-		if (idToText.size > 0) return true;
-		return false;
-	}
-
-	/**
-	 * Read the path from a metadata value. Handles both flat objects (v2) and nested Y.Map (v3).
-	 * Server must dual-read because persisted rooms may contain either shape.
-	 */
-	private readMetaPath(value: unknown): string | null {
-		if (value instanceof Y.Map) {
-			const path = value.get("path");
-			return typeof path === "string" && path.length > 0 ? path : null;
-		}
-		if (typeof value === "object" && value !== null && "path" in value) {
-			const path = (value as { path: unknown }).path;
-			return typeof path === "string" && path.length > 0 ? path : null;
-		}
-		return null;
-	}
-
-	/**
-	 * Check if a metadata value represents a deleted/tombstoned entry.
-	 * Handles both flat objects (v2) and nested Y.Map (v3).
-	 */
-	private isMetaDeleted(value: unknown): boolean {
-		if (value instanceof Y.Map) {
-			const deletedAt = value.get("deletedAt");
-			if (typeof deletedAt === "number" && Number.isFinite(deletedAt)) return true;
-			return value.get("deleted") === true;
-		}
-		if (typeof value === "object" && value !== null) {
-			const m = value as { deleted?: boolean; deletedAt?: unknown };
-			if (typeof m.deletedAt === "number" && Number.isFinite(m.deletedAt)) return true;
-			return m.deleted === true;
-		}
-		return false;
+		return hasAnyFileState(doc);
 	}
 
 	private getChunkedDocStore(): ChunkedDocStore {
@@ -648,97 +908,146 @@ export class VaultSyncServer extends YServer {
 		return this.persistence;
 	}
 
-	/** Decoded document summary for deployment validation and diagnostics. */
-	private getDocumentSummary(): {
-		activePathCount: number;
-		tombstonedPathCount: number;
-		metaCount: number;
-		pathToIdCount: number;
-		idToTextCount: number;
-		/** Active meta entries that have a corresponding pathToId + idToText entry. */
-		activePathsWithText: number;
-		/** Active meta entries missing from pathToId. */
-		activePathsMissingFromPathToId: number;
-		/** Active meta entries with pathToId but missing idToText. */
-		activePathsMissingText: number;
-		/** pathToId entries that have no corresponding active meta entry. */
-		pathToIdWithoutActiveMeta: number;
-		schemaVersion: unknown;
-		/** v3 observability: metadata entries stored as flat JSON objects. */
-		flatMetaEntries: number;
-		/** v3 observability: metadata entries stored as nested Y.Map. */
-		nestedMetaEntries: number;
-		/** v3 observability: metadata entries that could not be decoded. */
-		invalidMetaEntries: number;
+	/**
+	 * In-memory CRDT footprint census.
+	 *
+	 * Two very different things can make a Y.Doc expensive in RAM, and they
+	 * need opposite remedies:
+	 *
+	 *   - Cons-string accumulation.  Yjs merges adjacent ContentString items
+	 *     with `str += str`.  Under fine-grained editing that runs millions of
+	 *     times and V8 keeps a deep rope it will not flatten.  Struct count
+	 *     stays low, memory climbs.  Re-materialising the doc recovers it.
+	 *   - Item fragmentation.  Non-adjacent or multi-client edits produce
+	 *     structs Yjs cannot merge.  Struct count climbs and stays climbed.
+	 *     Re-materialising does NOT recover it.
+	 *
+	 * `bytesPerStruct` separates them: ~10^4 means few large items (rope
+	 * regime), ~10^1 means many small items (fragmentation regime).  Benchmark
+	 * for the same metrics on synthetic corpora: scripts/bench-memory.mjs.
+	 *
+	 * This walks every struct and fully re-encodes the document, so it is far
+	 * too expensive for the periodic debug poll and is opt-in only.
+	 */
+	private getCrdtFootprint(): {
+		clients: number;
+		structs: number;
+		items: number;
+		gcs: number;
+		deletedItems: number;
+		liveChars: number;
+		encodedBytes: number;
+		bytesPerStruct: number;
+		itemsPerKB: number;
+		databaseSizeBytes: number | null;
 	} {
-		const meta = this.document.getMap("meta");
-		const pathToId = this.document.getMap<string>("pathToId");
-		const idToText = this.document.getMap("idToText");
+		let structs = 0;
+		let items = 0;
+		let gcs = 0;
+		let deletedItems = 0;
+		let liveChars = 0;
 
-		let activePathCount = 0;
-		let tombstonedPathCount = 0;
-		let activePathsWithText = 0;
-		let activePathsMissingFromPathToId = 0;
-		let activePathsMissingText = 0;
-		let flatMetaEntries = 0;
-		let nestedMetaEntries = 0;
-		let invalidMetaEntries = 0;
-
-		// Walk meta to count active/tombstoned and check consistency
-		const activeMetaPaths = new Set<string>();
-		meta.forEach((value: unknown) => {
-			const path = this.readMetaPath(value);
-			if (!path) {
-				invalidMetaEntries++;
-				return;
-			}
-
-			// Classify shape
-			if (value instanceof Y.Map) {
-				nestedMetaEntries++;
-			} else {
-				flatMetaEntries++;
-			}
-			const isDeleted = this.isMetaDeleted(value);
-			if (isDeleted) {
-				tombstonedPathCount++;
-			} else {
-				activePathCount++;
-				activeMetaPaths.add(path);
-				const id = pathToId.get(path);
-				if (!id) {
-					activePathsMissingFromPathToId++;
-				} else if (!idToText.has(id)) {
-					activePathsMissingText++;
-				} else {
-					activePathsWithText++;
+		for (const structList of this.document.store.clients.values()) {
+			structs += structList.length;
+			for (const struct of structList) {
+				// instanceof, not constructor.name: class names do not survive
+				// minification in the released bundle.
+				if (!(struct instanceof Y.Item)) {
+					gcs++;
+					continue;
 				}
+				items++;
+				if (struct.deleted) deletedItems++;
+				else liveChars += struct.length;
 			}
-		});
+		}
 
-		// Count pathToId entries without active meta
-		let pathToIdWithoutActiveMeta = 0;
-		pathToId.forEach((_id: string, path: string) => {
-			if (!activeMetaPaths.has(path)) {
-				pathToIdWithoutActiveMeta++;
-			}
-		});
+		const encodedBytes = Y.encodeStateAsUpdate(this.document).byteLength;
+
+		let databaseSizeBytes: number | null = null;
+		try {
+			const size = this.ctx.storage.sql?.databaseSize;
+			if (typeof size === "number") databaseSizeBytes = size;
+		} catch {
+			// KV-backed or unavailable — reported as null rather than failing
+			// the whole debug response.
+		}
 
 		return {
-			activePathCount,
-			tombstonedPathCount,
-			metaCount: meta.size,
-			pathToIdCount: pathToId.size,
-			idToTextCount: idToText.size,
-			activePathsWithText,
-			activePathsMissingFromPathToId,
-			activePathsMissingText,
-			pathToIdWithoutActiveMeta,
-			schemaVersion: this.document.getMap("sys").get("schemaVersion") ?? null,
-			flatMetaEntries,
-			nestedMetaEntries,
-			invalidMetaEntries,
+			clients: this.document.store.clients.size,
+			structs,
+			items,
+			gcs,
+			deletedItems,
+			liveChars,
+			encodedBytes,
+			bytesPerStruct: structs > 0 ? encodedBytes / structs : 0,
+			itemsPerKB: liveChars > 0 ? items / (liveChars / 1024) : 0,
+			databaseSizeBytes,
 		};
+	}
+
+	/**
+	 * Footprint numbers cheap enough to return on every debug poll.
+	 *
+	 * getCrdtFootprint() is the honest measurement but it re-encodes the whole
+	 * document, so it can only ever be opt-in — which makes it useless for the
+	 * thing we actually want, which is watching drift over time in production.
+	 *
+	 * Everything here is O(clients) or O(1):
+	 *   - struct count sums the per-client array lengths without touching a
+	 *     single struct, so it does not grow with document size.
+	 *   - databaseSize is a SQLite property read.
+	 *
+	 * `structs` is the number that matters.  Memory scales with struct count at
+	 * roughly 117 bytes each, not with characters: 12.5MB of freshly synced text
+	 * costs ~3,300 structs, while 30,000 scattered edits to the same vault cost
+	 * ~30,000 more.  Against a 128MB isolate that puts the ceiling near 850,000
+	 * structs, and it is reached by fragmentation rather than by size.
+	 *
+	 * Deliberately no derived ratio.  An earlier version divided stored bytes by
+	 * struct count and called it bytesPerStruct, which mixes two denominators --
+	 * stored bytes include the journal, the snapshot and SQLite page overhead --
+	 * and this whole line of work is a monument to what convenient proxies cost.
+	 * Both raw numbers are here; divide them if you want to, knowing what you
+	 * divided.
+	 */
+	private getCheapFootprint(): {
+		clients: number;
+		structs: number;
+		databaseSizeBytes: number | null;
+		updatesApplied: number;
+	} {
+		let structs = 0;
+		for (const structList of this.document.store.clients.values()) {
+			structs += structList.length;
+		}
+
+		let databaseSizeBytes: number | null = null;
+		try {
+			const size = this.ctx.storage.sql?.databaseSize;
+			if (typeof size === "number") databaseSizeBytes = size;
+		} catch {
+			// KV-backed or unavailable — null rather than failing the response.
+		}
+
+		return {
+			clients: this.document.store.clients.size,
+			structs,
+			databaseSizeBytes,
+			updatesApplied: this.docUpdateCount,
+		};
+	}
+
+	/**
+	 * Decoded document summary for deployment validation and diagnostics.
+	 *
+	 * Delegated to documentSummary.ts so the counting rules are testable against
+	 * a constructed document; they were not before, which is how a healthy
+	 * 92-file vault came to report activePathsWithText: 0 unchallenged.
+	 */
+	private getDocumentSummary(): DocumentSummary {
+		return buildDocumentSummary(this.document);
 	}
 
 	private async readRoomMetaCheap(): Promise<RoomMeta | null> {
@@ -980,14 +1289,23 @@ export class VaultSyncServer extends YServer {
 		keysDeleted: number;
 		error?: string;
 	}> {
-		// Safety: verify SQL has data before wiping KV
+		// Destructive cleanup is allowed only after a verified checkpoint migration.
+		// Journal-only SQL is not sufficient evidence that the legacy KV state was
+		// fully checkpointed, and fresh SQL rooms have no migration receipt.
 		const sqlStore = this.getSqlDocStore();
 		const sqlState = sqlStore.loadState();
-		if (sqlState.snapshot === null && sqlState.journalUpdates.length === 0) {
+		if (sqlState.snapshot === null) {
 			return {
 				status: "aborted",
 				keysDeleted: 0,
-				error: "SQL storage is empty — refusing to delete KV data (would cause data loss)",
+				error: "SQL checkpoint is absent — refusing to delete KV data (would cause data loss)",
+			};
+		}
+		if (!sqlStore.isMigrated()) {
+			return {
+				status: "aborted",
+				keysDeleted: 0,
+				error: "SQL migration receipt is absent — refusing to delete KV data",
 			};
 		}
 
@@ -1055,7 +1373,7 @@ export class VaultSyncServer extends YServer {
 		}));
 
 		try {
-			await appendTraceEntry(this.ctx.storage, entry, MAX_DEBUG_TRACE_EVENTS);
+			await this.traceRing.append(this.ctx.storage, entry);
 		} catch (err) {
 			console.error(`${LOG_PREFIX} trace persist failed:`, err);
 		}

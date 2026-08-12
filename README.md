@@ -94,20 +94,24 @@ In practice, that means your vault still exists locally as normal files, Obsidia
 
 ## Engineering
 
-This repository keeps deep architecture notes under [`engineering/`](./engineering). These aren't afterthoughts — they capture the design rationale, trade-offs, and failure modes behind a production CRDT sync engine on Cloudflare Workers.
+Durable architecture, engineering, RFC, QA, and historical-reference material
+lives in the [documentation index](./docs/README.md). Contributors looking for
+current project truth should start with:
 
-Contributors looking for current project truth should start with:
-- [`engineering/active-threads.md`](./engineering/active-threads.md)
-- [`engineering/followups.md`](./engineering/followups.md)
-- [`engineering/bug-rca-ledger.md`](./engineering/bug-rca-ledger.md)
+- [Active threads](./docs/engineering/active-threads.md)
+- [Follow-ups](./docs/engineering/followups.md)
+- [Bug and RCA ledger](./docs/engineering/bug-rca-ledger.md)
+- [Layer 4 harness status](./docs/qa/layer4-harness-status.md)
 
-- **[Monolithic vault CRDT](./engineering/monolith.md)** — Why one vault-level `Y.Doc`, what we gain (ACID cross-file transactions), and what we consciously trade off.
-- **[Filesystem bridge](./engineering/filesystem-bridge.md)** — How noisy Obsidian file events are converted into safe CRDT updates with dirty-set draining and content-acknowledged suppression.
-- **[Checkpoint + journal persistence](./engineering/checkpoint-journal.md)** — The storage-engine rewrite that removed full-state rewrites and introduced state-vector-anchored delta journaling.
-- **[Attachment sync](./engineering/attachment-sync.md)** — Native Worker proxy uploads, capability negotiation, and bounded fan-out under Cloudflare connection limits.
-- **[Zero-config auth](./engineering/zero-config-auth.md)** — Browser claim UX, `obsidian://yaos` deep-link pairing, and env-token override behavior.
-- **[Zero-ops update pipeline](./engineering/zero-ops-update-pipeline.md)** — Why detached deploy repos need bootstrap injection, reusable workflows, and migration safety gates.
-- **[Warts and limits](./engineering/warts-and-limits.md)** — Canonical limits, safety invariants, and the pragmatic compromises currently in production.
+Key architecture references:
+
+- [Monolithic vault CRDT](./docs/architecture/monolith.md)
+- [Filesystem bridge](./docs/architecture/filesystem-bridge.md)
+- [Checkpoint journal](./docs/architecture/checkpoint-journal.md)
+- [Attachment sync](./docs/architecture/attachment-sync.md)
+- [Zero-config authentication](./docs/architecture/zero-config-auth.md)
+- [Zero-ops update pipeline](./docs/rfcs/zero-ops-update-pipeline.md)
+- [Warts and limits](./docs/architecture/warts-and-limits.md)
 
 ## Limits
 
@@ -115,7 +119,7 @@ YAOS is optimized for personal or small-team note vaults, not for arbitrarily hu
 
 If your vault is normal notes, drafts, research, and attachments, YAOS is a great fit. If you want to sync giant text dumps or archival datasets, a simpler file-sync tool is a better choice.
 
-Rule of thumb: around 50 MB of raw text (not counting attachments like images and PDFs) is a comfortable target.
+Rule of thumb: the limit is not the size of your vault, it is how scattered your editing is. The constraint is memory, not disk, and what consumes it is the number of CRDT items — roughly 117 bytes each, against a 128 MB budget. Typing continuously in one note merges into a handful of items, so pasting a 12 MB file costs almost nothing and a large vault of ordinary notes is fine. What is expensive is a very large number of small edits spread across many files — an automated script appending to thousands of notes in a loop is the shape that will eventually exhaust it, and that cost does not come back. For hand-written vaults, including big ones, you are unlikely to reach it.
 
 ## Configuration
 
@@ -158,7 +162,7 @@ Access via command palette (Ctrl/Cmd+P):
 
 **"R2 not configured"**: The server doesn't have a `YAOS_BUCKET` binding yet. See the [R2 setup video](https://youtu.be/Z7xCMEYfdFM).
 
-**Cloudflare deploy/dashboard issues**: If build queue or dashboard behavior is flaky, see [server troubleshooting notes](./server/README.md#transient-cloudflare-deployment-issues), including the `wrangler.toml` R2-binding fallback.
+**Cloudflare deploy/dashboard issues**: If build queue or dashboard behavior is flaky, see [server troubleshooting notes](./docs/engineering/server-deployment.md#cloudflare-deployment-quirks), including the `wrangler.toml` R2-binding fallback.
 
 **Sync stops on mobile**: Use "Reconnect to sync server" command. Check you have network connectivity.
 

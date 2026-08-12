@@ -179,6 +179,9 @@ async function main() {
 		await runCommand("node", [
 			"tests/ws-ticket-reconnect.mjs",
 		], token);
+		await runCommand("node", [
+			"tests/ws-admission-protocol.mjs",
+		], token);
 	} catch (err) {
 		if (output.trim()) {
 			console.error("\n[wrangler output]");

@@ -256,7 +256,141 @@ function analyzeCrossDeviceHashesEqualOffline(events: WitnessEvent[], deviceIds:
 	return { ruleName: "analyzeCrossDeviceHashesEqual", ok: true, evidence: [lastHashes], summary: `All devices agree on hash: ${[...uniqueHashes][0] ?? "(none)"}` };
 }
 
-function analyzeConvergenceEvidenceOffline(events: WitnessEvent[], deviceIds: string[], expectedHash?: string): AnalyzerResult {
+const S12A_THREE_DEVICE_ACTIVE_EDIT_ID = "s12a-three-device-active-edit";
+const S12A_ROLE_PLATFORMS = {
+	"device-a": "desktop",
+	"device-b": "ios",
+	"device-c": "android",
+} as const;
+
+function settledEventsForStep(bundle: ParsedBundle, stepIndex: number): WitnessEvent[] {
+	return bundle.events.filter((event) =>
+		event.kind === "device.witness.settled" &&
+		Number((event.data ?? {}).scenarioStepIndex) === stepIndex,
+	);
+}
+
+function activeEditFailure(reason: string, summary: string, evidence: unknown[] = []): AnalyzerResult {
+	return { ruleName: "analyzeConvergenceEvidence", ok: false, reason, evidence, summary };
+}
+
+/**
+ * Scenario-specific contract for the manual active-edit run. This remains the
+ * existing convergence-evidence rule; no product event, divergence reason, or
+ * new qa/analyzers/rules module is introduced. It fails closed rather than
+ * treating a shared pre-existing baseline hash as proof of an edit.
+ */
+function analyzeS12AThreeDeviceActiveEdit(bundles: ParsedBundle[]): AnalyzerResult {
+	if (bundles.length !== 3) {
+		return activeEditFailure("s12a_bundle_count", `S12A requires exactly three bundles; received ${bundles.length}.`);
+	}
+
+	const byRole: Record<string, ParsedBundle> = {};
+	for (const [role, platform] of Object.entries(S12A_ROLE_PLATFORMS)) {
+		const matches = bundles.filter((bundle) => bundle.header.platform === platform);
+		if (matches.length !== 1) {
+			return activeEditFailure(
+				"s12a_platform_roles",
+				`S12A requires exactly one ${platform} bundle for ${role}; received ${matches.length}.`,
+				matches.map((bundle) => ({ deviceId: bundle.header.deviceId, platform: bundle.header.platform })),
+			);
+		}
+		byRole[role] = matches[0]!;
+	}
+
+	const headers = Object.values(byRole).map((bundle) => bundle.header);
+	if (headers.some((header) => !header.scenarioRunId || header.scenarioId !== S12A_THREE_DEVICE_ACTIVE_EDIT_ID)) {
+		return activeEditFailure("s12a_scenario_identity", "S12A requires a non-empty shared scenarioRunId and the active-edit scenarioId in every header.");
+	}
+	if (headers.some((header) => header.runtimeState !== "foreground" || header.flightMode !== "qa-safe" || header.privacyMode !== "safe" || header.containsRawPaths)) {
+		return activeEditFailure("s12a_header_contract", "S12A requires foreground, qa-safe, raw-path-free safe bundle headers on all three devices.");
+	}
+
+	const mobileDeviceIds = [byRole["device-b"]!.header.deviceId, byRole["device-c"]!.header.deviceId];
+	const nonForegroundEvents = bundles.flatMap((bundle) => bundle.events).filter((event) =>
+		mobileDeviceIds.includes(event.deviceId ?? "") &&
+		(event.kind === "device.witness.settled" || event.kind === "device.witness.diverged") &&
+		(event.data ?? {}).runtimeState !== "foreground",
+	);
+	if (nonForegroundEvents.length > 0) {
+		return activeEditFailure(
+			"s12a_non_foreground",
+			"S12A strict-foreground pass rejected: iPad or Android emitted a non-foreground witness event.",
+			nonForegroundEvents,
+		);
+	}
+
+	const producer = byRole["device-a"]!;
+	const baseline = settledEventsForStep(producer, 1).filter((event) =>
+		typeof event.pathId === "string" && typeof (event.data ?? {}).stateHash === "string",
+	);
+	const baselinePairs = new Map(baseline.map((event) => [
+		`${event.pathId}:${String((event.data ?? {}).stateHash)}`,
+		event,
+	]));
+	if (baselinePairs.size !== 1) {
+		return activeEditFailure("s12a_baseline_ambiguous", "S12A requires exactly one Device A baseline settled hash at step 1.", [...baselinePairs.values()]);
+	}
+	const baselineEvent = [...baselinePairs.values()][0]!;
+	const pathId = baselineEvent.pathId!;
+	const baselineHash = String((baselineEvent.data ?? {}).stateHash);
+
+	const producerPostEdit = settledEventsForStep(producer, 2).filter((event) =>
+		event.pathId === pathId &&
+		String((event.data ?? {}).stateHash ?? "") !== baselineHash &&
+		(event.data ?? {}).originClass === "local-edit",
+	);
+	const postEditHashes = new Set(producerPostEdit.map((event) => String((event.data ?? {}).stateHash)));
+	if (postEditHashes.size !== 1) {
+		return activeEditFailure(
+			"s12a_producer_post_edit_missing",
+			"S12A requires one Device A local-edit settled hash at step 2 that differs from the step-1 baseline.",
+			producerPostEdit,
+		);
+	}
+	const postEditHash = [...postEditHashes][0]!;
+
+	const requiredConsumerSteps: Array<[string, number]> = [["device-b", 3], ["device-c", 4]];
+	const evidence: unknown[] = [{
+		role: "device-a",
+		deviceId: producer.header.deviceId,
+		pathId,
+		baselineHash,
+		postEditHash,
+		step: 2,
+	}];
+	for (const [role, stepIndex] of requiredConsumerSteps) {
+		const bundle = byRole[role]!;
+		const matching = settledEventsForStep(bundle, stepIndex).filter((event) =>
+			event.pathId === pathId && String((event.data ?? {}).stateHash ?? "") === postEditHash,
+		);
+		if (matching.length === 0) {
+			return activeEditFailure(
+				"s12a_consumer_convergence_missing",
+				`S12A requires ${role} to settle Device A's post-edit hash at step ${stepIndex}.`,
+				evidence,
+			);
+		}
+		evidence.push({ role, deviceId: bundle.header.deviceId, step: stepIndex, stateHash: postEditHash });
+	}
+
+	return {
+		ruleName: "analyzeConvergenceEvidence",
+		ok: true,
+		evidence,
+		summary: `S12A active edit proved on pathId ${pathId}: Device A changed from ${baselineHash} to ${postEditHash} at step 2; iPad settled it at step 3 and Android at step 4. All mobile witness events remained foreground.`,
+	};
+}
+
+function analyzeConvergenceEvidenceOffline(
+	events: WitnessEvent[],
+	deviceIds: string[],
+	expectedHash?: string,
+	bundles?: ParsedBundle[],
+): AnalyzerResult {
+	if (bundles?.some((bundle) => bundle.header.scenarioId === S12A_THREE_DEVICE_ACTIVE_EDIT_ID)) {
+		return analyzeS12AThreeDeviceActiveEdit(bundles);
+	}
 	if (!expectedHash) {
 		const counts: Record<string, number> = {};
 		for (const e of events) {
@@ -381,7 +515,7 @@ function main(): void {
 		const r3 = analyzeRecoveryOldHashOffline(allEvents, deviceIds);
 		const r4 = analyzeEditorStabilityOffline(allEvents, deviceIds);
 		const r5 = analyzeCrossDeviceHashesEqualOffline(allEvents, deviceIds);
-		const r6 = analyzeConvergenceEvidenceOffline(allEvents, deviceIds);
+		const r6 = analyzeConvergenceEvidenceOffline(allEvents, deviceIds, undefined, accepted);
 		ruleResults.push(r1, r2, r3, r4, r5, r6);
 		summaryOk = ruleResults.every((r) => r.ok);
 	}

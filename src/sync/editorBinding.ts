@@ -2,7 +2,7 @@ import { Compartment, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { yCollab, ySyncFacet } from "y-codemirror.next";
 import * as Y from "yjs";
-import { Notice, type MarkdownView } from "obsidian";
+import { editorInfoField, Notice, type MarkdownFileInfo, type MarkdownView } from "obsidian";
 import type { VaultSync } from "./vaultSync";
 import { applyDiffToYText } from "./diff";
 import type { TraceRecord } from "../observability/traceContext";
@@ -29,8 +29,16 @@ const FAST_SWITCH_BINDING_SETTLE_WINDOW_MS = 1600;
 const FAST_SWITCH_WINDOW_MS = 2000;
 const POST_BIND_HEALTH_GRACE_MS = 100;
 const LIVE_UPDATE_HEALTH_RETRY_DELAY_MS = 120;
-const CM_RESOLVE_RETRY_DELAY_MS = 80;
-const CM_RESOLVE_MAX_RETRIES = 2;
+const CM_RESOLVE_RETRY_DELAY_MS = 100;
+const CM_RESOLVE_MAX_RETRIES = 8;
+
+/** Why a getCmView() call failed to resolve an editor, for degraded traces. */
+interface CmResolveFailure {
+	reason: "no-known-cm-views" | "no-container-match" | "ambiguous";
+	knownCmViews: number;
+	containerMatches: number;
+	infoMatches: number;
+}
 
 /** Map from MarkdownView instance id to its binding state. */
 interface EditorBinding {
@@ -129,6 +137,13 @@ export class EditorBindingManager {
 	private cmDegradedWarned = false;
 	private cmResolveAttempts = new Map<string, number>();
 	private pendingCmResolveRetries = new Map<string, ReturnType<typeof setTimeout>>();
+	/**
+	 * Why the last getCmView() call returned null. Attached to the degraded
+	 * trace so field reports separate "no editor ever registered" (our CM6
+	 * extension reached this editor too late) from "registered but
+	 * unclaimable" (ambiguous container).
+	 */
+	private lastCmResolveFailure: CmResolveFailure | null = null;
 
 	private readonly debug: boolean;
 
@@ -477,6 +492,164 @@ export class EditorBindingManager {
 	}
 
 	/**
+	 * Release bindings whose workspace leaf no longer exists.
+	 *
+	 * Closing a tab is the one lifecycle event with no cleanup path: `unbind`
+	 * needs a live MarkdownView to derive its key, `unbindByPath` only fires on
+	 * delete/rename, and `auditBindings` skips detached views outright because
+	 * `isAuditActionable` bails when `view.file` is null. Measured on a
+	 * 121-note vault: `bindings` reached 133 entries with a single tab open,
+	 * each stranded entry pinning a dead MarkdownView, its EditorView, the
+	 * detached DOM and a live UndoManager doc listener (~39 KB apiece).
+	 *
+	 * Two independent signals must agree before we release anything:
+	 *
+	 *   1. the leaf key is absent from the workspace, and
+	 *   2. CodeMirror already tore the view down, so our ViewPlugin.destroy
+	 *      hook removed it from knownCmViews.
+	 *
+	 * Requiring both keeps a workspace mutation that transiently hides a leaf
+	 * from stranding a live editor. Verified against reading-mode toggles,
+	 * sidebar collapse, popout moves and split focus changes: every one of
+	 * those keeps the EditorView registered, so none of them prune.
+	 */
+	pruneOrphanedBindings(liveLeafKeys: ReadonlySet<string>, source: string): number {
+		let pruned = 0;
+		let deferred = 0;
+
+		for (const [leafId, binding] of Array.from(this.bindings)) {
+			if (liveLeafKeys.has(leafId)) continue;
+			if (this.knownCmViews.has(binding.cm)) {
+				// Signals disagree: the leaf is gone but CodeMirror still holds
+				// the view. Leave it for the next sweep rather than guess.
+				deferred += 1;
+				continue;
+			}
+
+			this.clearScheduledHealthCheck(leafId);
+			this.clearCmResolveRetry(leafId);
+			this.healthWorkInFlight.delete(leafId);
+			binding.undoManager.destroy();
+			this.cmToLeafId.delete(binding.cm);
+			this.bindings.delete(leafId);
+			pruned += 1;
+			this.log(
+				`pruneOrphanedBindings: released "${binding.path}" (leaf=${leafId}, cm=${binding.cmId})`,
+			);
+		}
+
+		if (pruned > 0 || deferred > 0) {
+			this.trace?.("editor", "bindings-pruned", {
+				source,
+				pruned,
+				deferred,
+				remaining: this.bindings.size,
+				knownCmViews: this.knownCmViews.size,
+			});
+		}
+		return pruned;
+	}
+
+	/**
+	 * Build a per-binding UndoManager without Yjs's permanent doc listener.
+	 *
+	 * Y.UndoManager's constructor registers two subscriptions on the shared
+	 * vault doc: `afterTransaction`, which `destroy()` removes, and an
+	 * anonymous `destroy` closure, which it does not — `destroy()` only calls
+	 * `doc.off('afterTransaction', ...)`. That closure holds a hard reference
+	 * to every UndoManager ever constructed on the doc, including the ones we
+	 * tear down correctly, so the observer set grows for the whole session.
+	 * Measured against a real vault: 268 `destroy` observers after ordinary
+	 * use, and creating then correctly destroying 50 managers left 50 behind.
+	 *
+	 * We already destroy our managers explicitly on unbind, prune and
+	 * teardown, so the auto-destroy-on-doc-destroy hook buys us nothing.
+	 * Remove whichever `destroy` observers the constructor just added.
+	 *
+	 * `_observers` is Yjs-internal, so every access is shape-checked; if a
+	 * future Yjs changes it we silently keep the old behaviour rather than
+	 * throw during a bind.
+	 */
+	private createUndoManager(ytext: Y.Text): Y.UndoManager {
+		const doc = ytext.doc;
+		// Only the `destroy` hook is surplus here — this manager's
+		// `afterTransaction` subscription is the one that makes undo work.
+		const before = this.snapshotDocObservers(doc, "destroy");
+		const undoManager = new Y.UndoManager(ytext);
+		this.releaseAddedDocObservers(doc, "destroy", before);
+		return undoManager;
+	}
+
+	/**
+	 * Build the collab extension without the manager y-codemirror hides in it.
+	 *
+	 * `YSyncConfig`'s constructor unconditionally runs `new Y.UndoManager(ytext)`
+	 * (y-codemirror.next/src/y-sync.js:11) and then never reads it — the manager
+	 * the editor actually drives is the one we pass to yUndoManagerFacet. That
+	 * stray manager stays subscribed to the vault doc forever, so every rebind
+	 * leaked one `afterTransaction` observer and one of Yjs's unremovable
+	 * `destroy` closures. Measured: +72 of each across 72 tab opens, even with
+	 * binding pruning working.
+	 *
+	 * Our own manager is constructed before this call, so anything that appears
+	 * on either observer set during `yCollab` belongs to the stray one and is
+	 * safe to drop.
+	 */
+	private buildCollabExtension(ytext: Y.Text, undoManager: Y.UndoManager): Extension {
+		const doc = ytext.doc;
+		const destroyBefore = this.snapshotDocObservers(doc, "destroy");
+		const transactionBefore = this.snapshotDocObservers(doc, "afterTransaction");
+
+		const extension = yCollab(ytext, this.vaultSync.provider.awareness, {
+			undoManager,
+		});
+
+		this.releaseAddedDocObservers(doc, "destroy", destroyBefore);
+		this.releaseAddedDocObservers(doc, "afterTransaction", transactionBefore);
+		return extension;
+	}
+
+	/**
+	 * Drop observers registered on `doc` since `before` was captured.
+	 *
+	 * Yjs never removes an UndoManager's `destroy` hook — `destroy()` only
+	 * unsubscribes `afterTransaction` — so managers we create would otherwise be
+	 * pinned for the lifetime of the doc. We destroy ours explicitly on unbind,
+	 * prune and teardown, so the auto-destroy hook buys us nothing.
+	 */
+	private releaseAddedDocObservers(
+		doc: Y.Doc | null,
+		event: "destroy" | "afterTransaction",
+		before: ReadonlySet<(...args: never[]) => void> | null,
+	): void {
+		if (!doc || !before) return;
+		const after = this.snapshotDocObservers(doc, event);
+		if (!after) return;
+		for (const observer of after) {
+			if (before.has(observer)) continue;
+			doc.off(event, observer);
+		}
+	}
+
+	/**
+	 * Copy of the doc's observers for `event`, or null if Yjs's shape changed.
+	 * `_observers` is Yjs-internal, so every step is shape-checked; on an
+	 * unexpected layout we return null and keep the old leaky behaviour rather
+	 * than throw mid-bind.
+	 */
+	private snapshotDocObservers(
+		doc: Y.Doc | null,
+		event: string,
+	): Set<(...args: never[]) => void> | null {
+		if (!doc || !("_observers" in doc)) return null;
+		const observers = doc._observers;
+		if (!(observers instanceof Map)) return null;
+		const forEvent = observers.get(event);
+		if (!(forEvent instanceof Set)) return null;
+		return new Set(forEvent);
+	}
+
+	/**
 	 * Check if a path is currently bound to an active editor.
 	 */
 	isBound(path: string): boolean {
@@ -678,8 +851,17 @@ export class EditorBindingManager {
 
 	/**
 	 * Get the CM6 EditorView from a MarkdownView.
-	 * Resolution is based on DOM containment over a set of known CM6 views
-	 * registered by our global ViewPlugin. This avoids private Obsidian APIs.
+	 *
+	 * Primary strategy is Obsidian's public `editorInfoField`, which every
+	 * editor state carries and which names the view owning that editor. It is
+	 * exact even when several editors share one container (embeds,
+	 * plugin-injected editors) or the DOM was re-parented mid-switch.
+	 *
+	 * DOM containment over the CM6 views registered by our global ViewPlugin
+	 * stays as the fallback. Both strategies use public API only.
+	 *
+	 * Resolution is fail-closed: while ownership is ambiguous we return null
+	 * and let the caller retry rather than bind the wrong editor.
 	 */
 	private getCmView(view: MarkdownView): EditorView | null {
 		const container = view.containerEl;
@@ -698,12 +880,16 @@ export class EditorBindingManager {
 			}
 		}
 
+		const infoMatches: EditorView[] = [];
 		const matches: EditorView[] = [];
 		const stale: EditorView[] = [];
 		for (const cm of this.knownCmViews) {
 			if (!cm.dom.isConnected) {
 				stale.push(cm);
 				continue;
+			}
+			if (this.cmBelongsToView(cm, view)) {
+				infoMatches.push(cm);
 			}
 			if (container.contains(cm.dom)) {
 				matches.push(cm);
@@ -714,17 +900,67 @@ export class EditorBindingManager {
 			this.cmToLeafId.delete(cm);
 		}
 
-		if (matches.length === 0) return null;
-		if (matches.length === 1) return matches[0]!;
+		if (infoMatches.length === 1) {
+			this.lastCmResolveFailure = null;
+			return infoMatches[0]!;
+		}
+		if (infoMatches.length > 1) {
+			const focusedInfoMatch = this.findFocusedCm(infoMatches);
+			if (focusedInfoMatch) {
+				this.lastCmResolveFailure = null;
+				return focusedInfoMatch;
+			}
+		}
 
-		const activeElement =
-			typeof document !== "undefined" ? document.activeElement : null;
-		const focused = matches.filter((cm) =>
-			cm.hasFocus || (activeElement ? cm.dom.contains(activeElement) : false),
-		);
-		if (focused.length === 1) return focused[0]!;
+		if (matches.length === 0) {
+			// knownCmViews only fills once our global ViewPlugin is constructed,
+			// and that construction can lag the workspace event that triggered
+			// bind(). Measured on a 121-note vault: the editor is already live
+			// (view.editor.cm connected) while knownCmViews still holds 0-2
+			// entries, so both the ownership and containment passes come up
+			// empty and we burn the retry budget waiting for registration.
+			// CodeMirror's public findFromDOM resolves the live EditorView
+			// straight from this view's container, so the note binds on the
+			// first attempt instead.
+			// knownCmViews only ever holds connected views (disconnected ones are
+			// pruned above), so the containment pass can never return a detached
+			// editor. findFromDOM has no such invariant — on a closed leaf it
+			// happily finds the dead EditorView still sitting in the detached
+			// container — so re-establish the invariant explicitly.
+			const fromDom = EditorView.findFromDOM(container);
+			if (fromDom?.dom.isConnected) {
+				this.registerKnownCmView(fromDom);
+				this.lastCmResolveFailure = null;
+				return fromDom;
+			}
+			this.lastCmResolveFailure = {
+				reason: this.knownCmViews.size === 0
+					? "no-known-cm-views"
+					: "no-container-match",
+				knownCmViews: this.knownCmViews.size,
+				containerMatches: 0,
+				infoMatches: infoMatches.length,
+			};
+			return null;
+		}
+		if (matches.length === 1) {
+			this.lastCmResolveFailure = null;
+			return matches[0]!;
+		}
+
+		const focused = this.findFocusedCm(matches);
+		if (focused) {
+			this.lastCmResolveFailure = null;
+			return focused;
+		}
 
 		const ids = matches.map((cm) => this.getCmId(cm));
+		this.lastCmResolveFailure = {
+			reason: "ambiguous",
+			knownCmViews: this.knownCmViews.size,
+			containerMatches: matches.length,
+			infoMatches: infoMatches.length,
+		};
 		this.trace?.("editor", "cm-resolution-ambiguous", {
 			leafId: leafId ?? "unknown",
 			path: view.file?.path ?? null,
@@ -750,6 +986,36 @@ export class EditorBindingManager {
 		console.error(
 			"[yaos] Critical: Could not locate CodeMirror 6 EditorView. Live binding disabled.",
 		);
+	}
+
+	/**
+	 * True when `cm` is the editor Obsidian associates with `view`, according
+	 * to the public editorInfoField carried in the editor's state.
+	 */
+	private cmBelongsToView(cm: EditorView, view: MarkdownView): boolean {
+		let info: MarkdownFileInfo | undefined;
+		try {
+			info = cm.state.field(editorInfoField, false);
+		} catch {
+			return false;
+		}
+
+		if (!info) return false;
+		if (info === view) return true;
+		// Some editors expose a separate MarkdownFileInfo for the same file.
+		// Demand a live file plus a shared Editor before claiming ownership so
+		// two fileless editors cannot resolve to each other.
+		if (!view.file || info.file !== view.file) return false;
+		return info.editor !== undefined && info.editor === view.editor;
+	}
+
+	private findFocusedCm(cms: EditorView[]): EditorView | null {
+		const activeElement =
+			typeof document !== "undefined" ? document.activeElement : null;
+		const focused = cms.filter((cm) =>
+			cm.hasFocus || (activeElement ? cm.dom.contains(activeElement) : false),
+		);
+		return focused.length === 1 ? focused[0]! : null;
 	}
 
 	private getCmId(cm: EditorView): string {
@@ -938,6 +1204,7 @@ export class EditorBindingManager {
 				path: view.file?.path ?? null,
 				source,
 				attempts,
+				failure: this.lastCmResolveFailure,
 			});
 			return;
 		}
@@ -1021,7 +1288,7 @@ export class EditorBindingManager {
 			reason,
 		} = options;
 
-		const undoManager = new Y.UndoManager(ytext);
+		const undoManager = this.createUndoManager(ytext);
 
 		this.vaultSync.provider.awareness.setLocalStateField("user", {
 			name: deviceName,
@@ -1030,9 +1297,7 @@ export class EditorBindingManager {
 			colorLight: "#30bced33",
 		});
 
-		const collabExtension = yCollab(ytext, this.vaultSync.provider.awareness, {
-			undoManager,
-		});
+		const collabExtension = this.buildCollabExtension(ytext, undoManager);
 
 		try {
 			this.clearLocalCursor(`${action}-pre-reconfigure`);

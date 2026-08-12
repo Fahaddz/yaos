@@ -157,13 +157,24 @@ console.log("\n--- Test 6: All vault routes require auth (pre-auth rejection) --
 	);
 }
 
-console.log("\n--- Test 7: Cleanup refuses to run when SQL is empty ---");
+console.log("\n--- Test 7: Cleanup requires a checkpoint and verified migration receipt ---");
 {
-	// The cleanupLegacyKvKeys method must check SQL health before deleting KV
+	// Journal rows alone can exist before a durable checkpoint. The destructive
+	// cleanup route must require both a SQL snapshot and migration marker.
 	assert(
-		serverSrc.includes("SQL storage is empty") &&
-		serverSrc.includes("refusing to delete KV data"),
-		"cleanup-kv aborts with clear message when SQL has no data",
+		serverSrc.includes("SQL checkpoint is absent") &&
+		serverSrc.includes("sqlState.snapshot === null"),
+		"cleanup-kv refuses journal-only SQL without a checkpoint",
+	);
+	assert(
+		serverSrc.includes("sqlStore.isMigrated()") &&
+		serverSrc.includes("SQL migration receipt is absent"),
+		"cleanup-kv requires the verified migration receipt",
+	);
+	assert(
+		serverSrc.includes("KV-to-SQL checkpoint verification failed") &&
+		serverSrc.includes("verifiedSqlState.snapshot === null"),
+		"migration verifies the SQL checkpoint before recording cleanup evidence",
 	);
 }
 

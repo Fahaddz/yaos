@@ -66,10 +66,21 @@ export interface AnalyzerResult {
 	summary: string;
 }
 
-/** Device handle: deviceId + QA debug API */
-export interface DeviceHandle {
+/** Narrow synchronous API required by the witness primitives. */
+export type WitnessDeviceApi = Pick<
+	YaosQaDebugApi,
+	|	"getActiveTraceInfo"
+	|	"getRuntimeState"
+	|	"getWitnessBuffer"
+	|	"currentWitnessSeq"
+	|	"computeWitnessStateHash"
+	|	"readWitnessCheckpoint"
+>;
+
+/** Device handle: deviceId + the witness API surface. */
+export interface DeviceHandle<Api extends WitnessDeviceApi = WitnessDeviceApi> {
 	deviceId: DeviceId;
-	api: YaosQaDebugApi;
+	api: Api;
 }
 
 // -----------------------------------------------------------------------

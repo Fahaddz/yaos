@@ -24,7 +24,12 @@ import worker from "../server/src/index";
 import { handleSyncSocketRoute } from "../server/src/routes/syncSocket";
 import { json } from "../server/src/routes/http";
 import { isTicketEndpointUnsupported, SocketTicketHttpError, patchTicketInUrl } from "../src/sync/socketTicket";
+import { getGetServerByNameCallCount, resetGetServerByNameCallCount } from "./mocks/partyserver";
 import type { AuthState, Env } from "../server/src/routes/types";
+import {
+	SERVER_MAX_SCHEMA_VERSION,
+	SERVER_MIN_SCHEMA_VERSION,
+} from "../server/src/version";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -328,6 +333,57 @@ console.log("\n--- WS route: no ticket and no token → rejected before DO wake 
 		assert(false, "DO was touched for unauthenticated request");
 	}
 	assert(!doTouched, "no auth: DO namespace not touched");
+}
+
+console.log("\n--- WS route: schema bounds preserve auth priority and never probe a Durable Object ---");
+{
+	for (const schemaVersion of [SERVER_MIN_SCHEMA_VERSION - 1, SERVER_MAX_SCHEMA_VERSION + 1]) {
+		const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
+		const authenticatedRequests = [
+			{
+				label: "legacy token",
+				url: `https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=${schemaVersion}`,
+			},
+			{
+				label: "short-lived ticket",
+				url: `https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}&schemaVersion=${schemaVersion}`,
+			},
+		];
+
+		for (const { label, url } of authenticatedRequests) {
+			const trapEnv = makeTrapEnv();
+			resetGetServerByNameCallCount();
+			const res = await worker.fetch(new Request(url), trapEnv);
+			assertEqual(res.status, 426, `${label}, schema v${schemaVersion} returns 426`);
+			const body = await res.json() as Record<string, unknown>;
+			assertEqual(body.error, "update_required", `${label}, schema v${schemaVersion} uses update_required`);
+			assertEqual(body.reason, "client_schema_unsupported", `${label}, schema v${schemaVersion} reports an explicit reason`);
+			assertEqual(body.clientSchemaVersion, schemaVersion, `${label}, schema v${schemaVersion} is echoed safely`);
+			assertEqual(body.minSchemaVersion, SERVER_MIN_SCHEMA_VERSION, "response includes server minimum");
+			assertEqual(body.maxSchemaVersion, SERVER_MAX_SCHEMA_VERSION, "response includes server maximum");
+			assertEqual(
+				getGetServerByNameCallCount(),
+				0,
+				`${label}, schema v${schemaVersion} does not call getServerByName before rejection`,
+			);
+		}
+
+		const unauthenticatedEnv = makeTrapEnv();
+		resetGetServerByNameCallCount();
+		const unauthenticated = await worker.fetch(
+			new Request(`https://example.test/vault/sync/${VAULT_ID}?schemaVersion=${schemaVersion}`),
+			unauthenticatedEnv,
+		);
+		assertEqual(unauthenticated.status, 401, `unauthenticated schema v${schemaVersion} returns 401, not 426`);
+		const unauthenticatedBody = await unauthenticated.json() as Record<string, unknown>;
+		assertEqual(unauthenticatedBody.error, "unauthorized", "authentication rejection takes precedence over schema bounds");
+		assert(!("reason" in unauthenticatedBody), "unauthenticated rejection does not disclose schema-range details");
+		assertEqual(
+			getGetServerByNameCallCount(),
+			0,
+			`unauthenticated schema v${schemaVersion} does not call getServerByName`,
+		);
+	}
 }
 
 // ---------------------------------------------------------------------------

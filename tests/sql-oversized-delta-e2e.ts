@@ -65,7 +65,26 @@ class FakeSqlStorage {
 			return new FakeSqlCursor<T>(sorted as T[]);
 		}
 
+		// COUNT/SUM from snapshot_chunks — loadState pre-sizes the contiguous
+		// snapshot buffer with this before streaming the rows.
+		if (trimmed.includes("COUNT(*)") && trimmed.includes("snapshot_chunks")) {
+			const table = this.tables.get("snapshot_chunks") ?? [];
+			const cnt = table.length;
+			const total = table.reduce(
+				(sum, row) => sum + (row.data instanceof ArrayBuffer ? row.data.byteLength : 0),
+				0,
+			);
+			return new FakeSqlCursor<T>([{ cnt, total } as T]);
+		}
+
 		// SELECT from journal
+		// coalesceJournal reads payloads only.
+		if (trimmed.startsWith("SELECT data FROM journal")) {
+			const table = this.tables.get("journal") ?? [];
+			const sorted = [...table].sort((a, b) => (a.id as number) - (b.id as number));
+			return new FakeSqlCursor<T>(sorted as T[]);
+		}
+
 		if (trimmed.startsWith("SELECT data, byte_length FROM journal")) {
 			const table = this.tables.get("journal") ?? [];
 			const sorted = [...table].sort((a, b) => (a.id as number) - (b.id as number));

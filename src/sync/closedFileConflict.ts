@@ -27,7 +27,7 @@ export interface ClosedFileConflictInput {
 	 * Semantics: "last time YAOS durably persisted disk-index baselines."
 	 * This is a GLOBAL heuristic — not per-file. It can produce false negatives
 	 * when an unrelated file triggers a save after the target file was modified
-	 * (see engineering/bug-rca-ledger.md Issue #22-B for the known limits).
+	 * (see docs/engineering/bug-rca-ledger.md Issue #22-B for the known limits).
 	 * Optional — when absent, mtime evidence is not used.
 	 */
 	lastDiskIndexPersistedAt?: number;
@@ -71,12 +71,12 @@ export function decideClosedFileConflict(
 		//     may produce unexpected mtime values.
 		//   - When either input is absent, falls back to CRDT wins (safe default).
 		//
-		// See: engineering/bug-rca-ledger.md Issue #22-B
+		// See: docs/engineering/bug-rca-ledger.md Issue #22-B
 		const hasMtimeEvidence =
 			diskMtime !== undefined &&
 			lastDiskIndexPersistedAt !== undefined;
 		const diskNewerThanLastSave =
-			hasMtimeEvidence && diskMtime! > lastDiskIndexPersistedAt!;
+			hasMtimeEvidence && diskMtime > lastDiskIndexPersistedAt;
 
 		if (diskNewerThanLastSave) {
 			return {

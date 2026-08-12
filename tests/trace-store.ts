@@ -1,9 +1,12 @@
 import {
 	appendTraceEntry,
+	TraceRing,
 	DEFAULT_TRACE_RATE_LIMIT_PER_WINDOW,
+	isHighVolumeTraceEvent,
 	listRecentTraceEntries,
 	MAX_TRACE_ENTRY_BYTES,
 	prepareTraceEntryForStorage,
+	TRACE_SEED_AFTER_APPENDS,
 	TraceRateLimiter,
 	type TraceEntry,
 } from "../server/src/traceStore";
@@ -218,6 +221,254 @@ console.log("\n--- Test 8: throttle-summary bypasses the limiter and does not re
 	const dropsAfterDrain = limiter.drainDropped();
 	assert(dropsAfterDrain === 0, "drainDropped resets to zero; throttle summary cannot recurse");
 	assert(isThrottleSummary === true, "throttle summary flag prevents recursive admit check");
+}
+
+/**
+ * Storage fake that counts what a SQLite-backed Durable Object would bill:
+ * `lists`/`keysListed` are rows read, `puts`/`deletes` are rows written.
+ */
+class CountingStorage {
+	readonly data = new Map<string, unknown>();
+	lists = 0;
+	puts = 0;
+	deletes = 0;
+	keysListed = 0;
+	async list<T>(options?: { prefix?: string; reverse?: boolean; limit?: number; end?: string }): Promise<Map<string, T>> {
+		this.lists++;
+		let keys = [...this.data.keys()].sort();
+		if (options?.prefix) keys = keys.filter((k) => k.startsWith(options.prefix!));
+		if (options?.end) keys = keys.filter((k) => k < options.end!);
+		if (options?.reverse) keys.reverse();
+		if (options?.limit !== undefined) keys = keys.slice(0, options.limit);
+		this.keysListed += keys.length;
+		return new Map(keys.map((k) => [k, this.data.get(k) as T]));
+	}
+	async put<T>(key: string, value: T): Promise<void> { this.puts++; this.data.set(key, value); }
+	async delete(keys: string[]): Promise<number> {
+		this.deletes++;
+		let n = 0;
+		for (const k of keys) if (this.data.delete(k)) n++;
+		return n;
+	}
+}
+
+// ── Row-read amplification: the ring must not list on every append ───────────
+//
+// A `list` over the trace prefix reads one SQL row per key on a SQLite-backed
+// Durable Object, and a trace is recorded per inbound sync message.  Listing on
+// every append cost ~201 rows read per ~2 written and was measured in
+// production as the entire read amplification of a room: 43,696 rows read
+// against 455 written for 300 update messages, a ratio of 96.
+//
+// The invariant is that appends are O(1) in list operations, not O(n).
+{
+	console.log("\n--- TraceRing: appends do not list per entry ---");
+	const MAX = 200;
+	const APPENDS = 600;
+	const storage = new CountingStorage();
+	const ring = new TraceRing(MAX);
+	for (let i = 0; i < APPENDS; i++) {
+		await ring.append(storage as never, { ts: new Date(1_700_000_000_000 + i).toISOString(), event: "e" } as never);
+	}
+
+	assert(storage.puts === APPENDS, `one put per append (${storage.puts})`);
+	assert(storage.data.size <= MAX, `retention honoured (${storage.data.size} <= ${MAX})`);
+	assert(storage.lists <= 3, `list calls are O(1), not O(n) (${storage.lists} for ${APPENDS} appends)`);
+	assert(
+		storage.keysListed / APPENDS < 2,
+		`rows read per append is small (${(storage.keysListed / APPENDS).toFixed(2)}, naive form was ~${MAX})`,
+	);
+
+	// A short-lived instance must never list.  This is the case the first
+	// version of the fix missed: a hibernating room wakes, writes one or two
+	// traces and is evicted, so amortising over appends never pays off.  A real
+	// room was measured spending ~200 of ~344 rows per wake on exactly this.
+	{
+		const brief = new CountingStorage();
+		// Pre-existing history, as a real room has.
+		for (let i = 0; i < MAX; i++) brief.data.set(`trace:${String(i).padStart(13, "0")}:aa`, {});
+		const wake = new TraceRing(MAX);
+		for (let i = 0; i < 3; i++) {
+			await wake.append(brief as never, { ts: new Date(1_800_000_000_000 + i).toISOString(), event: "checkpoint-load" } as never);
+		}
+		assert(brief.lists === 0, `a short-lived instance lists zero times (${brief.lists})`);
+		assert(brief.keysListed === 0, `and reads zero rows to trim (${brief.keysListed})`);
+		assert(brief.puts === 3, "the traces were still written");
+	}
+
+	// Overshoot is bounded: retention is eventual, not exact, and must not drift.
+	{
+		const bounded = new CountingStorage();
+		const ring = new TraceRing(MAX);
+		for (let i = 0; i < 2000; i++) {
+			await ring.append(bounded as never, { ts: new Date(1_900_000_000_000 + i).toISOString(), event: "e" } as never);
+		}
+		assert(
+			bounded.data.size <= MAX + 200,
+			`stored entries stay within maxEntries + slack (${bounded.data.size} <= ${MAX + 200})`,
+		);
+		assert(bounded.data.size >= MAX, `and the ring stays full (${bounded.data.size} >= ${MAX})`);
+	}
+
+	// The stateless helper keeps its old behaviour: one list per call.
+	const naive = new CountingStorage();
+	for (let i = 0; i < 20; i++) {
+		await appendTraceEntry(naive as never, { ts: new Date(1_700_000_000_000 + i).toISOString(), event: "e" } as never, MAX);
+	}
+	assert(naive.lists === 20, `stateless appendTraceEntry still lists per call (${naive.lists})`);
+}
+
+// ── Crowd-out: a flood of one event class must not hide every other ──────────
+//
+// Measured on a real vault after ~6,000 edits: 98 of the 100 entries the debug
+// endpoint returned were `server.ydoc.update_observed`, and every save,
+// compaction, cold-load and tombstone-reap event had been evicted within
+// seconds.  The only diagnostic surface the room has was empty of diagnostics
+// exactly when the room was busy.
+
+/** MAX_DEBUG_TRACE_EVENTS in server.ts. */
+const MAX_PER_CLASS = 200;
+/** TRACE_DEBUG_LIMIT in server.ts: what GET /debug/recent asks for. */
+const READ_LIMIT = 100;
+const HOT_EVENT = "server.ydoc.update_observed";
+
+let traceClock = 1_950_000_000_000;
+function traced(event: string): TraceEntry {
+	return { ts: new Date(traceClock++).toISOString(), event, roomId: "room-a" };
+}
+
+console.log("\n--- Test 9: a rare event survives a flood of high-volume ones ---");
+{
+	const storage = new CountingStorage();
+	const ring = new TraceRing(MAX_PER_CLASS);
+	await ring.append(storage as never, traced("checkpoint-load"));
+	for (let i = 0; i < 500; i++) {
+		await ring.append(storage as never, traced(HOT_EVENT));
+	}
+
+	const recent = await listRecentTraceEntries(storage as never, READ_LIMIT);
+	const rare = recent.filter((entry) => !isHighVolumeTraceEvent(entry.event));
+	assert(
+		rare.some((entry) => entry.event === "checkpoint-load"),
+		"the cold-load trace is still readable after 500 update_observed appends"
+			+ ` (got ${rare.length} rare of ${recent.length}; on a live vault 98 of 100 were`
+			+ " update_observed and every cold-load, save and reap had been evicted)",
+	);
+	assert(recent.length === READ_LIMIT, `the read window is still full (${recent.length})`);
+}
+
+console.log("\n--- Test 10: interleaved rare events all survive thousands of high-volume ones ---");
+{
+	const storage = new CountingStorage();
+	const ring = new TraceRing(MAX_PER_CLASS);
+	const rareEvents = ["checkpoint-load", "server.save.append_succeeded", "tombstone-reap"];
+	for (let i = 0; i < 3000; i++) {
+		await ring.append(storage as never, traced(HOT_EVENT));
+		// Scattered early, mid and late: each one is far older than the tail of
+		// the flood, which is precisely what used to evict them.
+		if (i === 10) await ring.append(storage as never, traced(rareEvents[0]));
+		if (i === 1500) await ring.append(storage as never, traced(rareEvents[1]));
+		if (i === 2900) await ring.append(storage as never, traced(rareEvents[2]));
+	}
+
+	const recent = await listRecentTraceEntries(storage as never, READ_LIMIT);
+	const seen = new Set(recent.map((entry) => entry.event));
+	for (const event of rareEvents) {
+		assert(seen.has(event), `${event} survives 3000 interleaved update_observed appends`);
+	}
+	const hot = recent.filter((entry) => isHighVolumeTraceEvent(entry.event)).length;
+	assert(
+		hot === READ_LIMIT - rareEvents.length,
+		`and the rest of the window is still the newest high-volume traffic (${hot} of ${recent.length})`,
+	);
+}
+
+console.log("\n--- Test 11: the class split costs a short-lived instance no reads ---");
+{
+	const brief = new CountingStorage();
+	// Pre-existing history in both key spaces, as a real room has.
+	for (let i = 0; i < MAX_PER_CLASS; i++) {
+		const suffix = `${String(i).padStart(13, "0")}:aa`;
+		brief.data.set(`trace:${suffix}`, {});
+		brief.data.set(`tracehot:${suffix}`, {});
+	}
+	const wake = new TraceRing(MAX_PER_CLASS);
+	await wake.append(brief as never, traced("checkpoint-load"));
+	await wake.append(brief as never, traced("server.save.append_succeeded"));
+	await wake.append(brief as never, traced(HOT_EVENT));
+
+	assert(brief.lists === 0, `a short-lived instance still lists zero times (${brief.lists})`);
+	assert(brief.keysListed === 0, `and reads zero rows to trim (${brief.keysListed})`);
+	assert(brief.puts === 3, "the traces were still written");
+}
+
+console.log("\n--- Test 12: stored entries stay bounded across both classes ---");
+{
+	const storage = new CountingStorage();
+	const ring = new TraceRing(MAX_PER_CLASS);
+	for (let i = 0; i < 4000; i++) {
+		await ring.append(storage as never, traced(i % 5 === 0 ? "server.save.append_succeeded" : HOT_EVENT));
+	}
+
+	// Each prefix trims to its own budget plus one reconciliation window.
+	const bound = 2 * (MAX_PER_CLASS + TRACE_SEED_AFTER_APPENDS);
+	assert(
+		storage.data.size <= bound,
+		`stored entries stay within 2 * (max + seed slack) (${storage.data.size} <= ${bound})`,
+	);
+	assert(storage.data.size >= MAX_PER_CLASS, `and the rings stay full (${storage.data.size})`);
+}
+
+console.log("\n--- Test 13: the merged read is newest-first and honours limit ---");
+{
+	const storage = new CountingStorage();
+	const ring = new TraceRing(MAX_PER_CLASS);
+	const written: TraceEntry[] = [];
+	for (let i = 0; i < 30; i++) {
+		const entry = traced(i % 2 === 0 ? HOT_EVENT : "checkpoint-load");
+		written.push(entry);
+		await ring.append(storage as never, entry);
+	}
+
+	const recent = await listRecentTraceEntries(storage as never, 10);
+	assert(recent.length === 10, `the merged read honours limit (${recent.length})`);
+	const timestamps = recent.map((entry) => Date.parse(entry.ts));
+	assert(
+		timestamps.every((ts, i) => i === 0 || timestamps[i - 1] > ts),
+		"merged entries come back newest-first across both classes",
+	);
+	// Neither class exceeds its share here, so the merge is literally the
+	// newest 10 overall — the ordering the single-prefix read used to give.
+	const expected = written.slice(-10).map((entry) => entry.ts).reverse();
+	assert(
+		recent.map((entry) => entry.ts).join(",") === expected.join(","),
+		"a balanced window returns exactly the newest entries overall",
+	);
+}
+
+console.log("\n--- Test 14: unused low-volume reserve goes back to the other class ---");
+{
+	const quiet = new CountingStorage();
+	const quietRing = new TraceRing(MAX_PER_CLASS);
+	for (let i = 0; i < 150; i++) {
+		await quietRing.append(quiet as never, traced("checkpoint-load"));
+	}
+	const quietRecent = await listRecentTraceEntries(quiet as never, READ_LIMIT);
+	assert(
+		quietRecent.length === READ_LIMIT && quietRecent.every((entry) => entry.event === "checkpoint-load"),
+		`a room with no high-volume traffic still fills the window (${quietRecent.length})`,
+	);
+
+	const loud = new CountingStorage();
+	const loudRing = new TraceRing(MAX_PER_CLASS);
+	for (let i = 0; i < 150; i++) {
+		await loudRing.append(loud as never, traced(HOT_EVENT));
+	}
+	const loudRecent = await listRecentTraceEntries(loud as never, READ_LIMIT);
+	assert(
+		loudRecent.length === READ_LIMIT,
+		`and a room with nothing but high-volume traffic still fills it too (${loudRecent.length})`,
+	);
 }
 
 console.log("\n──────────────────────────────────────────────────");

@@ -94,13 +94,22 @@ function simulateServerIsMetaDeleted(value: unknown): boolean {
 // Schema Gate Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Schema gate: SCHEMA_VERSION is 3");
+section("Schema gate: server supports persisted room schemas v1 through v3");
 
 {
-	// Verify the server constants are the real values from source, not hardcoded.
-	assertEqual(SERVER_MIN_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_MIN_SCHEMA_VERSION === 3");
+	// The server must retain old persisted-room readers while the client writes
+	// the current schema. The current plugin schema is the upper bound.
+	assertEqual(SERVER_MIN_SCHEMA_VERSION, 1, "SERVER_MIN_SCHEMA_VERSION === 1");
 	assertEqual(SERVER_MAX_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_MAX_SCHEMA_VERSION === 3");
-	assertEqual(SERVER_MIN_SCHEMA_VERSION, SERVER_MAX_SCHEMA_VERSION, "min === max (no legacy range)");
+	assert(SERVER_MIN_SCHEMA_VERSION <= SERVER_MAX_SCHEMA_VERSION, "min <= max");
+	for (const version of [1, 2, 3]) {
+		assert(
+			version >= SERVER_MIN_SCHEMA_VERSION && version <= SERVER_MAX_SCHEMA_VERSION,
+			`schema v${version} is inside the server compatibility range`,
+		);
+	}
+	assert(0 < SERVER_MIN_SCHEMA_VERSION, "schema v0 is below the server compatibility range");
+	assert(4 > SERVER_MAX_SCHEMA_VERSION, "schema v4 is above the server compatibility range");
 }
 
 section("Schema gate: v3 client accepts room at schema 2");

@@ -162,6 +162,7 @@ export function registerCommands(
 		},
 	});
 
+
 	registrar.addCommand({
 		id: "snapshot-now",
 		name: "Take snapshot now",

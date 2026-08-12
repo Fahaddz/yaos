@@ -189,7 +189,7 @@ export class VaultSync {
 	 * Preserves transaction origin so consumers can distinguish local from remote.
 	 */
 	private _metaDeepObserver = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
-		const origin = events[0]?.transaction.origin;
+		const origin: unknown = events[0]?.transaction.origin;
 		const isLocal = isLocalOrigin(origin, this.provider);
 
 		let changes: MetaSemanticChange[];
@@ -208,13 +208,7 @@ export class VaultSync {
 
 		if (changes.length === 0) return;
 
-		// Invalidate path indexes for structural changes only.
-		for (const change of changes) {
-			if (change.kind !== "mtime-changed" && change.kind !== "device-changed") {
-				this._pathIndexesDirty = true;
-				break;
-			}
-		}
+		this.invalidatePathIndexesForMetaChanges(changes);
 
 		// Dispatch to all registered listeners.
 		if (this._metaSemanticListeners.size > 0) {
@@ -224,6 +218,20 @@ export class VaultSync {
 			}
 		}
 	};
+
+	/**
+	 * Invalidate lazily derived path indexes only for metadata that can change
+	 * path identity or the deterministic collision winner. Device metadata is
+	 * intentionally excluded; mtime is included because it ranks collisions.
+	 */
+	private invalidatePathIndexesForMetaChanges(changes: readonly MetaSemanticChange[]): void {
+		for (const change of changes) {
+			if (change.kind !== "device-changed") {
+				this._pathIndexesDirty = true;
+				return;
+			}
+		}
+	}
 
 	private _localReady = false;
 	private _providerSynced = false;
@@ -285,6 +293,7 @@ export class VaultSync {
 	/** Timer handle for the proactive provider URL ticket refresh. */
 	private _socketTicketRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
+
 	constructor(
 		settings: VaultSyncSettings,
 		options?: {
@@ -309,6 +318,12 @@ export class VaultSync {
 					localExpiresAt: number;
 					ttlMs: number;
 				} | null>;
+			/**
+			 * Invoked after a validated server receipt echo updates receipt facts.
+			 * This is notification-only: ServerAckTracker remains the sole
+			 * state-vector truth and persistence authority.
+			 */
+			onServerReceiptStatusChanged?: () => void;
 		},
 	) {
 		this.debug = settings.debug;
@@ -389,8 +404,8 @@ export class VaultSync {
 				// (setupWS) reuses provider.url directly without re-calling
 				// params().  VaultSync keeps provider.url fresh via
 				// scheduleSocketTicketRefresh so reconnects always carry a live
-				// ticket.  See engineering/zero-config-auth.md § "Reconnect
-				// behavior" and engineering/warts-and-limits.md § "Pragmatic
+				// ticket.  See docs/architecture/zero-config-auth.md § "Reconnect
+				// behavior" and docs/architecture/warts-and-limits.md § "Pragmatic
 				// compromises".
 				const ticketResult = this._getSocketTicket ? await this._getSocketTicket() : null;
 				if (ticketResult) {
@@ -414,6 +429,7 @@ export class VaultSync {
 			this.provider,
 			this.persistence,
 		);
+
 		this.serverAckTracker = new ServerAckTracker(this.trace, this.onFlightEvent);
 
 		// Track connection generations for reconnect detection
@@ -459,10 +475,14 @@ export class VaultSync {
 			.on("custom-message", handleFatalAuthPayload);
 		(this.provider as unknown as { on: (event: string, cb: (payload: string) => void) => void })
 			.on("custom-message", (payload: string) => {
-				// SV echoes are Level 3 receipt signals only. They are not durable;
-				// ServerAckTracker's state-vector dominance check remains the truth gate.
-				handleSvEchoCustomMessage(payload, this._svEchoCounters, (sv) => {
-					this.serverAckTracker.recordServerSvEcho(sv);
+				// SV echoes are Level 3 receipt signals only. They are not durable.
+				// When the server supplies a durability marker, ServerAckTracker
+				// gates on its persist counter advancing; the state-vector
+				// dominance check is the fallback for servers without one, and
+				// cannot see deletion-only changes at all.
+				handleSvEchoCustomMessage(payload, this._svEchoCounters, (sv, durability) => {
+					this.serverAckTracker.recordServerSvEcho(sv, durability);
+					options?.onServerReceiptStatusChanged?.();
 				});
 			});
 		// Fallback for servers that still send plain text JSON frames.
@@ -712,6 +732,70 @@ export class VaultSync {
 	observeMetaChanges(callback: (batch: MetaChangeBatch) => void): () => void {
 		this._metaSemanticListeners.add(callback);
 		return () => { this._metaSemanticListeners.delete(callback); };
+	}
+
+	/**
+	 * Subscribe to markdown content changes without exposing mutable Yjs handles.
+	 *
+	 * The callback receives the current active metadata path and whether the
+	 * transaction is local. This lets passive observers react to content changes
+	 * while keeping all Y.Text ownership inside the Engine.
+	 */
+	observePathContentChanges(callback: (path: string, isLocal: boolean) => void): () => void {
+		const observers = new Map<string, {
+			text: Y.Text;
+			handler: (event: Y.YTextEvent, transaction: Y.Transaction) => void;
+		}>();
+
+		const detach = (fileId: string): void => {
+			const existing = observers.get(fileId);
+			if (!existing) return;
+			existing.text.unobserve(existing.handler);
+			observers.delete(fileId);
+		};
+
+		const attach = (fileId: string, text: Y.Text): void => {
+			const existing = observers.get(fileId);
+			if (existing?.text === text) return;
+			if (existing) detach(fileId);
+
+			const handler = (_event: Y.YTextEvent, transaction: Y.Transaction): void => {
+				const meta = this.meta.get(fileId);
+				const path = getMetaPath(meta);
+				if (!path || isFileMetaDeletedValue(meta)) return;
+				try {
+					callback(path, isLocalOrigin(transaction.origin, this.provider));
+				} catch (err) {
+					// A passive observer must never make a CRDT transaction fail.
+					this.log(`content observer callback failed: ${formatUnknown(err)}`);
+				}
+			};
+			text.observe(handler);
+			observers.set(fileId, { text, handler });
+		};
+
+		const synchronize = (): void => {
+			const activeIds = new Set<string>();
+			this.idToText.forEach((text, fileId) => {
+				activeIds.add(fileId);
+				attach(fileId, text);
+			});
+			for (const fileId of observers.keys()) {
+				if (!activeIds.has(fileId)) detach(fileId);
+			}
+		};
+
+		const idToTextHandler = (): void => synchronize();
+		synchronize();
+		this.idToText.observe(idToTextHandler);
+
+		let unsubscribed = false;
+		return () => {
+			if (unsubscribed) return;
+			unsubscribed = true;
+			this.idToText.unobserve(idToTextHandler);
+			for (const fileId of [...observers.keys()]) detach(fileId);
+		};
 	}
 
 	// -------------------------------------------------------------------
@@ -1836,6 +1920,8 @@ export class VaultSync {
 	}
 	get hasUnconfirmedServerReceiptCandidate(): boolean { return this.serverAckTracker.hasUnconfirmedCandidate; }
 	get serverReceiptCandidateCapturedAt(): number | null { return this.serverAckTracker.candidateCapturedAt; }
+	get serverPersistenceDegraded(): boolean { return this.serverAckTracker.serverPersistenceDegraded; }
+	get receiptGuaranteeIsDurable(): boolean { return this.serverAckTracker.receiptGuaranteeIsDurable; }
 
 	async flushReceiptPersistence(): Promise<void> {
 		await this.serverAckTracker.flushReceiptPersistence();
@@ -2033,12 +2119,11 @@ export class VaultSync {
 		this.clearPendingRenames();
 		await this.flushReceiptPersistence();
 
-		const provider = this.provider as any;
-		const ws = provider.ws;
+		const ws = this.provider.ws;
 
 		// Force terminate the WebSocket to skip the 30s close handshake timeout in "ws" library (Node/Electron).
 		// Safe because it's a targeted call on our own instance.
-		if (ws && typeof ws.terminate === "function") {
+		if (isTerminableWebSocket(ws)) {
 			ws.terminate();
 		}
 
@@ -2270,4 +2355,13 @@ export function classifyDiskPathForReconcile(
 	}
 
 	return { action: "untracked" };
+}
+
+function isTerminableWebSocket(value: unknown): value is { terminate: () => void } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"terminate" in value &&
+		typeof value.terminate === "function"
+	);
 }
