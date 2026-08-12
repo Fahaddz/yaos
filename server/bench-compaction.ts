@@ -5,8 +5,9 @@
  * classes over a fake SQLite storage:
  *
  *   old — entry pressure relieved by a full checkpoint, fixed byte ceiling.
- *         Reproduced by hiding coalesceJournal/getSnapshotBytes from the
- *         coordinator, which is exactly what a store lacking them looks like.
+ *         Reproduced by hiding getSnapshotBytes and reporting the coalesce as
+ *         unusable, which is how the coordinator behaved before it could
+ *         coalesce at all.
  *   new — entry pressure relieved by coalescing, byte ceiling scaled to the
  *         snapshot.
  *
@@ -98,7 +99,6 @@ class FakeSqlStorage {
 			this.rowsRead += t.length;
 			return new FakeSqlCursor<T>(t as T[]);
 		}
-		if (q.startsWith("SELECT value FROM _migration_meta") || q.startsWith("SELECT key, value FROM _migration_meta")) return new FakeSqlCursor<T>([]);
 		if (q.startsWith("DELETE FROM snapshot_chunks")) {
 			this.rowsWritten += (this.tables.get("snapshot_chunks") ?? []).length;
 			this.tables.set("snapshot_chunks", []); return new FakeSqlCursor<T>([]);
@@ -161,7 +161,11 @@ async function run(targetMB: number, policy: "old" | "new"): Promise<{
 				getSnapshotBytes: () => real.getSnapshotBytes(),
 				coalesceJournal: () => { c.coalesces++; return real.coalesceJournal(); },
 			}
-			: {}),
+			: {
+				// No coalesce available: the coordinator falls through to a full
+				// checkpoint, which is the old policy.
+				coalesceJournal: () => ({ status: "too-big" as const, stats: real.getJournalStats() }),
+			}),
 	};
 
 	const coord = new PersistenceCoordinator(doc, store);

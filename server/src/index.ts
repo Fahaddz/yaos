@@ -18,7 +18,7 @@ import { corsPreflight, html, json, withCors } from "./routes/http";
 import { handleSnapshotRoute } from "./routes/snapshots";
 import { handleSyncSocketRoute, parseSyncPath } from "./routes/syncSocket";
 import { handleTicketRoute } from "./routes/ticket";
-import { fetchVaultDebug, fetchVaultDocument, recordVaultTrace, compactVault, cleanupVaultKv } from "./routes/trace";
+import { fetchVaultDebug, fetchVaultDocument, recordVaultTrace, compactVault } from "./routes/trace";
 import type { AuthState, AuthStateCached, Env } from "./routes/types";
 
 const LOG_PREFIX = "[yaos-sync:worker]";
@@ -132,7 +132,6 @@ function isKnownVaultRouteShape(method: string, resource: string, rest: string[]
 		case "debug":
 			if (method === "GET" && rest.length === 1 && rest[0] === "recent") return true;
 			if (method === "POST" && rest.length === 1 && rest[0] === "compact") return true;
-			if (method === "POST" && rest.length === 1 && rest[0] === "cleanup-kv") return true;
 			return false;
 
 		case "blobs": {
@@ -410,8 +409,6 @@ const worker = {
 				response = withCors(await fetchVaultDebug(env, vaultId, census));
 			} else if (resource === "debug" && req.method === "POST" && rest[0] === "compact") {
 				response = withCors(await compactVault(env, vaultId));
-			} else if (resource === "debug" && req.method === "POST" && rest[0] === "cleanup-kv") {
-				response = withCors(await cleanupVaultKv(env, vaultId));
 			} else if (resource === "auth" && rest[0] === "ticket" && req.method === "POST") {
 				response = withCors(await handleTicketRoute(req, authState, vaultId, json, env));
 			} else if (resource === "blobs") {

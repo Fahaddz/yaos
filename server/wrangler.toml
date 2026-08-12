@@ -49,12 +49,11 @@ enabled = true
 # Admin / debug route gating
 # ---------------------------------------------------------------------------
 #
-# Uncomment YAOS_ENABLE_ADMIN_ROUTES to enable the destructive admin routes:
+# Uncomment YAOS_ENABLE_ADMIN_ROUTES to enable the destructive admin route:
 #   POST /__yaos/compact      — force an emergency journal compaction
-#   POST /__yaos/cleanup-kv   — delete legacy KV storage keys after SQL migration
 #
-# When this variable is absent or empty these routes return HTTP 404, keeping
-# them dark in production.  The read-only GET /__yaos/debug endpoint is always
+# When this variable is absent or empty the route returns HTTP 404, keeping it
+# dark in production.  The read-only GET /__yaos/debug endpoint is always
 # available regardless of this setting.
 #
 # [vars]

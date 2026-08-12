@@ -100,11 +100,6 @@ export async function compactVault(env: Env, vaultId: string): Promise<Response>
 	return await stub.fetch("https://internal/__yaos/compact", { method: "POST" });
 }
 
-export async function cleanupVaultKv(env: Env, vaultId: string): Promise<Response> {
-	const stub = await getServerByName(env.YAOS_SYNC, vaultId);
-	return await stub.fetch("https://internal/__yaos/cleanup-kv", { method: "POST" });
-}
-
 /**
  * Rebuild the room's in-memory document to discard accumulated V8 rope
  * structures.  Admin-gated: it replaces the live document, and while the swap

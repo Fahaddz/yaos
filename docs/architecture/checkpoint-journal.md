@@ -36,9 +36,9 @@ The live store is [`server/src/sqlDocStore.ts`](../../server/src/sqlDocStore.ts)
 
 Both caps exist for one reason: SQLite in a Durable Object refuses a value over 2 MB. 1 MB for snapshot rows is a round number comfortably under it; 1.5 MB for a journal row leaves margin for encoding overhead on a delta whose size we did not choose.
 
-The original implementation, [`server/src/chunkedDocStore.ts`](../../server/src/chunkedDocStore.ts), hand-rolled the same shape over the KV storage API: 64 KB chunks, versioned manifests, pointer indirection, SHA-256 over every chunk, and batching at 128 keys per operation because there was no transaction to lean on. It is still in the tree and it is now read-only. Two paths reach it. A room that has never been migrated loads from KV once, is rewritten as a verified SQL checkpoint, and never comes back. A room whose SQL load throws falls back to KV so it stays readable instead of failing closed on a corrupt table. Neither path writes new KV state.
+The original implementation hand-rolled the same shape over the KV storage API: 64 KB chunks, versioned manifests, pointer indirection, SHA-256 over every chunk, and batching at 128 keys per operation because there was no transaction to lean on. It is gone — deleted along with the KV-to-SQL migration path, since no deployment carries KV bytes forward.
 
-If you are taking a chunk size out of this document, it is 1 MB. The 64 KB figure describes storage that no live room writes to.
+If you are taking a chunk size out of this document, it is 1 MB. The 64 KB figure is history.
 
 This is chunking at the I/O boundary: the in-memory document can stay monolithic while storage writes are partitioned into bounded segments. The result is an MVCC-like write shape: append small deltas most of the time, periodically compact into a new checkpoint.
 
@@ -99,14 +99,14 @@ On load (including post-hibernation):
 
 Integrity is SQLite's problem now, which is much of why we moved: a compaction is one `transactionSync()`, so no room ever observes a half-written checkpoint, and row order *is* the sequence.
 
-The legacy KV path still validates the old way when it is reached — checkpoint pointer, manifest, chunk layout, and SHA-256 over every reassembled payload — and fails closed if anything is missing, malformed, out-of-sequence, or hash-mismatched.
+There is no second source to fall back to, and that is deliberate. A `loadState()` that throws does not yield an empty document: the room leaves `documentLoaded` false, records the failure, and rejects every entry point until a load succeeds. Serving an empty document would be worse than serving nothing, because the first client to sync against it would read the vault as emptied and the next save would persist that emptiness over state we merely failed to read.
 
 ## Correctness rules (non-negotiable)
 
 - No partial replay on corruption.
 - No out-of-order journal persistence.
 - No implicit trust of in-memory baseline across hibernation.
-- No oversized single storage operation: snapshot rows cap at 1 MB and journal rows at 1.5 MB, both under SQLite's 2 MB value limit. (The legacy KV path batched at 128 keys per get/put/delete for the same reason.)
+- No oversized single storage operation: snapshot rows cap at 1 MB and journal rows at 1.5 MB, both under SQLite's 2 MB value limit.
 - No save decided by comparing state vectors.
 
 ## Why coalesced deltas (instead of per-event appends)
@@ -136,7 +136,7 @@ Cloudflare transport limits improved over time, but network headroom is not the 
 
 So the architectural ceiling has moved from "immediate storage crash" to "compute and memory behavior at very large scale," which is the correct class of bottleneck for this system.
 
-Memory is now the ceiling that binds, and it is not the one you would guess from storage size. See [Memory footprint](./memory-footprint.md).
+Memory is now the ceiling that binds, and it is not the one you would guess from storage size. See [Memory footprint](../archive/memory-footprint.md) (archived — superseded by [Monolith](./monolith.md)).
 
 ## Follow-up: what this engine did not solve
 
@@ -170,7 +170,7 @@ The storage engine now has:
 - deterministic threshold compaction, with a direct-checkpoint fallback
 - saves gated on an update-driven dirty flag, so deletions actually persist
 - forced checkpointing after content removal, so reclamation survives replay
-- strict integrity validation on the legacy KV read path
+- fail-closed cold load: an unreadable store refuses service instead of serving an empty room
 - serialized persistence ordering
 
 This is the foundation for a production-grade monolithic CRDT backend on Cloudflare Workers.

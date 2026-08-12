@@ -22,7 +22,7 @@
  */
 
 import * as Y from "yjs";
-import { PersistenceCoordinator, type DocStore, type DocStoreJournalStats } from "../server/src/persistenceCoordinator";
+import { PersistenceCoordinator, type DocStore, type DocStoreCoalesceResult, type DocStoreJournalStats } from "../server/src/persistenceCoordinator";
 
 let passed = 0;
 let failed = 0;
@@ -64,6 +64,12 @@ class MemoryDocStore implements DocStore {
 			entryCount: this.journal.length,
 			totalBytes: this.journal.reduce((sum, entry) => sum + entry.byteLength, 0),
 		};
+	}
+
+	coalesceJournal(): DocStoreCoalesceResult {
+		if (this.journal.length <= 1) return { status: "noop", stats: this.getJournalStats() };
+		this.journal = [Y.mergeUpdates(this.journal)];
+		return { status: "ok", stats: this.getJournalStats() };
 	}
 
 	/** Rebuild the document exactly as VaultSyncServer's cold load does. */

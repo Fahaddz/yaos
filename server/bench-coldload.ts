@@ -91,7 +91,6 @@ class FakeSqlStorage {
 			this.rowsRead += t.length;
 			return new FakeSqlCursor<T>(t as T[]);
 		}
-		if (q.startsWith("SELECT value FROM _migration_meta") || q.startsWith("SELECT key, value FROM _migration_meta")) return new FakeSqlCursor<T>([]);
 		if (q.startsWith("DELETE FROM snapshot_chunks")) { this.tables.set("snapshot_chunks", []); return new FakeSqlCursor<T>([]); }
 		if (q.startsWith("DELETE FROM journal")) { this.tables.set("journal", []); this.autoInc.set("journal", 1); return new FakeSqlCursor<T>([]); }
 		throw new Error(`unhandled: ${q}`);

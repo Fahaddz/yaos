@@ -24,7 +24,7 @@ import * as Y from "yjs";
 import { ServerAckTracker } from "../src/sync/serverAckTracker";
 import { parseSvEchoMessageDetailed } from "../src/sync/svEchoMessage";
 import { makeSvEchoCustomMessage } from "../server/src/svEcho";
-import { PersistenceCoordinator, type DocStore, type DocStoreJournalStats } from "../server/src/persistenceCoordinator";
+import { PersistenceCoordinator, type DocStore, type DocStoreCoalesceResult, type DocStoreJournalStats } from "../server/src/persistenceCoordinator";
 
 let passed = 0;
 let failed = 0;
@@ -238,6 +238,11 @@ console.log("\n--- Test 8: the counter advances only on a SUCCESSFUL persist ---
 		}
 		getJournalStats(): DocStoreJournalStats {
 			return { entryCount: this.journal.length, totalBytes: this.journal.reduce((n, e) => n + e.byteLength, 0) };
+		}
+		coalesceJournal(): DocStoreCoalesceResult {
+			if (this.journal.length <= 1) return { status: "noop", stats: this.getJournalStats() };
+			this.journal = [Y.mergeUpdates(this.journal)];
+			return { status: "ok", stats: this.getJournalStats() };
 		}
 	}
 

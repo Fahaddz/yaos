@@ -1,8 +1,8 @@
 /**
  * SqlDocStore: Native SQLite storage for Y.Doc persistence.
  *
- * Replaces ChunkedDocStore's hand-rolled MVCC-over-KV approach with
- * direct SQLite tables.  The DO SQLite API provides:
+ * The only document store.  It keeps state in direct SQLite tables, which the
+ * DO SQLite API backs with:
  * - ACID transactions via ctx.storage.transactionSync()
  * - No per-key batching gymnastics
  * - WAL-based write-ahead logging (CF handles this internally)
@@ -151,85 +151,7 @@ export class SqlDocStore {
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
-		this.storage.sql.exec(`
-			CREATE TABLE IF NOT EXISTS _migration_meta (
-				key TEXT PRIMARY KEY,
-				value TEXT NOT NULL
-			)
-		`);
 		this.initialized = true;
-	}
-
-	/**
-	 * Record that a KV→SQL migration completed successfully.
-	 * This marker distinguishes "fresh room with no data" from
-	 * "successfully migrated room" from "interrupted migration."
-	 */
-	recordMigration(meta: {
-		sourceFormat: string;
-		sourceEntries: number;
-		sourceBytes: number;
-		snapshotBytes: number;
-		activePathCount: number;
-		migratedAt: string;
-	}): void {
-		this.ensureSchema();
-		this.storage.sql.exec(
-			"INSERT OR REPLACE INTO _migration_meta (key, value) VALUES (?, ?)",
-			"migration_completed", "true",
-		);
-		this.storage.sql.exec(
-			"INSERT OR REPLACE INTO _migration_meta (key, value) VALUES (?, ?)",
-			"migrated_at", meta.migratedAt,
-		);
-		this.storage.sql.exec(
-			"INSERT OR REPLACE INTO _migration_meta (key, value) VALUES (?, ?)",
-			"source_format", meta.sourceFormat,
-		);
-		this.storage.sql.exec(
-			"INSERT OR REPLACE INTO _migration_meta (key, value) VALUES (?, ?)",
-			"source_entries", String(meta.sourceEntries),
-		);
-		this.storage.sql.exec(
-			"INSERT OR REPLACE INTO _migration_meta (key, value) VALUES (?, ?)",
-			"source_bytes", String(meta.sourceBytes),
-		);
-		this.storage.sql.exec(
-			"INSERT OR REPLACE INTO _migration_meta (key, value) VALUES (?, ?)",
-			"snapshot_bytes", String(meta.snapshotBytes),
-		);
-		this.storage.sql.exec(
-			"INSERT OR REPLACE INTO _migration_meta (key, value) VALUES (?, ?)",
-			"active_path_count", String(meta.activePathCount),
-		);
-	}
-
-	/**
-	 * Check if this SQL store has been marked as successfully migrated.
-	 */
-	isMigrated(): boolean {
-		this.ensureSchema();
-		const rows = this.storage.sql.exec<{ value: string }>(
-			"SELECT value FROM _migration_meta WHERE key = ?",
-			"migration_completed",
-		).toArray();
-		return rows.length > 0 && rows[0].value === "true";
-	}
-
-	/**
-	 * Get migration metadata (returns null if not migrated).
-	 */
-	getMigrationMeta(): Record<string, string> | null {
-		this.ensureSchema();
-		const rows = this.storage.sql.exec<{ key: string; value: string }>(
-			"SELECT key, value FROM _migration_meta",
-		).toArray();
-		if (rows.length === 0) return null;
-		const meta: Record<string, string> = {};
-		for (const row of rows) {
-			meta[row.key] = row.value;
-		}
-		return meta;
 	}
 
 	/**

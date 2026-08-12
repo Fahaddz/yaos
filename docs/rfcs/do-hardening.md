@@ -24,7 +24,7 @@ Recent production logs from a real YAOS deployment showed a concrete failure mod
 
 The initial theory was "the room document is too large". After auditing the code and architecture docs, that explanation no longer fits the implementation.
 
-The chunked checkpoint+journal engine in [`server/src/chunkedDocStore.ts`](../../server/src/chunkedDocStore.ts) already exists specifically to prevent oversized single-value persistence writes for room state. The remaining unchunked write in the server hot path is the debug trace ring in [`server/src/server.ts`](../../server/src/server.ts).
+The chunked checkpoint+journal engine — then `server/src/chunkedDocStore.ts`, since replaced by [`server/src/sqlDocStore.ts`](../../server/src/sqlDocStore.ts) — already exists specifically to prevent oversized single-value persistence writes for room state. The remaining unchunked write in the server hot path is the debug trace ring in [`server/src/server.ts`](../../server/src/server.ts).
 
 Current trace storage behavior:
 

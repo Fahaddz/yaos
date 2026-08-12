@@ -258,11 +258,10 @@ while saves fail, so the client has no signal short of polling the debug endpoin
 not saving. An echo without a marker leaves the last known value alone rather than
 claiming health, since such a server cannot report it.
 
-**Caveat**: `kv-fallback` storage mode suppresses SV echoes entirely
-(`server/src/server.ts`), because echoing in that mode would advertise durability the
-store cannot deliver. That state therefore presents as **silence** — no echoes, no
-receipts, no `degraded` flag — not as a raised flag. Absence of echoes must never be read
-as health.
+**Caveat**: `degraded` is the only failure signal on this channel, and it only covers a
+server that is serving while its writes fail. A server whose stored state would not read
+refuses to serve at all (`server/src/server.ts`): the connection never completes, so the
+client sees a failed socket rather than a flagged one.
 
 ---
 
@@ -899,9 +898,8 @@ save, and it also credits writes flushed by a save the client did not trigger.
 
 ## Hibernation behaviour
 
-Under Cloudflare DO hibernation, the in-memory Y.Doc is rebuilt from
-`ChunkedDocStore` on cold start. State vectors are derived from document state — they
-survive correctly.
+Under Cloudflare DO hibernation, the in-memory Y.Doc is rebuilt from SQLite on cold
+start. State vectors are derived from document state — they survive correctly.
 
 The persist counter does NOT survive: `persistedGeneration` is in-memory and restarts at
 zero, and `generationEpoch` is regenerated per coordinator instance. That is precisely
@@ -939,9 +937,9 @@ storage. It does NOT mean:
 receipt falls back to state-vector dominance and proves only an in-memory apply. UI copy
 must follow `receiptGuaranteeIsDurable` instead of assuming the stronger claim.
 
-**Degraded and silent servers.** `degraded` reports that the server cannot store writes.
-`kv-fallback` mode emits no echoes at all, so that failure appears as an absence of
-receipts rather than as a flag; absence of an echo is not evidence of health.
+**Degraded servers.** `degraded` reports that the server cannot store writes. It does not
+cover a room that could not load its state at all: such a room refuses the connection, so
+there is no echo channel on which to report anything.
 
 **Offline edits**: The candidate is persisted across disconnect and plugin restart.
 After reconnect, the first echo reporting a persist generation beyond the capture
@@ -1078,7 +1076,7 @@ echo carries gen and genEpoch and keeps schema at 1
 gen does not advance across a skipped save
 gen does not advance across a failed save
 degraded flag present only when persistence health is degraded
-no echo at all in kv-fallback mode
+room refuses to serve when its stored state cannot be read
 ```
 
 Current coverage:

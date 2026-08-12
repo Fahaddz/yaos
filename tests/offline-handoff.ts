@@ -2,11 +2,11 @@
  * Phase 1.5 — Server-state offline handoff test (FU-9a).
  *
  * Validates the **server-persistence layer** of the offline handoff claim:
- * edits written to ChunkedDocStore by Device A can be loaded cold by Device B
+ * edits written to SqlDocStore by Device A can be loaded cold by Device B
  * without A being present.
  *
  * SCOPE — what this test proves:
- *   Y.Doc (A) → delta/checkpoint/journal → ChunkedDocStore → Y.Doc (B)
+ *   Y.Doc (A) → delta/checkpoint/journal → SqlDocStore → Y.Doc (B)
  *   The YAOS vault schema (pathToId / idToText / meta) survives the round-trip.
  *   B can read A's file content, path mappings, and tombstones without A online.
  *
@@ -18,7 +18,7 @@
  *   - Obsidian reconciliation / disk mirror writeback after B receives state
  *   - Provider sync-event ordering and client-side catch-up update counting
  *
- * The server reconstruction step (load checkpoint + journal, apply to Y.Doc)
+ * The server reconstruction step (load snapshot + journal, apply to Y.Doc)
  * mirrors VaultSyncServer.ensureDocumentLoaded(). The client-side apply step
  * (encode server state, apply to fresh doc) mirrors the initial provider sync.
  */
@@ -30,7 +30,8 @@ if (typeof globalThis.crypto === "undefined") {
 }
 
 import * as Y from "yjs";
-import { ChunkedDocStore } from "../server/src/chunkedDocStore";
+import { SqlDocStore } from "../server/src/sqlDocStore";
+import { FakeDurableObjectStorage } from "./mocks/sqlStorage";
 
 let passed = 0;
 let failed = 0;
@@ -45,59 +46,13 @@ function assert(condition: boolean, msg: string) {
 	}
 }
 
-// ── FakeStorage (mirrors tests/chunked-doc-store.ts) ─────────────────────────
+// ── Store construction ───────────────────────────────────────────────────────
 
-class FakeStorage {
-	readonly data = new Map<string, unknown>();
-
-	async get<T = unknown>(key: string): Promise<T | undefined>;
-	async get<T = unknown>(keys: string[]): Promise<Map<string, T>>;
-	async get<T = unknown>(keyOrKeys: string | string[]): Promise<T | undefined | Map<string, T>> {
-		if (Array.isArray(keyOrKeys)) {
-			const out = new Map<string, T>();
-			for (const key of keyOrKeys) {
-				if (this.data.has(key)) out.set(key, this.data.get(key) as T);
-			}
-			return out;
-		}
-		return this.data.get(keyOrKeys) as T | undefined;
-	}
-
-	async put<T>(entries: Record<string, T>): Promise<void> {
-		for (const [key, value] of Object.entries(entries)) {
-			this.data.set(key, value);
-		}
-	}
-
-	async delete(keys: string[]): Promise<number> {
-		let deleted = 0;
-		for (const key of keys) {
-			if (this.data.delete(key)) deleted++;
-		}
-		return deleted;
-	}
-
-	async transaction<T>(closure: (txn: FakeTransaction) => Promise<T>): Promise<T> {
-		return closure(new FakeTransaction(this));
-	}
-}
-
-class FakeTransaction {
-	constructor(private readonly storage: FakeStorage) {}
-
-	async get<T = unknown>(key: string): Promise<T | undefined>;
-	async get<T = unknown>(keys: string[]): Promise<Map<string, T>>;
-	async get<T = unknown>(keyOrKeys: string | string[]): Promise<T | undefined | Map<string, T>> {
-		return this.storage.get(keyOrKeys as string);
-	}
-
-	async put<T>(entries: Record<string, T>): Promise<void> {
-		return this.storage.put(entries);
-	}
-
-	async delete(keys: string[]): Promise<number> {
-		return this.storage.delete(keys);
-	}
+/** A store over fresh fake DO SQLite storage — one "server" per test. */
+function makeStore(): SqlDocStore {
+	return new SqlDocStore(
+		new FakeDurableObjectStorage() as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+	);
 }
 
 // ── YAOS vault schema helpers ─────────────────────────────────────────────────
@@ -158,16 +113,12 @@ function activePaths(vault: VaultDoc): string[] {
  * Apply a device doc's state onto the server doc (delta only), then persist
  * the delta to the store's journal. Returns the number of bytes written.
  */
-async function syncDeviceToServer(
-	deviceDoc: Y.Doc,
-	serverDoc: Y.Doc,
-	store: ChunkedDocStore,
-): Promise<number> {
+function syncDeviceToServer(deviceDoc: Y.Doc, serverDoc: Y.Doc, store: SqlDocStore): number {
 	const serverSV = Y.encodeStateVector(serverDoc);
 	const delta = Y.encodeStateAsUpdate(deviceDoc, serverSV);
 	if (delta.byteLength === 0) return 0;
 	Y.applyUpdate(serverDoc, delta);
-	await store.appendUpdate(delta);
+	store.appendUpdate(delta);
 	return delta.byteLength;
 }
 
@@ -175,10 +126,8 @@ async function syncDeviceToServer(
  * Checkpoint the current server doc state into the store, clearing the
  * journal. Mirrors VaultSyncServer.enqueueSave() compaction path.
  */
-async function checkpointServer(serverDoc: Y.Doc, store: ChunkedDocStore): Promise<void> {
-	const update = Y.encodeStateAsUpdate(serverDoc);
-	const stateVector = Y.encodeStateVector(serverDoc);
-	await store.rewriteCheckpoint(update, stateVector);
+function checkpointServer(serverDoc: Y.Doc, store: SqlDocStore): void {
+	store.rewriteCheckpoint(Y.encodeStateAsUpdate(serverDoc), Y.encodeStateVector(serverDoc));
 }
 
 /**
@@ -186,13 +135,13 @@ async function checkpointServer(serverDoc: Y.Doc, store: ChunkedDocStore): Promi
  * the server Y.Doc, then apply the full server state to a fresh vault doc.
  * Mirrors VaultSyncServer.ensureDocumentLoaded() + initial provider sync.
  */
-async function coldStartDevice(store: ChunkedDocStore): Promise<VaultDoc> {
-	const state = await store.loadState();
+function coldStartDevice(store: SqlDocStore): VaultDoc {
+	const state = store.loadState();
 
 	// Reconstruct server doc exactly as VaultSyncServer does on load
 	const serverDoc = new Y.Doc();
-	if (state.checkpoint) {
-		Y.applyUpdate(serverDoc, state.checkpoint);
+	if (state.snapshot) {
+		Y.applyUpdate(serverDoc, state.snapshot);
 	}
 	for (const journalUpdate of state.journalUpdates) {
 		Y.applyUpdate(serverDoc, journalUpdate);
@@ -216,12 +165,12 @@ console.log("\n--- Test 1: basic handoff — A writes and checkpoints, B cold-st
 
 	// Server starts empty; A syncs to it; server checkpoints
 	const serverDoc = new Y.Doc();
-	const store = new ChunkedDocStore(new FakeStorage());
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
-	await checkpointServer(serverDoc, store);
+	const store = makeStore();
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
+	checkpointServer(serverDoc, store);
 
 	// A goes offline. B cold-starts from checkpoint.
-	const deviceB = await coldStartDevice(store);
+	const deviceB = coldStartDevice(store);
 
 	assert(readFile(deviceB, "Inbox/note.md") === "# Hello from A", "B has A's note content");
 	assert(activePaths(deviceB).includes("Inbox/note.md"), "B sees the path in its vault");
@@ -232,12 +181,12 @@ console.log("\n--- Test 2: offline edit handoff — A edits while disconnected, 
 {
 	// Phase 1: Establish baseline on server.
 	const serverDoc = new Y.Doc();
-	const store = new ChunkedDocStore(new FakeStorage());
+	const store = makeStore();
 
 	const deviceA = makeVaultDoc();
 	writeFile(deviceA, "Daily/2026-05-01.md", "# May 1 baseline", "file-daily");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
-	await checkpointServer(serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
+	checkpointServer(serverDoc, store);
 
 	// Phase 2: A goes offline and makes a new note.
 	writeFile(deviceA, "Projects/idea.md", "# New idea (offline)", "file-idea");
@@ -246,11 +195,11 @@ console.log("\n--- Test 2: offline edit handoff — A edits while disconnected, 
 	assert(readFile(deviceA, "Projects/idea.md") !== null, "A's offline note exists locally");
 
 	// Phase 3: A reconnects and syncs the offline edit to server.
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
-	await checkpointServer(serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
+	checkpointServer(serverDoc, store);
 
 	// Phase 4: A goes offline again. B cold-starts with the new server state.
-	const deviceB = await coldStartDevice(store);
+	const deviceB = coldStartDevice(store);
 
 	assert(readFile(deviceB, "Daily/2026-05-01.md") === "# May 1 baseline", "B has baseline file");
 	assert(readFile(deviceB, "Projects/idea.md") === "# New idea (offline)", "B has A's offline edit");
@@ -264,20 +213,20 @@ console.log("\n--- Test 3: no simultaneous presence required ---");
 	// object (new store load) to simulate a fresh device.
 
 	const serverDoc = new Y.Doc();
-	const store = new ChunkedDocStore(new FakeStorage());
+	const store = makeStore();
 
 	const deviceA = makeVaultDoc();
 	writeFile(deviceA, "vault-root.md", "This is the vault root", "file-root");
 	writeFile(deviceA, "Folder/sub.md", "A sub-note", "file-sub");
 
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
-	await checkpointServer(serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
+	checkpointServer(serverDoc, store);
 
 	// A is now completely out of scope. B bootstraps independently.
 	const deviceA_ref = null; // intentionally discard
 	void deviceA_ref;
 
-	const deviceB = await coldStartDevice(store);
+	const deviceB = coldStartDevice(store);
 	assert(readFile(deviceB, "vault-root.md") === "This is the vault root", "B has root note without A present");
 	assert(readFile(deviceB, "Folder/sub.md") === "A sub-note", "B has subfolder note without A present");
 	assert(activePaths(deviceB).length === 2, "B has complete vault without A");
@@ -290,14 +239,14 @@ console.log("\n--- Test 4: journal-based handoff (no explicit checkpoint) ---");
 	// A's updates are in the journal but haven't triggered compaction yet.
 
 	const serverDoc = new Y.Doc();
-	const store = new ChunkedDocStore(new FakeStorage());
+	const store = makeStore();
 
 	const deviceA = makeVaultDoc();
 	writeFile(deviceA, "Journal/entry.md", "Day 1", "file-j1");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
 	// No checkpointServer here — state lives only in the journal
 
-	const deviceB = await coldStartDevice(store);
+	const deviceB = coldStartDevice(store);
 	assert(readFile(deviceB, "Journal/entry.md") === "Day 1", "B gets journal-only state without checkpoint");
 }
 
@@ -306,24 +255,24 @@ console.log("\n--- Test 5: incremental offline edits over multiple sync cycles -
 	// A makes three separate offline edit sessions, each followed by a sync.
 	// B connects after the third sync and should have all of A's content.
 	const serverDoc = new Y.Doc();
-	const store = new ChunkedDocStore(new FakeStorage());
+	const store = makeStore();
 	const deviceA = makeVaultDoc();
 
 	// Session 1
 	writeFile(deviceA, "s1.md", "session 1", "file-s1");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
-	await checkpointServer(serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
+	checkpointServer(serverDoc, store);
 
 	// Session 2: A goes offline again, makes more edits
 	writeFile(deviceA, "s2.md", "session 2", "file-s2");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
 
 	// Session 3: another offline edit, sync via journal (no checkpoint)
 	writeFile(deviceA, "s3.md", "session 3", "file-s3");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
 
 	// B cold-starts from mixed checkpoint + journal state
-	const deviceB = await coldStartDevice(store);
+	const deviceB = coldStartDevice(store);
 	assert(readFile(deviceB, "s1.md") === "session 1", "B has session 1 content");
 	assert(readFile(deviceB, "s2.md") === "session 2", "B has session 2 content");
 	assert(readFile(deviceB, "s3.md") === "session 3", "B has session 3 content");
@@ -335,13 +284,13 @@ console.log("\n--- Test 6: content edit (not just file creation) survives handof
 	// A creates a file, syncs, then edits the content offline, syncs again.
 	// B should have the latest content, not the original.
 	const serverDoc = new Y.Doc();
-	const store = new ChunkedDocStore(new FakeStorage());
+	const store = makeStore();
 	const deviceA = makeVaultDoc();
 
 	// Create initial version
 	writeFile(deviceA, "evolving.md", "version 1", "file-ev");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
-	await checkpointServer(serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
+	checkpointServer(serverDoc, store);
 
 	// Edit the content (simulate a user editing the note while offline)
 	const fileId = deviceA.pathToId.get("evolving.md")!;
@@ -350,10 +299,10 @@ console.log("\n--- Test 6: content edit (not just file creation) survives handof
 		ytext.delete(0, ytext.length);
 		ytext.insert(0, "version 2 — updated offline");
 	}, "editor-edit");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
-	await checkpointServer(serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
+	checkpointServer(serverDoc, store);
 
-	const deviceB = await coldStartDevice(store);
+	const deviceB = coldStartDevice(store);
 	assert(
 		readFile(deviceB, "evolving.md") === "version 2 — updated offline",
 		"B has the updated content, not the original",
@@ -365,21 +314,21 @@ console.log("\n--- Test 7: deleted file does not appear on B ---");
 	// A creates a file, syncs, then deletes it (tombstone), syncs again.
 	// B cold-starts and should not see the deleted file as active.
 	const serverDoc = new Y.Doc();
-	const store = new ChunkedDocStore(new FakeStorage());
+	const store = makeStore();
 	const deviceA = makeVaultDoc();
 
 	writeFile(deviceA, "to-delete.md", "ephemeral", "file-del");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
 
 	// Mark as deleted (tombstone via meta — mirrors VaultSync delete path)
 	const fileId = deviceA.pathToId.get("to-delete.md")!;
 	deviceA.doc.transact(() => {
 		deviceA.meta.set(fileId, { path: "to-delete.md", deleted: true });
 	}, "disk-sync");
-	await syncDeviceToServer(deviceA.doc, serverDoc, store);
-	await checkpointServer(serverDoc, store);
+	syncDeviceToServer(deviceA.doc, serverDoc, store);
+	checkpointServer(serverDoc, store);
 
-	const deviceB = await coldStartDevice(store);
+	const deviceB = coldStartDevice(store);
 	// activePaths() filters out deleted entries
 	assert(!activePaths(deviceB).includes("to-delete.md"), "B does not see deleted file in active paths");
 	// File ID still exists (CRDT tombstone) but is flagged as deleted

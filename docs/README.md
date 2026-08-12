@@ -26,7 +26,6 @@ volatile, or machine-specific working material belongs in ignored `notes/`.
 - [Sync vocabulary](engineering/sync-vocabulary.md)
 - [Server acknowledgement design](engineering/server-ack-design.md)
 - [Schema-version guard](engineering/schema-version-guard.md)
-- [Server storage migration](engineering/sql-storage-migration.md)
 - [Durable Object hardening implementation](engineering/do-hardening-implementation.md)
 - [Update pipeline implementation](engineering/update-pipeline-implementation-1.4.0.md)
 - [Server deployment](engineering/server-deployment.md)

@@ -105,23 +105,6 @@ export function isMetaDeleted(value: unknown): boolean {
 	return false;
 }
 
-/** Count active (non-deleted) paths, dual-reading both metadata shapes. */
-export function countActivePaths(doc: Y.Doc): number {
-	let count = 0;
-	doc.getMap("meta").forEach((value: unknown) => {
-		if (!readMetaPath(value)) return;
-		if (!isMetaDeleted(value)) count++;
-	});
-	return count;
-}
-
-/** Whether the document carries any file state at all. */
-export function hasAnyFileState(doc: Y.Doc): boolean {
-	return doc.getMap("meta").size > 0
-		|| doc.getMap("pathToId").size > 0
-		|| doc.getMap("idToText").size > 0;
-}
-
 export function buildDocumentSummary(doc: Y.Doc): DocumentSummary {
 	const meta = doc.getMap("meta");
 	const pathToId = doc.getMap<string>("pathToId");

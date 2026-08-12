@@ -1,6 +1,6 @@
 /**
- * Tests for SqlDocStore — validates CRUD, compaction, size limits, and
- * the KV-to-SQL migration path.
+ * Tests for SqlDocStore — validates CRUD, compaction, size limits, and the
+ * cold-start path of a room that has never been written to.
  */
 
 import { SqlDocStore } from "../server/src/sqlDocStore";
@@ -348,34 +348,31 @@ console.log("\n--- Test 6: snapshot + journal replay produces correct state ---"
 	doc2.destroy();
 }
 
-console.log("\n--- Test 7: KV-to-SQL migration simulation ---");
+console.log("\n--- Test 7: empty store loads as empty, then a first checkpoint round-trips ---");
 {
-	// Simulate: SQL store is empty, ChunkedDocStore has data
-	// The migration logic lives in server.ts, but we can verify the
-	// SqlDocStore correctly handles "load empty → write checkpoint" flow
+	// A room nobody has written to must load as "no snapshot" rather than as an
+	// empty-but-present one, and the first checkpoint written over that empty
+	// state must be readable in full.
 
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(storage as any);
 
 	// Verify empty
 	const emptyState = store.loadState();
-	assert(emptyState.snapshot === null, "SQL is empty before migration");
+	assert(emptyState.snapshot === null, "a never-written store loads with no snapshot");
 
-	// Simulate migration: create a doc as if loaded from KV, write to SQL
-	const kvDoc = makeDoc(200);
-	const kvState = Y.encodeStateAsUpdate(kvDoc);
-	store.rewriteCheckpoint(kvState);
+	const seedDoc = makeDoc(200);
+	store.rewriteCheckpoint(Y.encodeStateAsUpdate(seedDoc));
 
-	// Verify migration succeeded
-	const migratedState = store.loadState();
-	assert(migratedState.snapshot !== null, "snapshot exists after migration");
-	assert(migratedState.journalUpdates.length === 0, "no journal after migration");
+	const seededState = store.loadState();
+	assert(seededState.snapshot !== null, "snapshot exists after the first checkpoint");
+	assert(seededState.journalUpdates.length === 0, "no journal after a checkpoint");
 
 	const doc2 = new Y.Doc();
-	Y.applyUpdate(doc2, migratedState.snapshot!);
+	Y.applyUpdate(doc2, seededState.snapshot!);
 	const meta2 = doc2.getMap("meta");
-	assert(meta2.size === 200, `migrated doc has 200 entries (got ${meta2.size})`);
-	kvDoc.destroy();
+	assert(meta2.size === 200, `checkpointed doc has 200 entries (got ${meta2.size})`);
+	seedDoc.destroy();
 	doc2.destroy();
 }
 

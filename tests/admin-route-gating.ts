@@ -1,9 +1,9 @@
 /**
  * Admin route gating tests.
  *
- * Proves that destructive admin routes (compact, cleanup-kv) are properly
- * gated behind the YAOS_ENABLE_ADMIN_ROUTES env var, while read-only
- * debug routes remain accessible.
+ * Proves that the destructive admin route (compact) is properly gated behind
+ * the YAOS_ENABLE_ADMIN_ROUTES env var, while read-only debug routes remain
+ * accessible.
  *
  * Tests the route classifier in index.ts and the DO-level gating in server.ts.
  */
@@ -43,17 +43,11 @@ console.log("\n--- Test 1: Route classifier allows debug routes ---");
 		indexSrc.includes('method === "POST" && rest.length === 1 && rest[0] === "compact"'),
 		"POST /debug/compact is a known valid route shape",
 	);
-	// POST /debug/cleanup-kv must be classified as valid (reaches auth)
-	assert(
-		indexSrc.includes('method === "POST" && rest.length === 1 && rest[0] === "cleanup-kv"'),
-		"POST /debug/cleanup-kv is a known valid route shape",
-	);
 }
 
 console.log("\n--- Test 2: Admin routes require YAOS_ENABLE_ADMIN_ROUTES in DO ---");
 {
-	// The server.ts file must gate compact and cleanup-kv behind env var
-	const compactGatePattern = /YAOS_ENABLE_ADMIN_ROUTES.*compact|compact.*YAOS_ENABLE_ADMIN_ROUTES/s;
+	// The server.ts file must gate compact behind the env var
 	assert(
 		serverSrc.includes("YAOS_ENABLE_ADMIN_ROUTES") &&
 		serverSrc.includes("/__yaos/compact"),
@@ -69,15 +63,6 @@ console.log("\n--- Test 2: Admin routes require YAOS_ENABLE_ADMIN_ROUTES in DO -
 		compactSection.includes("YAOS_ENABLE_ADMIN_ROUTES"),
 		"compact handler checks YAOS_ENABLE_ADMIN_ROUTES before proceeding",
 	);
-
-	const cleanupSection = serverSrc.substring(
-		serverSrc.indexOf('url.pathname === "/__yaos/cleanup-kv"'),
-		serverSrc.indexOf('url.pathname === "/__yaos/cleanup-kv"') + 300,
-	);
-	assert(
-		cleanupSection.includes("YAOS_ENABLE_ADMIN_ROUTES"),
-		"cleanup-kv handler checks YAOS_ENABLE_ADMIN_ROUTES before proceeding",
-	);
 }
 
 console.log("\n--- Test 3: Gate returns 404 (not 401/403) when env var unset ---");
@@ -86,8 +71,8 @@ console.log("\n--- Test 3: Gate returns 404 (not 401/403) when env var unset ---
 	// the route invisible, not just forbidden.
 	const gateMatches = serverSrc.match(/YAOS_ENABLE_ADMIN_ROUTES[\s\S]{0,100}not found/g) ?? [];
 	assert(
-		gateMatches.length >= 2,
-		`gate returns "not found" for both compact and cleanup-kv (found ${gateMatches.length} matches)`,
+		gateMatches.length >= 1,
+		`gate returns "not found" for compact (found ${gateMatches.length} matches)`,
 	);
 }
 
@@ -117,15 +102,6 @@ console.log("\n--- Test 5: Gate does not call ensureDocumentLoaded when blocked 
 		gateReturn < nextEnsureLoaded,
 		"compact: env var check comes before ensureDocumentLoaded (no DO hydration when gated)",
 	);
-
-	const cleanupIdx = serverSrc.indexOf('url.pathname === "/__yaos/cleanup-kv"');
-	const nextEnsureLoaded2 = serverSrc.indexOf("ensureDocumentLoaded", cleanupIdx);
-	const gateReturn2 = serverSrc.indexOf("YAOS_ENABLE_ADMIN_ROUTES", cleanupIdx);
-
-	assert(
-		gateReturn2 < nextEnsureLoaded2,
-		"cleanup-kv: env var check comes before ensureDocumentLoaded (no DO hydration when gated)",
-	);
 }
 
 console.log("\n--- Test 6: All vault routes require auth (pre-auth rejection) ---");
@@ -138,47 +114,21 @@ console.log("\n--- Test 6: All vault routes require auth (pre-auth rejection) --
 		"index.ts calls rejectAndLogUnauthorizedVaultRequest for vault routes",
 	);
 
-	// The auth check must come before the debug/compact/cleanup handlers
+	// The auth check must come before the debug/compact handlers
 	const vaultSection = indexSrc.substring(
 		indexSrc.indexOf("route.kind === \"vault\""),
 		indexSrc.indexOf("route.kind === \"vault\"") + 1000,
 	);
 	const authCheckIdx = vaultSection.indexOf("rejectAndLogUnauthorizedVaultRequest");
 	const compactHandlerIdx = vaultSection.indexOf("compact");
-	const cleanupHandlerIdx = vaultSection.indexOf("cleanup-kv");
 
 	assert(
 		authCheckIdx < compactHandlerIdx,
 		"auth check comes before compact handler in vault routing",
 	);
-	assert(
-		authCheckIdx < cleanupHandlerIdx,
-		"auth check comes before cleanup-kv handler in vault routing",
-	);
 }
 
-console.log("\n--- Test 7: Cleanup requires a checkpoint and verified migration receipt ---");
-{
-	// Journal rows alone can exist before a durable checkpoint. The destructive
-	// cleanup route must require both a SQL snapshot and migration marker.
-	assert(
-		serverSrc.includes("SQL checkpoint is absent") &&
-		serverSrc.includes("sqlState.snapshot === null"),
-		"cleanup-kv refuses journal-only SQL without a checkpoint",
-	);
-	assert(
-		serverSrc.includes("sqlStore.isMigrated()") &&
-		serverSrc.includes("SQL migration receipt is absent"),
-		"cleanup-kv requires the verified migration receipt",
-	);
-	assert(
-		serverSrc.includes("KV-to-SQL checkpoint verification failed") &&
-		serverSrc.includes("verifiedSqlState.snapshot === null"),
-		"migration verifies the SQL checkpoint before recording cleanup evidence",
-	);
-}
-
-console.log("\n--- Test 8: wrangler.toml has YAOS_ENABLE_ADMIN_ROUTES documented ---");
+console.log("\n--- Test 7: wrangler.toml has YAOS_ENABLE_ADMIN_ROUTES documented ---");
 {
 	const wranglerToml = readFileSync(resolve(ROOT, "server/wrangler.toml"), "utf8");
 	assert(
@@ -192,7 +142,7 @@ console.log("\n--- Test 8: wrangler.toml has YAOS_ENABLE_ADMIN_ROUTES documented
 	);
 }
 
-console.log("\n--- Test 9: Unclaimed server cannot reach vault routes ---");
+console.log("\n--- Test 8: Unclaimed server cannot reach vault routes ---");
 {
 	// The route handling for unclaimed servers returns early before vault access.
 	// rejectUnauthorizedVaultRequest checks auth state.

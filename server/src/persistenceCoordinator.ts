@@ -22,22 +22,13 @@ function randomEpochId(): string {
 	return bytesToHex(bytes);
 }
 
-// Re-export for backwards compatibility with existing test imports
-export type { DocStoreJournalStats as JournalStats };
-
-/** Minimal storage interface that both ChunkedDocStore and SqlDocStore implement. */
+/** Storage interface implemented by SqlDocStore, the one document store. */
 export interface DocStore {
 	appendUpdate(update: Uint8Array): Promise<DocStoreJournalStats | null> | DocStoreJournalStats | null;
 	rewriteCheckpoint(update: Uint8Array, stateVector?: Uint8Array): Promise<void> | void;
 	getJournalStats(): Promise<DocStoreJournalStats> | DocStoreJournalStats;
-	/**
-	 * Collapse the journal into one entry, if the store supports it.
-	 *
-	 * Optional because the legacy KV store does not implement it; a coordinator
-	 * over a store without it falls back to the old behaviour of paying for a
-	 * full checkpoint to relieve entry-count pressure.
-	 */
-	coalesceJournal?(): Promise<DocStoreCoalesceResult> | DocStoreCoalesceResult;
+	/** Collapse the journal into one entry. */
+	coalesceJournal(): Promise<DocStoreCoalesceResult> | DocStoreCoalesceResult;
 	/** Persisted snapshot size, for sizing the checkpoint trigger.  0 = unknown. */
 	getSnapshotBytes?(): number;
 }
@@ -762,11 +753,6 @@ export class PersistenceCoordinator {
 		if (journalStats.entryCount <= this.journalCompactMaxEntries) return;
 
 		// Entry pressure.  Prefer the cheap path; escalate only if it cannot help.
-		if (!this.store.coalesceJournal) {
-			await this.executeCompaction(journalStats, "entry_count_exceeded");
-			return;
-		}
-
 		const result = await this.store.coalesceJournal();
 		this.health.lastCoalesceAt = new Date().toISOString();
 		this.health.lastCoalesceStatus = result.status;
