@@ -172,8 +172,9 @@ async function runChild(spec) {
 		settle();
 		after = liveBytes() - baseline;
 	} else if (spec.variant === "remat") {
-		// Sequence, and the peak, exactly as VaultSyncServer.rematerializeDocument
-		// runs it: old document + encoded update + new document all resident.
+		// The sequence a re-materialising swap would run, and its peak: old
+		// document + encoded update + new document all resident at once.  The
+		// server has no such method; this bench is why.
 		const encoded = Y.encodeStateAsUpdate(doc);
 		settle();
 		const withUpdate = liveBytes() - baseline;

@@ -21,12 +21,14 @@ became visible after measurement.
 
 **What we now know that we did not then:**
 
-- The ceiling is memory, not disk, and it is roughly 25-30 MB of text with
-  periodic re-materialisation and roughly 11 MB without. Cold load is cheap
-  (1.16 B/char ASCII, 2.1 UTF-16); the cost is drift while warm.
-- The drift is a V8 rope artefact, not Yjs item overhead. It is now largely
-  reclaimed on the server by re-materialisation (71-77% at realistic edit
-  locality) and on the client by a sync-stack restart.
+- The ceiling is memory, not disk — but it is a **struct count**, not a byte
+  count: ~117 bytes per unmergeable struct, ~850,000 structs against ~100 MB of
+  usable heap. Cold load is cheap (1.16 B/char ASCII, 2.1 UTF-16).
+- The drift we originally blamed — a V8 rope artefact — does not occur in
+  production, because `Y.encodeStateAsUpdate` flattens ropes and the save path
+  encodes constantly. Re-materialisation was removed; it reclaimed nothing and
+  measured 15% worse on a fragmented document. What remains is item
+  fragmentation, which no re-encode can undo. See `monolith.md`.
 - Therefore **the immediate crisis is over**. This RFC is not urgent. It is the
   answer to "what if 28 MB is not enough", and should be judged as such.
 
@@ -99,9 +101,9 @@ would hold one row-set per subdoc keyed by GUID. `SqlDocStore` already chunks by
 The tombstone reaper becomes simpler and stronger — reclaiming a body becomes
 dropping its rows, not deleting Y.Text items and hoping for GC.
 
-Re-materialisation mostly becomes unnecessary: a subdoc that is evicted and
-reloaded is re-materialised by construction, and the working set is small enough
-that rope cannot accumulate to today's degree.
+Eviction becomes the mechanism that removes structs from memory: close a note
+and its structs leave with it. That is the one argument here that survives
+measurement, since fragmentation is otherwise monotonic.
 
 ### Client
 
@@ -172,8 +174,8 @@ it converts a silent failure into a legible one.
    loss.
 2. Measure the mobile client ceiling. It is plausibly lower than the server's
    and nobody has looked; if it is, this RFC targets the wrong tier.
-3. Re-evaluate after re-materialisation has been in production long enough to
-   show real drift curves. The measured ceiling may move again.
+3. Re-evaluate against real struct-count curves from production, not synthetic
+   corpora. The measured ceiling may move again.
 
 Build this when a real user with a vault we want to serve hits the ceiling, and
 the warning from step 1 tells us how often that happens. Not before — the

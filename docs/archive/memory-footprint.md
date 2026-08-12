@@ -1,8 +1,21 @@
 # Memory Footprint
 
-[Monolith](./monolith.md) argues that one Y.Doc per vault is worth its scaling ceiling. This document is about where that ceiling actually is, because it is not where the storage numbers suggest.
+> **Status: superseded (archived).** This document's central thesis — that a
+> warm `Y.Doc` costs 4-7x a cold one because of an unflattened V8 rope, and
+> that re-materialisation reclaims 73-76% of it — did not survive production
+> measurement. `Y.encodeStateAsUpdate` flattens ropes as a side effect and the
+> save path encodes constantly, so the rope never accumulates; the real ceiling
+> is unmergeable **struct count**. Re-materialisation has been removed from the
+> server entirely. The current model lives in
+> [Monolith](../architecture/monolith.md) and
+> [Warts and limits](../architecture/warts-and-limits.md).
+>
+> Kept because the measurement methodology below — especially the `external`
+> vs `heapUsed` trap — is still correct and is recorded nowhere else.
 
-Storage is not the binding constraint. A Durable Object gets 1 GB, and the [checkpoint/journal engine](./checkpoint-journal.md) keeps writes proportional to edits rather than to vault size. The constraint is the isolate: **128 MB of memory, holding one fully-decoded Y.Doc**. Everything below is an attempt to find out what that 128 MB actually buys.
+[Monolith](../architecture/monolith.md) argues that one Y.Doc per vault is worth its scaling ceiling. This document is about where that ceiling actually is, because it is not where the storage numbers suggest.
+
+Storage is not the binding constraint. A Durable Object gets 1 GB, and the [checkpoint/journal engine](../architecture/checkpoint-journal.md) keeps writes proportional to edits rather than to vault size. The constraint is the isolate: **128 MB of memory, holding one fully-decoded Y.Doc**. Everything below is an attempt to find out what that 128 MB actually buys.
 
 ## Cold loading is not the problem
 
@@ -56,7 +69,7 @@ Working backwards from 128 MB with the observed multiplier:
 - **~11 MB of vault** without re-materialisation
 - **~50 MB of vault** with it
 
-The second number is the one quoted in [Monolith](./monolith.md) as the comfortable range for the single-doc design, and it is not free — it is contingent on periodically rebuilding the document from its own encoded state. Without that step the monolith's usable ceiling is roughly a fifth of what the architecture is otherwise good for.
+The second number is the one quoted in [Monolith](../architecture/monolith.md) as the comfortable range for the single-doc design, and it is not free — it is contingent on periodically rebuilding the document from its own encoded state. Without that step the monolith's usable ceiling is roughly a fifth of what the architecture is otherwise good for.
 
 ## A measurement trap worth writing down
 

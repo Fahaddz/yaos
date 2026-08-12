@@ -32,7 +32,7 @@ Compaction policy is deterministic:
 - Compact when journal exceeds 1 MB total bytes.
 - Rewrite a full checkpoint instead of appending when a single delta exceeds 2 MB, or after 2 consecutive append failures.
 
-The legacy KV-backed store (`ChunkedDocStore`) survives as a read-only fallback and migration source. It uses 64 KB chunks, sized for the Durable Object KV per-value limit rather than the SQLite row limit. Nothing in the current write path touches it.
+There is one store. SQLite in the Durable Object holds the checkpoint and the journal, and nothing else does — a room whose SQL state will not read refuses to serve rather than serving an empty document.
 
 Operationally, this solved the "final boss" of CRDT scaling for this architecture: write amplification from full-state rewrites on tiny edits.
 
@@ -47,13 +47,11 @@ Storage capacity is not the limit. The limit is the in-memory `Y.Doc`, measured 
 
 A cold-loaded document is cheap. Decoding state into a fresh `Y.Doc` costs roughly 1.16 bytes per character for ASCII content and ~2.1 for UTF-16; 112 MB of text cold-loads at 130 MiB of heap. If that were the whole story the ceiling would be generous.
 
-It is not, because documents do not stay cold. A warm document — one that was edited in place rather than loaded from encoded state — costs 4-7x a freshly cold-loaded document holding byte-identical state. This is not Yjs item overhead. Yjs merges adjacent inserts from the same client by concatenating strings (`str += str`), and V8 represents that as a deep rope which is never flattened. Typing builds the rope; nothing tears it down, and hibernation does not reclaim it.
+It is not, but the reason is not the one we first recorded here. We believed a warm document cost 4-7x a cold one because Yjs concatenates adjacent inserts (`str += str`) and V8 keeps a deep rope. That effect is real in a synthetic benchmark and absent in production: `Y.encodeStateAsUpdate` flattens ropes as a side effect, and the save path encodes on every debounced save. A soak of a live 12.5 MB vault reclaimed 0.02 MiB of rope after 20,602 updates.
 
 Measured on one real vault's Durable Object, hourly peaks over 48 hours, for a 3.66 MB document: min 3.3 MiB, median 36.0 MiB, max 64.4 MiB.
 
-Re-materialising the document — decoding its own encoded state into a fresh `Y.Doc` — recovers 73-76% of that overhead at realistic edit locality and returns the document to its cold-load footprint. At pathological locality, switching note on every edit, only 33-39% comes back: the remainder is item fragmentation, which no re-encode can undo.
-
-That puts the practical ceiling at roughly 11 MB of vault content without re-materialisation, and roughly 50 MB with it.
+What actually bounds the document is **struct count**, not megabytes. Unmergeable structs cost ~117 bytes each and never merge later, so the ceiling is roughly 850,000 structs against ~100 MB of usable heap — an entropy limit set by edit locality, not by vault size. Re-materialisation does not help and has been removed; on a fragmented document it measured 15% worse. See [Monolith](monolith.md) for the full model, and watch `structs` in the debug footprint rather than bytes.
 
 A measurement trap worth recording, because it wasted real time: content decoded from a Yjs update lands in V8's `external` memory, not `heapUsed`. Instrumentation reporting `heapUsed + arrayBuffers` shows near-zero for decoded content, which looks like an excellent result rather than a broken gauge.
 
