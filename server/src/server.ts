@@ -39,12 +39,6 @@ import {
 	type PersistenceHealth,
 } from "./persistenceCoordinator";
 import type { LoadedDocState } from "./sqlDocStore";
-import {
-	REMATERIALIZE_MAX_AGE_MS,
-	REMATERIALIZE_MIN_UPDATES,
-	REMATERIALIZE_UPDATE_THRESHOLD,
-	shouldRematerialize,
-} from "./rematerializePolicy";
 
 const MAX_DEBUG_TRACE_EVENTS = 200;
 const JOURNAL_COMPACT_MAX_ENTRIES = 50;
@@ -205,49 +199,31 @@ export class VaultSyncServer extends YServer {
 			console.error(`${LOG_PREFIX} save failed (health: degraded, pendingPersistence: true):`, result.error);
 		}
 		await this.syncRoomMetaFromDocument();
-		await this.maybeRematerializeDocument();
 	}
 
 	/**
-	 * Rebuild the document once it has absorbed enough updates to have grown a
-	 * significant V8 rope.  Driven from onSave rather than the message path, so
-	 * it rides the existing debounce instead of adding work per message.
+	 * NOTE — there is deliberately no automatic re-materialisation.
 	 *
-	 * Two triggers, because one is not enough:
+	 * It was scheduled here, on an update threshold and an age backstop, to shed
+	 * accumulated V8 rope.  Measurement in a real deployment removed the reason:
 	 *
-	 *   update-threshold — the primary.  Expressed in applied updates because
-	 *     Workers exposes no heap API, and because updates are what actually
-	 *     build rope.  The growth curve in scripts/bench-warm-memory.mjs is
-	 *     steepest through the first few thousand updates.
+	 *   - `Y.encodeStateAsUpdate` flattens ropes as a side effect, because it
+	 *     reads every ContentString and V8 materialises the flat form.  The save
+	 *     path already encodes on every debounced save, so a server that saves
+	 *     never accumulates rope.  Measured on 1M chars: 30.9 MiB with no saves,
+	 *     1.15 MiB with one delta encode per 2,000 updates.
+	 *   - A soak of a live 12.5MB vault through Obsidian, with the full save
+	 *     path running, reclaimed 0.02 MiB of rope after 20,602 updates.
+	 *   - Where memory genuinely grows — item fragmentation, ~117 bytes per
+	 *     unmergeable struct — re-materialisation cannot help, because the
+	 *     structs survive the round trip.  Measured on a fragmented document it
+	 *     left struct count unchanged and made heap 15% WORSE, since the rebuild
+	 *     reloads state before the old allocation is released.
 	 *
-	 *   age — the backstop.  A vault edited steadily but slowly can stay warm
-	 *     for hours and drift the entire time without ever reaching 5,000, and
-	 *     an object holding an open WebSocket never hibernates its way out of
-	 *     it.  Past REMATERIALIZE_MAX_AGE_MS a document that has taken at
-	 *     least REMATERIALIZE_MIN_UPDATES is rebuilt anyway.  The minimum
-	 *     matters: with no updates there is no rope, so a timer alone would
-	 *     burn CPU on idle rooms to recover nothing.
-	 *
-	 * The swap is cheap enough that this needs no further rate limiting:
-	 * measured encode+decode is 3-9ms for well-merged documents up to 20MB and
-	 * 35ms for a pathologically fragmented one, against a 30-second CPU budget
-	 * per event.  The encode half is already paid by every compaction.
+	 * rematerializeDocument() is kept as a manual operation behind the admin
+	 * route, for support.  Nothing should call it on a schedule.
+	 * See scripts/bench-interventions.mjs and docs/architecture/monolith.md.
 	 */
-	private async maybeRematerializeDocument(): Promise<void> {
-		if (!this.documentLoaded) return;
-		if (this.storageMode === "kv-fallback") return;
-
-		const reason = shouldRematerialize({
-			updatesSince: this.docUpdateCount - this.updatesAtLastRemat,
-			msSinceBaseline: Date.now() - this.lastRematerializeBaselineMs,
-		});
-		if (reason === null) return;
-
-		// Recorded before the attempt so a persistent failure cannot spin.
-		this.updatesAtLastRemat = this.docUpdateCount;
-		this.lastRematerializeBaselineMs = Date.now();
-		await this.rematerializeDocument(reason);
-	}
 
 	async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
 		await super.onConnect(connection, ctx);
@@ -268,7 +244,6 @@ export class VaultSyncServer extends YServer {
 	 */
 	private docUpdateCount = 0;
 	private docUpdateWatcherAttached = false;
-	private updatesAtLastRemat = 0;
 	/**
 	 * Aggregate for update-bearing WebSocket messages.
 	 *
@@ -299,13 +274,6 @@ export class VaultSyncServer extends YServer {
 	private rematerializeCount = 0;
 	private lastRematerializedAt: string | null = null;
 	private lastRematerializeStructs: number | null = null;
-	/**
-	 * When the current re-materialisation window opened — instance start, or the
-	 * last rebuild.  Drives the age trigger.  Wall clock rather than a stored
-	 * timestamp: the window is about how long THIS resident document has been
-	 * accumulating rope, which begins again every time the object wakes.
-	 */
-	private lastRematerializeBaselineMs = Date.now();
 
 	private ensureDocUpdateWatcher(): void {
 		if (this.docUpdateWatcherAttached) return;
@@ -425,11 +393,9 @@ export class VaultSyncServer extends YServer {
 					count: this.rematerializeCount,
 					lastAt: this.lastRematerializedAt,
 					lastStructs: this.lastRematerializeStructs,
-					updatesSinceLast: this.docUpdateCount - this.updatesAtLastRemat,
-					thresholdUpdates: REMATERIALIZE_UPDATE_THRESHOLD,
-					ageMsSinceBaseline: Date.now() - this.lastRematerializeBaselineMs,
-					maxAgeMs: REMATERIALIZE_MAX_AGE_MS,
-					minUpdatesForAgeTrigger: REMATERIALIZE_MIN_UPDATES,
+					// Manual only; there is no scheduled trigger. See the note
+					// above maybeReapTombstonedBodies' neighbour in onSave.
+					automatic: false,
 				},
 			});
 		}

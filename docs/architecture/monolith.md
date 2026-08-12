@@ -4,7 +4,7 @@ The current YAOS architecture uses a single, shared Y.Doc for the entire vault -
 
 ![Single-vault monolithic Y.Doc vs sharded two-tier CRDT model](../diagrams/single-vault-monolithic-y-doc-vs-sharded-two-tier-crdt-model.webp)
 
-For small and medium personal vaults (roughly 50 MB of raw text — see the ceiling discussion below for what that number is actually made of), this gives:
+For personal vaults edited the way people actually edit — see the ceiling discussion below, which is about struct count rather than vault size — this gives:
 
 - simple synchronization semantics
 - strong real-time collaboration behavior
@@ -15,11 +15,27 @@ If a user renames a folder containing 50 markdown files, YAOS batches that into 
 
 The tradeoff is that this design has a scaling ceiling, and the ceiling is memory rather than disk. One vault means one in-memory Y.Doc, and a Durable Object isolate gets 128 MB.
 
-Measurement moved that number around a lot. A cold-loaded document is cheap: about 1.16 bytes per character for ASCII content and 2.1 for UTF-16, so 112 MB of text cold-loads into 130 MiB of heap. A *warm* document — one that has been absorbing edits rather than decoded once — costs 4-7x a freshly cold-loaded document holding identical state. Production agrees: hourly peaks over 48 hours on one real vault's Durable Object ran 3.3 MiB at the low end, 36.0 MiB median, 64.4 MiB at peak, for a document whose encoded state is 3.66 MB. Hibernation does not reclaim it.
+**The ceiling is not measured in bytes of text. It is measured in structs.**
 
-The dominant cost is not Yjs item overhead, which is what we assumed. Yjs merges adjacent inserts from the same client by concatenating their strings, and V8 answers `str += str` with a rope node instead of a flat string. Nothing ever flattens it, so a long editing session grows a deep tree of cons cells over what is logically one paragraph.
+A Yjs struct — one item in the CRDT — costs roughly 117 bytes of heap. What decides how many structs a vault has is not its size but how its edits are shaped, because Yjs merges consecutive inserts from the same client into one item and cannot merge anything else. Three measurements from the same instrument make the point:
 
-That distinction is the reason the monolith survives. An architectural memory cost would have forced sharding; an implementation artefact can be fixed in place. Re-materialising the document — encoding its own state and decoding it into a fresh Y.Doc — collapses the ropes and returns the document to its cold-load footprint, recovering 71-77% of the drift at realistic edit locality. At pathological locality (switching note on every single edit) only 36-41% comes back, because item fragmentation really is in the data structure and no re-encode recovers it. Both figures are the observed spread across five runs of `scripts/bench-warm-memory.mjs`; any single run reads two or three points tighter than the truth. So the practical ceiling is roughly 11 MB of vault without periodic re-materialisation, and roughly 50 MB with it.
+| vault | characters | structs |
+| --- | --- | --- |
+| 12.5 MB, freshly synced | 12,512,428 | 3,318 |
+| a real vault after months of ordinary editing | 3,533,111 | 2,094 |
+| the same 12.5 MB vault after 30,000 scattered edits | 12,566,428 | 33,444 |
+
+12.5 MB of text costs 3,318 structs. Thirty thousand edits that rotate between notes cost 30,115 more, one per edit, because none of them can merge. At ~117 bytes each, roughly 100 MB of usable heap is about **850,000 structs**.
+
+So a user can paste a 12 MB file and pay almost nothing, while a script that appends one character to 5,000 files every minute will exhaust the object in hours. This is an entropy limit, not a capacity limit, and it is monotonic: fragmented structs never merge later.
+
+### What we thought the ceiling was
+
+For a while we believed the dominant cost was a V8 rope. Yjs merges adjacent inserts by concatenating their strings, and V8 answers `str += str` with a cons node rather than a flat string, so a synthetic document built by inserting one character at a time costs ~32 bytes per character instead of ~1.2.
+
+That effect is real but does not occur here, because **`Y.encodeStateAsUpdate` flattens the ropes as a side effect** — it reads every string, and V8 materialises the flat form. Everything in this system encodes constantly. The server encodes on every debounced save; the client's y-indexeddb layer periodically encodes to trim its update log. Measured on 1M characters: 30.9 MiB with no saves, 1.15 MiB with one delta encode per 2,000 updates. A soak of a live 12.5 MB vault driven through Obsidian with the full save path running reclaimed **0.02 MiB** of rope after 20,602 updates.
+
+Re-materialising the document — encoding its own state and decoding it into a fresh Y.Doc — therefore reclaims nothing that the save path has not already reclaimed. On a fragmented document it is actively harmful: struct count is unchanged by the round trip, and heap measured **15% worse**, because the rebuild loads the persisted state before the previous allocation is released. It is kept as a manual support operation and nothing schedules it. See `scripts/bench-interventions.mjs`.
 
 Tombstones and history pay rent too, but less than we feared, and we now collect some of it back: once a file has been tombstoned long enough, its Y.Text body is reclaimed while the tombstone itself is kept, so deleted files stop carrying their content without breaking delete propagation to devices that were offline.
 
@@ -56,6 +72,8 @@ Enterprise systems like Figma and Notion accept this tearing. They trade strong 
 
 YAOS has a debug mode, which shows vault-footprint. After doing QA, I saw that my vault's `encodedDocBytes` was 25KB larger than the total live markdown text, which is roughly a **1.9% overhead.** Essentially, the CRDT state is lean, and history/tombstones are not bloating the document much at all.
 
-That figure is about *encoded* size — what the CRDT costs on the wire and in storage — and it still holds. It is not a memory number. Memory is the rope story above, and it is a much larger multiple; both have to stay bounded for the monolith to work, and with periodic re-materialisation both do.
+That figure is about *encoded* size — what the CRDT costs on the wire and in storage — and it still holds. It is not a memory number, and the two diverge: encoded size tracks characters, while memory tracks structs. A vault can be lean on the wire and expensive in RAM at the same time, which is exactly what a heavily fragmented vault is.
 
-When the encoded overhead is 2% and the memory overhead turns out to be a fixable rope rather than the architecture, abandoning the monolith's ACID guarantees is severe over-engineering. We will cherish the monolith until the profiler proves we have no other choice.
+So the honest position is narrower than "cherish the monolith". The rope scare turned out to be an artefact that the save path already handles, which is a point in the monolith's favour. Struct growth did not: it is architectural, it is monotonic, and nothing at the application layer reclaims it. A monolithic Y.Doc holds every struct the vault has ever fragmented into, for as long as the object is resident.
+
+That is the one argument for lazy-loaded subdocuments that survives measurement, because eviction is the only mechanism that removes structs from memory — close a note and its structs leave with it. See `docs/rfcs/lazy-body-subdocs.md`. Until a real vault approaches the struct ceiling the monolith is still the right trade, but the thing to watch is `structs` in the debug footprint, not megabytes.

@@ -77,7 +77,6 @@ import { EditorWorkspaceOrchestrator } from "./runtime/editorWorkspaceOrchestrat
 import { SetupLinkController } from "./runtime/setupLinkController";
 import { TraceRuntimeController } from "./runtime/traceRuntimeController";
 import { registerCommands } from "./commands";
-import { shouldRematerializeClient } from "./sync/clientRematerializePolicy";
 import {
 	getSyncStatusLabel,
 	renderConnectionState,
@@ -927,7 +926,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				if (waitingForR2 && (this.capabilityUpdateService?.shouldRefreshCapabilities() ?? false)) {
 					void this.refreshServerCapabilities("background-poll");
 				}
-				this.maybeRematerializeSyncStack();
 			}, 3000);
 			this.register(() => {
 				if (this.statusInterval) clearInterval(this.statusInterval);
@@ -1449,30 +1447,15 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	// -------------------------------------------------------------------
 	// Teardown + reinit (for reset commands)
-	/**
-	 * Rebuild the sync stack when drift is large and nothing is at stake.
-	 *
-	 * Runs on the status tick rather than a dedicated timer so it cannot become
-	 * another thing to tear down.  All of the judgement is in
-	 * shouldRematerializeClient; this only supplies the inputs and guarantees a
-	 * single rebuild is in flight at a time.
-	 */
-	private rematerializeInFlight = false;
-
-	private maybeRematerializeSyncStack(): void {
-		const sync = this.vaultSync;
-		if (!sync) return;
-		if (!shouldRematerializeClient({
-			updatesSince: sync.documentUpdateCount,
-			connected: sync.connected,
-			busy: this.rematerializeInFlight,
-		})) return;
-
-		this.rematerializeInFlight = true;
-		void this.rematerializeSyncStack("drift-threshold").finally(() => {
-			this.rematerializeInFlight = false;
-		});
-	}
+	//
+	// There is deliberately no scheduled rebuild.  It ran on the status tick,
+	// gated on being disconnected, to shed accumulated V8 rope.  A soak of a
+	// live 12.5MB vault through Obsidian — full save path, real GC — reclaimed
+	// 0.02 MiB of rope after 20,602 updates, because y-indexeddb's periodic
+	// encodeStateAsUpdate trim already flattens the strings.  And on a
+	// fragmented document a rebuild left struct count unchanged while making
+	// heap 15% worse.  rematerializeSyncStack stays as a manual command.
+	// See scripts/bench-interventions.mjs.
 
 	// -------------------------------------------------------------------
 	/**
