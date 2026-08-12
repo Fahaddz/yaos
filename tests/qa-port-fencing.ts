@@ -79,24 +79,17 @@ console.log("\n--- Test 2: YaosUnsafeQaPort interface shape ---");
 		__qaOnlyPauseEditorBindingPropagationUnsafe: async () => true,
 		__qaOnlyResumeEditorBindingPropagationUnsafe: async () => true,
 		setQaNetworkHold: () => {},
-		__qaOnlySetScenarioRunIdUnsafe: () => {},
-		__qaOnlyAdvanceScenarioStepUnsafe: () => {},
 		__qaOnlyEmitPhaseUnsafe: async () => {},
 		__qaOnlySetExternalEditPolicyOverrideUnsafe: async () => ({ previous: null }),
-		witnessDeviceSettled: async () => {},
-		computeWitnessStateHash: async () => "hash",
 		getDeviceId: () => "device-1",
 	};
 
 	assert(typeof mockUnsafePort.__qaOnlyForceCrdtContentUnsafe === "function", "forceCrdt exists");
 	assert(typeof mockUnsafePort.setQaNetworkHold === "function", "network hold exists");
-	assert(typeof mockUnsafePort.__qaOnlySetScenarioRunIdUnsafe === "function", "scenario run id exists");
-	assert(typeof mockUnsafePort.__qaOnlyAdvanceScenarioStepUnsafe === "function", "scenario step exists");
-	assert(typeof mockUnsafePort.witnessDeviceSettled === "function", "witness settled exists");
 
-	// Verify all methods have __qaOnly or explicit unsafe/scenario naming.
+	// Verify all mutation methods have __qaOnly or explicit unsafe naming.
 	const unsafeKeys = Object.keys(mockUnsafePort);
-	const safeReadKeys = ["witnessDeviceSettled", "computeWitnessStateHash", "getDeviceId", "setQaNetworkHold"];
+	const safeReadKeys = ["getDeviceId", "setQaNetworkHold"];
 	const unsafeOnlyKeys = unsafeKeys.filter(k => !safeReadKeys.includes(k));
 	assert(
 		unsafeOnlyKeys.every(k => k.includes("__qaOnly") || k.includes("Unsafe")),

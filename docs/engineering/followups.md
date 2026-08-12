@@ -48,7 +48,7 @@ claim still wants one layer above it:
 
 ### No-event reconcile admission
 
-CLOSED 2026-05. Spec: `.kiro/specs/no-event-reconcile-admission/requirements.md`. Regression test: `tests/no-event-reconcile-admission.ts` (Scenarios A–F, runs in `npm run test:regressions`). The test drives a markdown file onto disk with no CRDT entry and asserts the full admission timeline from flight events alone in both authoritative and conservative lanes, plus the preserved-unresolved guard, the clear-and-readmit cycle, and the callback failure semantics. `FLIGHT_TAXONOMY_VERSION` was not bumped; no new flight kinds were added.
+CLOSED 2026-05. Regression test: `tests/no-event-reconcile-admission.ts` (Scenarios A–F, runs in `npm run test:regressions`). The test drives a markdown file onto disk with no CRDT entry and asserts the full admission timeline from flight events alone in both authoritative and conservative lanes, plus the preserved-unresolved guard, the clear-and-readmit cycle, and the callback failure semantics. `FLIGHT_TAXONOMY_VERSION` was not bumped; no new flight kinds were added.
 
 Open follow-up from the closure: see "Retire `mintAdmissionOpId` callback in favor of split planner/mutation" under "Recovery / controller confidence" below.
 
@@ -125,21 +125,20 @@ targeted proof of the exact local-repair round-trip suppression invariant.
 ### Retire `mintAdmissionOpId` callback in favor of split planner/mutation
 
 `VaultSync.reconcileVault()` carries an optional `mintAdmissionOpId` callback (added
-by the no-event-reconcile-admission spec, Option (b)) so the controller can emit
+by the no-event reconcile admission work, Option (b)) so the controller can emit
 `reconcile.file.decision` BEFORE the CRDT mutation with a shared `opId`. The
 callback works AND has documented contract + failure semantics + a regression test
 (Scenario F in `tests/no-event-reconcile-admission.ts`), but it is a controller-shaped
 wart inside a lower-level sync method.
 
-The cleaner architecture is Option (a) from the spec: `reconcileVault` returns a
+The cleaner architecture is the planner/mutation split: `reconcileVault` returns a
 seed plan (no `ensureFile` calls), the controller iterates the plan, mints opIds,
 emits decisions, AND calls `ensureFile`. That refactor touches every caller of
 `reconcileVault` AND was deferred at implementation time.
 
 Trigger to act: the next time `reconcileVault` or its surrounding code is touched
 for unrelated reasons. Until then, the callback contract is load-bearing — see the
-JSDoc on `mintAdmissionOpId` in `src/sync/vaultSync.ts` AND the "Implementation
-outcome" section of the spec.
+JSDoc on `mintAdmissionOpId` in `src/sync/vaultSync.ts`.
 
 ## Manual / operational followups
 

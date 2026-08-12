@@ -12,9 +12,9 @@
  *   - lifecycle hooks (cleanup, logging)
  *
  * FORBIDDEN in this interface:
- *   forceCrdtContent, forceSyncFileFromDisk, setScenarioRunId,
- *   advanceScenarioStep, setQaNetworkHold, pauseEditorBindingPropagation,
- *   runVfsTortureTest, anything Unsafe, anything __qaOnly
+ *   forceCrdtContent, forceSyncFileFromDisk, setQaNetworkHold,
+ *   pauseEditorBindingPropagation, runVfsTortureTest, anything Unsafe,
+ *   anything __qaOnly
  */
 
 import type { App } from "obsidian";
@@ -142,23 +142,6 @@ export interface SyncReadPort {
 	getRecentEvents(limit?: number): ReadonlyArray<{ ts: string; msg: string }>;
 	/** Returns the current reconcile mode. */
 	getSafeReconcileMode(): import("../sync/vaultSync").ReconcileMode;
-
-	// ------------------------------------------------------------------
-	// Observer subscription (read-only: metadata change stream)
-	// ------------------------------------------------------------------
-
-	/**
-	 * Subscribe to metadata changes (path renames, deletions).
-	 * Returns an unsubscribe function. The Observer may only read from
-	 * the batch; the callback must not mutate CRDT state.
-	 */
-	observeMetaChanges(callback: (batch: import("../sync/fileMeta").MetaChangeBatch) => void): () => void;
-
-	/**
-	 * Subscribe to active markdown content changes as primitive path/origin data.
-	 * The Engine retains all mutable Y.Text ownership.
-	 */
-	observePathContentChanges(callback: (path: string, isLocal: boolean) => void): () => void;
 }
 
 export interface DiskMirrorSnapshot {
@@ -168,11 +151,6 @@ export interface DiskMirrorSnapshot {
 export interface BlobSyncSnapshot {
 	readonly pendingUploads: number;
 	readonly pendingDownloads: number;
-}
-
-export interface EditorSampleSnapshot {
-	readonly kind: "not_open" | "healthy_sampled" | "settling" | "unhealthy";
-	readonly content: string | null;
 }
 
 export interface TelemetryRuntimeHost {
@@ -196,8 +174,6 @@ export interface TelemetryRuntimeHost {
 	// Domain diagnostics cross this boundary as scalar snapshots, never manager instances.
 	getDiskMirrorSnapshot(): DiskMirrorSnapshot | null;
 	getBlobSyncSnapshot(): BlobSyncSnapshot | null;
-	/** Host-owned editor lookup; telemetry receives only a value sample. */
-	getEditorSample(path: string): EditorSampleSnapshot;
 	getEventRing(): ReadonlyArray<{ ts: string; msg: string }>;
 	getRecentServerTrace(): readonly unknown[];
 	getFrontmatterQuarantineEntries(): readonly FrontmatterQuarantineEntry[];

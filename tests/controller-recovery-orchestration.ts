@@ -1,8 +1,6 @@
 /**
  * Controller-level recovery orchestration test.
  *
- * Spec: .kiro/specs/controller-recovery-orchestration/requirements.md
- *
  * Drives a localOnly three-way divergence (editor==disk, ≠ CRDT) end-to-end
  * through ReconciliationController and asserts:
  *   - the recovery.* flight-event timeline
@@ -174,8 +172,7 @@ function buildFixture(initial: {
 	// NOTE: this fixture intentionally reports an UNHEALTHY binding so the
 	// localOnly recovery branch's binding-health-conditional repair fires.
 	// Healthy-binding behavior (no repair on every recovery) is exercised
-	// by tests/controller-recovery-orchestration-amplifier.ts. See spec:
-	// .kiro/specs/editor-bound-localonly-amplifier-guard/requirements.md R7.
+	// by tests/controller-recovery-orchestration-amplifier.ts.
 	const editorBindings = {
 		isBound: () => true,
 		getBindingDebugInfoForView: () => ({
@@ -305,7 +302,7 @@ function buildFixture(initial: {
 
 console.log("\n--- Test 0: flight taxonomy bumped and new kinds present ---");
 {
-	assertEq(FLIGHT_TAXONOMY_VERSION, 10, "FLIGHT_TAXONOMY_VERSION === 10");
+	assertEq(FLIGHT_TAXONOMY_VERSION, 11, "FLIGHT_TAXONOMY_VERSION === 11");
 	assertEq(FLIGHT_KIND.recoverySkipped, "recovery.skipped", "FLIGHT_KIND.recoverySkipped");
 	assertEq(FLIGHT_KIND.editorRepairApplied, "editor.repair.applied", "FLIGHT_KIND.editorRepairApplied");
 	assertEq(FLIGHT_KIND.editorHealApplied, "editor.heal.applied", "FLIGHT_KIND.editorHealApplied");

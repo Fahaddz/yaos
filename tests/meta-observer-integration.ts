@@ -1,7 +1,7 @@
 /**
  * Integration tests proving that nested Y.Map field mutations (v3 metadata)
  * correctly drive the semantic observer, which in turn is what DiskMirror
- * and the witness tracker consume.
+ * consumes.
  *
  * Covers:
  * - Nested field mutations fire the correct semantic change kinds

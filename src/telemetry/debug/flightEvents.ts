@@ -1,5 +1,5 @@
 export const FLIGHT_EVENT_SCHEMA_VERSION = 1;
-export const FLIGHT_TAXONOMY_VERSION = 10; // bumped: editor-bound localOnly amplifier guard — recovery.amplification.quarantined
+export const FLIGHT_TAXONOMY_VERSION = 11; // bumped: Layer 4 device-state diagnostic kinds and qa.scenario.step removed
 
 export type FlightSeverity = "debug" | "info" | "warn" | "error";
 export type FlightScope =
@@ -35,7 +35,6 @@ export type FlightSource =
 	| "serverAckTracker"
 	| "traceRuntime"
 	| "diagnostics"
-	| "deviceWitness"
 	| "server";
 
 export type FlightPriority = "critical" | "important" | "verbose";
@@ -116,8 +115,7 @@ export const FLIGHT_KIND = {
 	 * Distinct from `recovery.quarantined` (fingerprint-keyed) — this
 	 * fires when N consecutive bound-file-local-only-divergence
 	 * recoveries within a window all exhibit non-decreasing prevLen and
-	 * nextLen with strictly positive deltas. See spec:
-	 * .kiro/specs/editor-bound-localonly-amplifier-guard/requirements.md R3.
+	 * nextLen with strictly positive deltas.
 	 */
 	recoveryAmplificationQuarantined: "recovery.amplification.quarantined",
 	/**
@@ -129,10 +127,6 @@ export const FLIGHT_KIND = {
 	 * enum `branch` of type `FrontmatterIngestBlockBranch`); the only
 	 * production constructor of that payload is
 	 * `ReconciliationController.recordFrontmatterIngestBlocked`.
-	 *
-	 * See specs:
-	 *   .kiro/specs/controller-recovery-orchestration/requirements.md R2.
-	 *   .kiro/specs/frontmatter-guard-orchestration/requirements.md R2.
 	 */
 	recoverySkipped: "recovery.skipped",
 
@@ -144,11 +138,6 @@ export const FLIGHT_KIND = {
 	/** Emitted by diskMirror: file preserved instead of deleted (dirty local copy). */
 	deletePreserved: "delete.preserved",
 
-	// Device witness (Layer 4 Phase 1)
-	deviceWitnessSettled: "device.witness.settled",
-	deviceWitnessDiverged: "device.witness.diverged",
-	// QA scenario step (Layer 4 Phase 3 — cross-device ordering for manual runs)
-	qaScenarioStep: "qa.scenario.step",
 	// Editor binding orchestration (controller recovery orchestration spec)
 	editorRepairApplied: "editor.repair.applied",
 	editorHealApplied: "editor.heal.applied",
@@ -163,7 +152,7 @@ export type FlightKind = typeof FLIGHT_KIND[keyof typeof FLIGHT_KIND];
 /**
  * Closed-enum reason discriminator for `recovery.skipped` events. The
  * controller picks exactly one of these per emission. New reasons require
- * extending this union AND updating the spec.
+ * extending this union.
  *
  * - "crdt-current-no-op"          CRDT and disk already agree.
  * - "recovery-lock-active"        bound recovery lock is still active.
@@ -171,10 +160,6 @@ export type FlightKind = typeof FLIGHT_KIND[keyof typeof FLIGHT_KIND];
  * - "frontmatter-ingest-blocked"  shouldBlockFrontmatterIngest returned
  *                                 true at one of the six block sites.
  *                                 See FrontmatterIngestBlockBranch.
- *
- * See specs:
- *   .kiro/specs/controller-recovery-orchestration/requirements.md R2.
- *   .kiro/specs/frontmatter-guard-orchestration/requirements.md R2.
  */
 export type RecoverySkippedReason =
 	| "crdt-current-no-op"
@@ -188,9 +173,7 @@ export type RecoverySkippedReason =
  * ReconciliationController calls shouldBlockFrontmatterIngest. Used as the
  * `branch` discriminator on `recovery.skipped` events with
  * `data.reason === "frontmatter-ingest-blocked"`. New emission sites
- * require extending this union AND updating the spec.
- *
- * See spec: .kiro/specs/frontmatter-guard-orchestration/requirements.md R2.
+ * require extending this union.
  */
 export type FrontmatterIngestBlockBranch =
 	| "disk-to-crdt-existing"

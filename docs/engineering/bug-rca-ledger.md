@@ -127,8 +127,6 @@ Repo-validated bug / incident ledger as of 2026-05-27.
   - `~/temenos/.obsidian/plugins/yaos/flight-logs/2026-05-27/boot-wL7i012vR4mGXA-1.ndjson`
   - pathId `p:476818d2ecba90d4e95e2a0c4f3ad1eb`
   - timeline reproducible locally via `qa/scripts/issue22b-loop-summary.mjs`
-    (script lives outside the repo because `qa/` is gitignored; rebuild
-    from the trace if needed)
 - Fix:
   - `OPEN_FILE_LOCAL_ONLY_RECOVERY_IDLE_MS = 3000ms`. New idle guard added to
     the localOnly branch, symmetric to the crdtOnly branch's existing 1200ms
@@ -166,7 +164,6 @@ Repo-validated bug / incident ledger as of 2026-05-27.
     - User-visible Notice on amplification quarantine. Throttled to
       one per 60s; suppressed firings are counted in the next surfaced
       notice.
-- Spec: `.kiro/specs/editor-bound-localonly-amplifier-guard/requirements.md`
 - Regression: `tests/controller-recovery-orchestration-amplifier.ts`
   (5 deterministic Node scenarios, 48 assertions in `npm run test:regressions`).
 - iPad proof: still pending. Desktop coverage proves the predicate, the

@@ -14,101 +14,10 @@
  * DO NOT use in production vaults.
  */
 
-import { App, Plugin, Notice, Modal, Setting } from "obsidian";
+import { Plugin, Notice } from "obsidian";
 import { buildQaConsoleApi } from "./api";
 import type { QaScenario } from "./types";
 import { buildQaDebugApi } from "../harness/qaDebugApi";
-import { ScenarioStateController } from "../harness/scenarioStateController";
-
-type ScenarioDebugApi = {
-	__qaOnlySetScenarioRunIdUnsafe?(scenarioRunId: string, scenarioId: string): void;
-	__qaOnlyAdvanceScenarioStepUnsafe?(stepIndex: number, label?: string): void;
-	__qaOnlyClearWitnessSuppressionUnsafe?(path: string): void;
-	__qaOnlyTriggerWitnessDirtyUnsafe?(path: string): void;
-};
-
-function getScenarioDebugApi(): ScenarioDebugApi | null {
-	return ((window as unknown as Record<string, unknown>).__YAOS_DEBUG__ as ScenarioDebugApi | undefined) ?? null;
-}
-
-class ScenarioIdentityModal extends Modal {
-	private scenarioRunId = "";
-	private scenarioId = "s12a-three-device-active-edit";
-
-	constructor(app: App, private readonly onSubmit: (scenarioRunId: string, scenarioId: string) => void) {
-		super(app);
-	}
-
-	onOpen(): void {
-		this.contentEl.createEl("h2", { text: "Set QA scenario identity" });
-		new Setting(this.contentEl)
-			.setName("Scenario run ID")
-			.setDesc("Use the same non-empty value on every device in this run.")
-			.addText((text) => text.setPlaceholder("s12a-active-edit-YYYY-MM-DD").onChange((value) => {
-				this.scenarioRunId = value;
-			}));
-		new Setting(this.contentEl)
-			.setName("Scenario ID")
-			.addText((text) => text.setValue(this.scenarioId).onChange((value) => {
-				this.scenarioId = value;
-			}));
-		new Setting(this.contentEl).addButton((button) => button
-			.setButtonText("Set identity")
-			.setCta()
-			.onClick(() => {
-				if (!this.scenarioRunId.trim() || !this.scenarioId.trim()) {
-					new Notice("Scenario run ID and scenario ID are both required.", 5000);
-					return;
-				}
-				this.onSubmit(this.scenarioRunId.trim(), this.scenarioId.trim());
-				this.close();
-			}));
-	}
-
-	onClose(): void {
-		this.contentEl.empty();
-	}
-}
-
-class ScenarioStepModal extends Modal {
-	private stepIndexText = "";
-	private stepLabel = "";
-
-	constructor(app: App, private readonly onSubmit: (stepIndex: number, stepLabel: string) => void) {
-		super(app);
-	}
-
-	onOpen(): void {
-		this.contentEl.createEl("h2", { text: "Advance QA scenario step" });
-		new Setting(this.contentEl)
-			.setName("Step index")
-			.setDesc("A non-negative integer greater than this device's current step.")
-			.addText((text) => text.setPlaceholder("1").onChange((value) => {
-				this.stepIndexText = value;
-			}));
-		new Setting(this.contentEl)
-			.setName("Step label")
-			.addText((text) => text.setPlaceholder("baseline-quorum").onChange((value) => {
-				this.stepLabel = value;
-			}));
-		new Setting(this.contentEl).addButton((button) => button
-			.setButtonText("Advance step")
-			.setCta()
-			.onClick(() => {
-				const stepIndex = Number(this.stepIndexText);
-				if (!Number.isInteger(stepIndex) || stepIndex < 0) {
-					new Notice("Step index must be a non-negative integer.", 5000);
-					return;
-				}
-				this.onSubmit(stepIndex, this.stepLabel.trim());
-				this.close();
-			}));
-	}
-
-	onClose(): void {
-		this.contentEl.empty();
-	}
-}
 
 // Scenario imports
 import { s00SmokeTraceExport } from "./scenarios/s00-smoke-trace-export";
@@ -211,7 +120,6 @@ const ALL_SCENARIOS: QaScenario[] = [
 
 export default class YaosQaHarnessPlugin extends Plugin {
 	private scenarioRegistry = new Map<string, QaScenario>();
-	private scenarioController = new ScenarioStateController();
 
 	async onload(): Promise<void> {
 		// Register all scenarios
@@ -262,63 +170,7 @@ export default class YaosQaHarnessPlugin extends Plugin {
 			name: "Start QA flight trace (qa-safe)",
 			callback: async () => {
 				await api.startTrace("qa-safe");
-				// Identity is deliberately set before tracing. Copy the stored QA-harness
-				// state into the newly created passive tracker immediately after startup.
-				const state = this.scenarioController.getScenarioStepState();
-				if (state.scenarioRunId && state.scenarioId) {
-					getScenarioDebugApi()?.__qaOnlySetScenarioRunIdUnsafe?.(
-						state.scenarioRunId,
-						state.scenarioId,
-					);
-				}
 				new Notice("QA trace started (qa-safe).", 3000);
-			},
-		});
-
-		this.addCommand({
-			id: "qa-set-scenario-run-id",
-			name: "Set QA scenario run ID",
-			callback: () => {
-				new ScenarioIdentityModal(this.app, (scenarioRunId, scenarioId) => {
-					const debug = getScenarioDebugApi();
-					if (!debug?.__qaOnlySetScenarioRunIdUnsafe) {
-						new Notice("YAOS QA debug API is unavailable; check QA harness load order.", 8000);
-						return;
-					}
-					debug.__qaOnlySetScenarioRunIdUnsafe(scenarioRunId, scenarioId);
-					new Notice(`QA scenario identity set: ${scenarioId}`, 4000);
-				}).open();
-			},
-		});
-
-		this.addCommand({
-			id: "qa-advance-scenario-step",
-			name: "Advance QA scenario step",
-			callback: () => {
-				new ScenarioStepModal(this.app, (stepIndex, stepLabel) => {
-					const debug = getScenarioDebugApi();
-					if (!debug?.__qaOnlyAdvanceScenarioStepUnsafe) {
-						new Notice("YAOS QA debug API is unavailable; check QA harness load order.", 8000);
-						return;
-					}
-					debug.__qaOnlyAdvanceScenarioStepUnsafe(stepIndex, stepLabel || undefined);
-				}).open();
-			},
-		});
-
-		this.addCommand({
-			id: "qa-force-fresh-witness-current-file",
-			name: "Force fresh QA witness for current file",
-			callback: () => {
-				const activeFile = this.app.workspace.getActiveFile();
-				const debug = getScenarioDebugApi();
-				if (!activeFile || !debug?.__qaOnlyClearWitnessSuppressionUnsafe || !debug.__qaOnlyTriggerWitnessDirtyUnsafe) {
-					new Notice("Open the target file and ensure the YAOS QA debug API is available.", 8000);
-					return;
-				}
-				debug.__qaOnlyClearWitnessSuppressionUnsafe(activeFile.path);
-				debug.__qaOnlyTriggerWitnessDirtyUnsafe(activeFile.path);
-				new Notice("Fresh QA witness queued for the current file.", 4000);
 			},
 		});
 
@@ -391,7 +243,6 @@ export default class YaosQaHarnessPlugin extends Plugin {
 	 *   - product plugin "yaos" is loaded
 	 *   - product.getEngineControlPort is present (confirms QA product build)
 	 *   - product.lab (TelemetryRuntimeHandle) is present (confirms qaDebugMode)
-	 *   - lab.getDeviceWitnessTracker accessor is present (confirms P4B build)
 	 *
 	 * If guards fail, a loud error is logged and no __YAOS_DEBUG__ is mounted.
 	 * waitForQaReady() will never resolve, making the failure visible immediately
@@ -443,18 +294,6 @@ export default class YaosQaHarnessPlugin extends Plugin {
 			return;
 		}
 
-		// Guard 4: new accessor must exist (confirms P4B telemetry build)
-		if (typeof (lab as any).getDeviceWitnessTracker !== "function") {
-			console.error(
-				"[YAOS QA] FATAL: lab.getDeviceWitnessTracker is missing. " +
-				"The telemetry.js bundle is stale — run: npm run build.",
-			);
-			new Notice("YAOS QA FATAL: stale telemetry.js — run npm run build.", 15000);
-			return;
-		}
-
-		const scenarioController = this.scenarioController;
-
 		const debugApi = buildQaDebugApi({
 			app: this.app,
 			getVaultSync: () => (product as any).vaultSync ?? null,
@@ -492,9 +331,6 @@ export default class YaosQaHarnessPlugin extends Plugin {
 				void (product as any).setQaNetworkHold?.("offline"),
 			connectProvider: () =>
 				void (product as any).setQaNetworkHold?.("online"),
-			getDeviceWitnessTracker: () =>
-				(lab as any).getDeviceWitnessTracker?.() ?? null,
-			getScenarioController: () => scenarioController,
 			getQaTraceSecretHash: () =>
 				((lab as any).getQaTraceSecretHash?.() ?? null) as string | null,
 			getEngineControlPort: () => (product as any).getEngineControlPort(),

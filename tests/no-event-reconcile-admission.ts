@@ -1,8 +1,6 @@
 /**
  * No-event reconcile admission regression test.
  *
- * Spec: .kiro/specs/no-event-reconcile-admission/requirements.md
- *
  * Followup closed: `docs/engineering/followups.md` "Validation gaps" entry
  *   "No-event reconcile admission" — concrete proof that a syncable file
  *   appearing on disk without the normal vault create event pipeline is
@@ -413,12 +411,12 @@ function buildFixture(opts: {
 
 console.log("\n--- Taxonomy: FLIGHT_TAXONOMY_VERSION ---");
 {
-	// Bumped to 10 by the editor-bound localOnly amplifier guard spec
-	// (recovery.amplification.quarantined). This spec does not bump.
+	// Bumped to 11 by the Layer 4 device-witness removal (device.witness.*
+	// and qa.scenario.step deleted). This spec does not bump.
 	assertEq(
 		FLIGHT_TAXONOMY_VERSION,
-		10,
-		"FLIGHT_TAXONOMY_VERSION === 10 (no bump for this spec)",
+		11,
+		"FLIGHT_TAXONOMY_VERSION === 11 (no bump for this spec)",
 	);
 }
 

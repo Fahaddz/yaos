@@ -10,13 +10,10 @@
  *   - qaDebugApi
  *   - YaosUnsafeQaPort
  *   - __qaOnly (as identifier)
- *   - setScenarioRunId / advanceScenarioStep (as direct imports)
  *   - forceCrdtContent / forceReplaceYText (from qaDebugApi context)
  *
  *   Telemetry (Observer) code must NOT import:
  *   - qaDebugApi (Puppeteer mutation API)
- *   - vfsTortureTest (Puppeteer VFS mutation)
- *   - scenarioStateController (Puppeteer scenario mutation)
  *   - YaosUnsafeQaPort
  *
  * Note: installPuppeteerRuntime.ts (formerly installLabRuntime) was deleted
@@ -38,8 +35,6 @@ const SYNC_RUNTIME_FORBIDDEN = [
 
 const TELEMETRY_FORBIDDEN = [
 	/from\s+["'].*qaDebugApi/,
-	/from\s+["'].*vfsTortureTest/,
-	/from\s+["'].*scenarioStateController/,
 	/from\s+["'].*yaosUnsafeQaPort/,
 	/import.*YaosUnsafeQaPort/,
 ];

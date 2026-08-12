@@ -4,7 +4,7 @@
  */
 
 import { type App } from "obsidian";
-import type { YaosQaDebugApi } from "../../src/qaDebugApi";
+import type { YaosQaDebugApi } from "../harness/qaDebugApi";
 
 export class AssertionError extends Error {
 	constructor(message: string) {

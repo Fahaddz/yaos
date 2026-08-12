@@ -144,8 +144,7 @@ export class DiskMirror {
 	 * Per-path timestamp of the most recent successful `flushWrite`. Updated
 	 * on every `vault.modify` and `vault.create` we issue. Read by the main
 	 * vault.on("modify") handler so `disk.modify.observed` events can carry
-	 * a writerGuess (yaos-write vs external) for RCA. See spec:
-	 * .kiro/specs/editor-bound-localonly-amplifier-guard/requirements.md (R8).
+	 * a writerGuess (yaos-write vs external) for RCA.
 	 */
 	private lastDiskWriteOkAt = new Map<string, number>();
 
@@ -964,8 +963,7 @@ export class DiskMirror {
 	 * Per-path timestamp of the most recent successful YAOS-issued
 	 * `flushWrite`. Returns null if YAOS has never written this path in
 	 * this session. Used by main.ts to label `disk.modify.observed` events
-	 * with writer attribution. See spec:
-	 * .kiro/specs/editor-bound-localonly-amplifier-guard/requirements.md (R8).
+	 * with writer attribution.
 	 */
 	getLastDiskWriteOkAt(path: string): number | null {
 		const v = this.lastDiskWriteOkAt.get(normalizePath(path));

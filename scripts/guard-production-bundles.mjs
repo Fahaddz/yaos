@@ -28,7 +28,7 @@
  *                        code, or Engine control capabilities.
  *
  *   telemetry.js       = passive Observer only.
- *                        May contain FlightRecorder, DeviceWitnessTracker, etc.
+ *                        May contain FlightRecorder, FlightTraceController, etc.
  *                        Must NOT contain mutation harness code (Puppeteer).
  *
  *   qa/obsidian-harness/product-main.js
@@ -67,24 +67,15 @@ const TRANSITIONAL = process.argv.includes("--transitional");
 
 const MAIN_FORBIDDEN = [
 	// Telemetry implementations (must stay out of product bundle)
-	"DeviceWitnessTracker",
 	"FlightRecorder",
 	"FlightTraceController",
 	"FlightTraceSink",
 	"PersistentTraceLogger",
-	// Puppeteer command names
-	"qaExportWitnessBundle",
+	// QA harness command names
 	"startQaFlightTrace",
 	"stopQaFlightTrace",
 	"exportSafeFlightTrace",
 	"exportFullFlightTrace",
-	// Puppeteer scenario controls
-	"setScenarioRunId",
-	"advanceScenarioStep",
-	"witnessDeviceSettled",
-	// VFS torture
-	"VfsTorture",
-	"vfsTorture",
 	// Force operations
 	"ForceCrdt",
 	"forceCrdt",

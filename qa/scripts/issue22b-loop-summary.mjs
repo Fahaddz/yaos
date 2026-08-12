@@ -25,7 +25,6 @@ const KEEP = new Set([
 	"editor.repair.applied",
 	"editor.heal.applied",
 	"editor.bind",
-	"device.witness.diverged",
 	"disk.modify.observed",
 	"disk.create.observed",
 	"disk.write.ok",

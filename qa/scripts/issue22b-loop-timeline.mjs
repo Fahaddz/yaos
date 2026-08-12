@@ -61,9 +61,6 @@ for (const ev of events) {
 		size: ev.kind === "disk.modify.observed" ? (d.size ?? "") : "",
 		extra: "",
 	};
-	if (ev.kind === "device.witness.diverged") {
-		row.extra = `crdt=${(d.crdtHash ?? "").slice(0, 12)} disk=${(d.diskHash ?? "").slice(0, 12)} originClass=${d.originClass ?? ""} fileOpen=${d.fileOpen ?? ""}`;
-	}
 	if (ev.kind === "editor.repair.applied") {
 		row.extra = `leaf=${d.leafId?.slice(0, 8) ?? ""} cm=${d.cmId ?? ""} rapidSwitch=${d.rapidSwitch ?? ""}`;
 	}

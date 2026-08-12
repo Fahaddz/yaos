@@ -6,4 +6,4 @@
  * The loader checks the value before invoking telemetry.js, so a stale bundle
  * fails closed without affecting sync startup.
  */
-export const TELEMETRY_RUNTIME_ABI_VERSION = 2;
+export const TELEMETRY_RUNTIME_ABI_VERSION = 3;

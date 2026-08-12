@@ -207,7 +207,6 @@ console.log("\n--- Scenario 6: successful load returns runtime handle ---");
 		traceSink: { record: () => {}, recordPath: () => {} },
 		recordFlightPathEvent: () => {},
 		recordFlightEvent: () => {},
-		markWitnessDirty: () => {},
 		dispose: () => {},
 	};
 
@@ -220,7 +219,6 @@ console.log("\n--- Scenario 6: successful load returns runtime handle ---");
 					traceSink: { record: function() {}, recordPath: function() {} },
 					recordFlightPathEvent: function() {},
 					recordFlightEvent: function() {},
-					markWitnessDirty: function() {},
 					dispose: function() {},
 				};
 			};

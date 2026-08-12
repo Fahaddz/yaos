@@ -10,7 +10,7 @@
  * Every method in this interface either:
  *   - Mutates CRDT/disk state outside normal sync flow
  *   - Controls network behavior for scenario orchestration
- *   - Advances scenario machinery (step indices, run IDs)
+ *   - Emits scenario lifecycle phase markers
  *   - Pauses/resumes internal subsystems for observation
  *
  * The __qaOnly prefix convention is preserved for grep-ability.
@@ -40,27 +40,14 @@ export interface YaosUnsafeQaPort {
 	// --- Network control ---
 	setQaNetworkHold(mode: "offline" | "online"): void;
 
-	// --- Scenario machinery ---
-	__qaOnlySetScenarioRunIdUnsafe?(scenarioRunId: string, scenarioId: string): void;
-	__qaOnlyAdvanceScenarioStepUnsafe?(stepIndex: number, label?: string): void;
+	// --- Scenario phase markers ---
 	__qaOnlyEmitPhaseUnsafe(phase: "setup" | "run" | "assert" | "cleanup"): Promise<void>;
-
-	// --- Witness control ---
-	__qaOnlyClearWitnessSuppressionUnsafe?(path: string): void;
-	__qaOnlyTriggerWitnessDirtyUnsafe?(path: string): void;
 
 	// --- Policy override ---
 	setExternalEditPolicyOverride(
 		policy: "always" | "closed-only" | "never" | null,
 	): Promise<{ previous: "always" | "closed-only" | "never" }>;
 
-	// --- Witness observation (read-only but QA-specific) ---
-	witnessDeviceSettled(
-		path: string,
-		options: { expectedContent?: string; expectedStateHash?: string; timeoutMs: number },
-	): Promise<void>;
-	computeWitnessStateHash(content: string): Promise<string>;
+	// --- Device identity (read-only but QA-specific) ---
 	getDeviceId(): string;
-	getWitnessBuffer?(): ReadonlyArray<unknown> | undefined;
-	currentWitnessSeq?(): number;
 }

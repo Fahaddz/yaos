@@ -248,9 +248,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			log: (message) => this.log(message),
 			recordFlightEvent: (event) => this.recordFlightEvent(event as import("./telemetry/debug/flightEvents").FlightEventInput),
 			recordFlightPathEvent: (event) => this.recordFlightPathEvent(event),
-			computeRecoveryStateHash: async (_path, content) => {
-				return this.lab?.computeWitnessStateHash(content) ?? null;
-			},
 			getEffectiveExternalEditPolicy: (runtimePolicy) => {
 				if (__YAOS_QA_HARNESS_ENABLED__) {
 					const override = this._qaState?.externalEditPolicyOverride;
@@ -495,8 +492,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 							getActiveMarkdownPaths: () => vs.getActiveMarkdownPaths(),
 							getRecentEvents: (limit?: number) => vs.getRecentEvents(limit),
 							getSafeReconcileMode: () => vs.getSafeReconcileMode(),
-							observeMetaChanges: (cb) => vs.observeMetaChanges(cb),
-							observePathContentChanges: (cb) => vs.observePathContentChanges(cb),
 						};  // satisfies SyncReadPort — narrower union types on VaultSync are compatible
 					},
 					getTraceSink: () => this.traceSink,
@@ -513,20 +508,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 								pendingDownloads: blobSync.pendingDownloads,
 							}
 							: null;
-					},
-					getEditorSample: (path) => {
-						try {
-							const leaf = this.app.workspace.getLeavesOfType("markdown").find(
-								(candidate) => (candidate.view as MarkdownView).file?.path === path,
-							);
-							if (!leaf) return { kind: "not_open" as const, content: null };
-							return {
-								kind: "healthy_sampled" as const,
-								content: (leaf.view as MarkdownView).editor?.getValue() ?? null,
-							};
-						} catch {
-							return { kind: "not_open" as const, content: null };
-						}
 					},
 					getEventRing: () => this.eventRing,
 					getRecentServerTrace: () => this.traceRuntime?.getRecentServerTrace() ?? [],
@@ -827,9 +808,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				} else {
 					this.diskIndex[path] = { mtime: 0, size: 0, contentHash };
 				}
-				// Req 17.2: mark dirty after post-readback verification succeeds.
-				// contentHash is baselineHash-domain — NOT published as diskHash.
-				this.lab?.markWitnessDirty(path, "disk-write");
 			});
 
 			// 4b. BlobSyncManager (if attachment sync is enabled)
@@ -2047,7 +2025,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		// so a late init continuation cannot attach a replacement runtime.
 		this.teardownLifecycle.requestPermanentShutdown();
 		this.log("Unloading plugin");
-		this.lab?.dispose();   // dispose stops flight trace, witness, and QA API
+		this.lab?.dispose();   // dispose stops the flight trace and QA API
 		void this.traceRuntime?.shutdown();
 		document.body.removeClass("vault-crdt-show-cursors");
 		// Remove plugin-owned debug global to prevent stale API references
@@ -2416,12 +2394,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		if (!this.settings.qaDebugMode) return;
 		// window.__YAOS_DEBUG__ is the Puppeteer harness API.
 		// It is NOT part of the production telemetry runtime (telemetry.js).
-		// The Puppeteer harness (qa/harness/installPuppeteerRuntime.ts) mounts
-		// it when loaded externally for QA scenarios.
+		// The QA harness plugin (qa/obsidian-harness/main.ts) mounts it when
+		// installed alongside this plugin for QA scenarios.
 		// In this product build, no mutation API is available — log explicitly
 		// so developers know what happened instead of silently finding no API.
-		this.log("qaDebugMode enabled, but window.__YAOS_DEBUG__ is not mounted by this build. Load the Puppeteer harness from qa/harness/ to get the QA debug API.");
-		new Notice("YAOS: qaDebugMode active — QA debug API not available in this build. See qa/harness/.", 8000);
+		this.log("qaDebugMode enabled, but window.__YAOS_DEBUG__ is not mounted by this build. Install the QA harness plugin (qa/obsidian-harness/main.ts) to get the QA debug API.");
+		new Notice("YAOS: qaDebugMode active — QA debug API not available in this build. See qa/obsidian-harness/.", 8000);
 	}
 
 	private async exportFlightTraceForApi(privacy: "safe" | "full"): Promise<string | null> {

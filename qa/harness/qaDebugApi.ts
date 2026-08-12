@@ -14,7 +14,6 @@
  */
 
 import type { App, MarkdownView } from "obsidian";
-import { Notice } from "obsidian";
 import type { VaultSync } from "../../src/sync/vaultSync";
 import type { ReconciliationController } from "../../src/runtime/reconciliationController";
 import type { ConnectionController } from "../../src/runtime/connectionController";
@@ -192,36 +191,6 @@ export interface YaosQaDebugApi {
 	__qaOnlyEmitPhaseUnsafe(phase: "setup" | "run" | "assert" | "cleanup"): Promise<void>;
 
 	/**
-	 * Wait for a NEW device.witness.settled event for a path emitted AFTER
-	 * this call begins. Pre-existing settled events in the buffer are ignored.
-	 *
-	 * This is NOT a current-state check. It proves that the device freshly
-	 * converged after the call was made. If the device already settled before
-	 * this call, trigger a new dirty event first (e.g. via markDirty or a
-	 * real file operation) so the tracker re-evaluates.
-	 *
-	 * Rejects if:
-	 *   - no active flight trace (reason: no_active_trace)
-	 *   - both expectedContent and expectedStateHash provided (reason: usage_error)
-	 *   - a device.witness.diverged event arrives after wait start
-	 *   - timeoutMs elapses without a matching settled event
-	 */
-	witnessDeviceSettled(
-		path: string,
-		options: {
-			expectedContent?: string;
-			expectedStateHash?: string;
-			timeoutMs: number;
-		},
-	): Promise<void>;
-
-	/**
-	 * Compute the witness-domain stateHash for a given content string.
-	 * Uses the active trace's salt. Rejects if no trace is active.
-	 */
-	computeWitnessStateHash(content: string): Promise<string>;
-
-	/**
 	 * Phase 2: Get the stable local deviceId for this device.
 	 * Constant for the duration of the active flight trace session.
 	 */
@@ -232,7 +201,6 @@ export interface YaosQaDebugApi {
 	 * Returns null if no trace is active.
 	 * qaTraceSecretHash is SHA-256("yaos-qa-trace-secret:" + qaTraceSecret).
 	 * hasQaTraceSecret is false when no qaTraceSecret is set.
-	 * scenarioRunId/scenarioId are null when not set via Set scenario run ID command.
 	 */
 	getActiveTraceInfo(): {
 		localTraceId: string;
@@ -241,72 +209,12 @@ export interface YaosQaDebugApi {
 		qaTraceSecretHash: string;
 		deviceId: string;
 		hasQaTraceSecret: boolean;
-		scenarioRunId: string | null;
-		scenarioId: string | null;
 	} | null;
 
 	/**
 	 * Phase 2: Get the current runtime state for mobile-background detection.
 	 */
 	getRuntimeState(): "foreground" | "background" | "suspended" | "unknown";
-
-	/**
-	 * Phase 2: Read the in-memory witness buffer (for cross-device primitives).
-	 * Returns undefined if no tracker is active.
-	 */
-	getWitnessBuffer?(): ReadonlyArray<import("../../src/telemetry/diagnostics/deviceWitnessTracker").WitnessBufferEntry> | undefined;
-
-	/**
-	 * Phase 2: Current local witness seq (for seq-anchoring in cross-device primitives).
-	 */
-	currentWitnessSeq?(): number;
-
-	/**
-	 * Phase 2: Read witness checkpoint segments for a traceId through this device's
-	 * QA debug API. The desktop controller calls this once per device with that
-	 * device's handle — devices never read each other's filesystem (Requirement 26).
-	 */
-	readWitnessCheckpoint?(traceId: string): Promise<{
-		segments: Array<{ index: number; content: string }>;
-		deviceId: string;
-		status: "ok" | "tracker_inactive" | "trace_not_found";
-	}>;
-
-	/**
-	 * Phase 2: Export in-memory witness segments as a single NDJSON string.
-	 * Use this for manual mobile/desktop export when CDP is not available.
-	 * Returns null if no tracker is active or no segments exist.
-	 */
-	exportWitnessSegments?(traceId: string): string | null;
-
-	/**
-	 * QA-ONLY. Unsafe. Clear witness suppression for a path so the tracker
-	 * re-emits a settled event on the next markDirty even if content is unchanged.
-	 * Use before triggering dirty in witnessQuorum setup.
-	 */
-	__qaOnlyClearWitnessSuppressionUnsafe?(path: string): void;
-
-	/**
-	 * QA-ONLY. Unsafe. Trigger a witness dirty event for a path.
-	 * Use after clearing suppression to force re-evaluation.
-	 */
-	__qaOnlyTriggerWitnessDirtyUnsafe?(path: string): void;
-
-	/**
-	 * Phase 3: Set the cross-device scenario run identity.
-	 * Must be called before any witness event is emitted under the run.
-	 * No-op if no flight trace is active.
-	 */
-	__qaOnlySetScenarioRunIdUnsafe?(scenarioRunId: string, scenarioId: string): void;
-
-	/**
-	 * Phase 3: Advance the scenario step index.
-	 * stepIndex must be a non-negative integer strictly greater than the current step.
-	 * Requires scenarioRunId to be set first.
-	 * Emits a qa.scenario.step flight event.
-	 * No-op if no flight trace is active.
-	 */
-	__qaOnlyAdvanceScenarioStepUnsafe?(stepIndex: number, label?: string): void;
 
 	/**
 	 * QA-ONLY. Unsafe.
@@ -360,9 +268,6 @@ interface PluginHandle {
 	runReconciliation(): Promise<void>;
 	disconnectProvider(reason?: string): void;
 	connectProvider(reason?: string): void;
-	getDeviceWitnessTracker?(): import("../../src/telemetry/diagnostics/deviceWitnessTracker").DeviceWitnessTracker | null;
-	/** Scenario state controller (Puppeteer-owned). */
-	getScenarioController?(): import("./scenarioStateController").ScenarioStateController | null;
 	/** SHA-256 hash of the active qaTraceSecret, computed at trace start. */
 	getQaTraceSecretHash?(): string | null;
 	/** Engine control port — present when Puppeteer harness is active. */
@@ -416,21 +321,6 @@ function readReceiptWaitState(vaultSync: VaultSync | null): ReceiptWaitState | n
 export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 	const { app } = plugin;
 	const POLL_INTERVAL = 250;
-
-	/**
-	 * Copy external QA-harness scenario state into the passive witness tracker.
-	 * The tracker only records this annotation in telemetry; scenario control
-	 * remains owned by qa/harness and never alters sync state.
-	 */
-	function applyScenarioContextToTracker(): void {
-		const state = plugin.getScenarioController?.()?.getScenarioStepState();
-		plugin.getDeviceWitnessTracker?.()?.setScenarioContext({
-			scenarioRunId: state?.scenarioRunId ?? null,
-			scenarioId: state?.scenarioId ?? null,
-			stepIndex: state?.stepIndex ?? null,
-			stepLabel: state?.stepLabel,
-		});
-	}
 
 	async function sha256(text: string): Promise<string> {
 		return plugin.sha256Hex(text);
@@ -732,7 +622,6 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 				}
 			}
 			await plugin.startQaFlightTrace(mode);
-			applyScenarioContextToTracker();
 		},
 
 		async stopFlightTrace(): Promise<void> {
@@ -782,73 +671,6 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 			});
 		},
 
-		async witnessDeviceSettled(
-			path: string,
-			options: {
-				expectedContent?: string;
-				expectedStateHash?: string;
-				timeoutMs: number;
-			},
-		): Promise<void> {
-			if (options.expectedContent !== undefined && options.expectedStateHash !== undefined) {
-				throw Object.assign(new Error("witnessDeviceSettled: provide expectedContent OR expectedStateHash, not both"), { reason: "usage_error" });
-			}
-			const tracker = plugin.getDeviceWitnessTracker?.();
-			if (!tracker) {
-				throw Object.assign(new Error("witnessDeviceSettled: no active flight trace"), { reason: "no_active_trace" });
-			}
-
-			let expectedHash: string | undefined = options.expectedStateHash;
-			if (options.expectedContent !== undefined) {
-				expectedHash = await tracker.computeWitnessStateHash(options.expectedContent);
-			}
-
-			// Anchor: only consider events emitted after this call begins.
-			const startSeq = tracker.currentWitnessSeq();
-			const startTime = Date.now();
-
-			return new Promise((resolve, reject) => {
-				const check = () => {
-					const buf = tracker.getWitnessBuffer();
-					// Only consider events after startSeq.
-					for (const e of buf) {
-						if (e.seq <= startSeq) continue;
-						if (e.path !== path) continue;
-						if (e.kind === "diverged") {
-							reject(Object.assign(
-								new Error(`witnessDeviceSettled: diverged for ${path}: ${e.data.reason}`),
-								{ reason: e.data.reason, data: e.data },
-							));
-							return;
-						}
-						if (e.kind === "settled") {
-							if (expectedHash === undefined || e.data.stateHash === expectedHash) {
-								resolve();
-								return;
-							}
-						}
-					}
-					if (Date.now() - startTime >= options.timeoutMs) {
-						// Collect last known observation data after startSeq.
-						const last = [...buf].reverse().find((e) => e.path === path && e.seq > startSeq);
-						reject(Object.assign(new Error(`witnessDeviceSettled: timeout for ${path}`), {
-							reason: "timeout",
-							lastObserved: last?.data ?? null,
-						}));
-						return;
-					}
-					setTimeout(check, 250);
-				};
-				check();
-			});
-		},
-
-		async computeWitnessStateHash(content: string): Promise<string> {
-			const tracker = plugin.getDeviceWitnessTracker?.();
-			if (!tracker) throw Object.assign(new Error("computeWitnessStateHash: no active flight trace"), { reason: "no_active_trace" });
-			return tracker.computeWitnessStateHash(content);
-		},
-
 		getDeviceId(): string {
 			// deviceId is the stable local UUID from the active flight trace context
 			const ftc = plugin.getFlightTraceController();
@@ -860,8 +682,6 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 			const ctx = ftc?.context;
 			if (!ctx) return null;
 			const qaTraceSecretHash = plugin.getQaTraceSecretHash?.();
-			const scenarioCtrl = plugin.getScenarioController?.();
-			const scenarioState = scenarioCtrl?.getScenarioStepState();
 			const hash = qaTraceSecretHash ?? "";
 			const hasQaTraceSecret = hash.startsWith("sha256:");
 			return {
@@ -870,116 +690,14 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 				qaTraceSecretHash: hash,
 				deviceId: ctx.deviceId,
 				hasQaTraceSecret,
-				scenarioRunId: scenarioState?.scenarioRunId ?? null,
-				scenarioId: scenarioState?.scenarioId ?? null,
 			};
 		},
 
 		getRuntimeState(): "foreground" | "background" | "suspended" | "unknown" {
-			const tracker = plugin.getDeviceWitnessTracker?.();
-			if (!tracker) return "unknown";
-			return tracker.getRuntimeState();
-		},
-
-		getWitnessBuffer() {
-			return plugin.getDeviceWitnessTracker?.()?.getWitnessBuffer();
-		},
-
-		currentWitnessSeq() {
-			return plugin.getDeviceWitnessTracker?.()?.currentWitnessSeq() ?? 0;
-		},
-
-		__qaOnlyClearWitnessSuppressionUnsafe(path: string): void {
-			plugin.getDeviceWitnessTracker?.()?.clearSuppressionForPath(path);
-		},
-
-		__qaOnlyTriggerWitnessDirtyUnsafe(path: string): void {
-			plugin.getDeviceWitnessTracker?.()?.markDirty(path, "disk-write");
-		},
-
-		async readWitnessCheckpoint(traceId: string) {
-			const deviceId = api.getDeviceId();
-			const tracker = plugin.getDeviceWitnessTracker?.();
-			if (!tracker) {
-				return { segments: [], deviceId, status: "tracker_inactive" as const };
-			}
-			// Read from in-memory witness segment buffer (no filesystem)
-			const segments = tracker.getCheckpointSegments();
-			const filtered = segments.filter((seg) => {
-				const firstLine = seg.content.split("\n")[0];
-				if (!firstLine) return false;
-				try {
-					const header = JSON.parse(firstLine) as Record<string, unknown>;
-					return header.traceId === traceId;
-				} catch {
-					return false;
-				}
-			});
-			return {
-				segments: filtered,
-				deviceId,
-				status: filtered.length > 0 ? "ok" as const : "trace_not_found" as const,
-			};
-		},
-
-		exportWitnessSegments(traceId: string): string | null {
-			const tracker = plugin.getDeviceWitnessTracker?.();
-			if (!tracker) return null;
-			const segments = tracker.getCheckpointSegments().filter((seg) => {
-				const firstLine = seg.content.split("\n")[0];
-				if (!firstLine) return false;
-				try {
-					const header = JSON.parse(firstLine) as Record<string, unknown>;
-					return header.traceId === traceId;
-				} catch { return false; }
-			});
-			if (segments.length === 0) return null;
-			return segments.map((s) => s.content).join("");
-		},
-
-		__qaOnlySetScenarioRunIdUnsafe(scenarioRunId: string, scenarioId: string): void {
-			plugin.getScenarioController?.()?.setScenarioRunId(scenarioRunId, scenarioId);
-			applyScenarioContextToTracker();
-		},
-
-		__qaOnlyAdvanceScenarioStepUnsafe(stepIndex: number, label?: string): void {
-			const scenarioCtrl = plugin.getScenarioController?.();
-			if (!scenarioCtrl) return;
-			const state = scenarioCtrl.getScenarioStepState();
-			if (!state.scenarioRunId) {
-				new Notice("set scenarioRunId via 'YAOS QA: Set scenario run ID' first");
-				return;
-			}
-			if (!Number.isInteger(stepIndex) || stepIndex < 0) {
-				new Notice(`scenarioStepIndex must be a non-negative integer, got: ${stepIndex}`);
-				return;
-			}
-			if (state.stepIndex !== null && stepIndex <= state.stepIndex) {
-				new Notice(`scenarioStepIndex must be strictly greater than current (${state.stepIndex}), got: ${stepIndex}`);
-				return;
-			}
-			const ok = scenarioCtrl.advanceScenarioStep(stepIndex, label);
-			if (!ok) return;
-			applyScenarioContextToTracker();
-			// Emit qa.scenario.step flight event
-			plugin.getFlightTraceController()?.record({
-				priority: "important",
-				kind: FLIGHT_KIND.qaScenarioStep,
-				severity: "info",
-				scope: "diagnostics",
-				source: "diagnostics",
-				layer: "diagnostics",
-				mono: performance.now(),
-				data: {
-					scenarioRunId: state.scenarioRunId,
-					scenarioId: state.scenarioId,
-					scenarioStepIndex: stepIndex,
-					stepLabel: label,
-					deviceId: api.getDeviceId(),
-					monotonicMs: performance.now(),
-					enteredAt: new Date().toISOString(),
-				},
-			});
+			const visibility = typeof document === "undefined" ? undefined : document.visibilityState;
+			if (visibility === "visible") return "foreground";
+			if (visibility === "hidden") return "background";
+			return "unknown";
 		},
 	};
 

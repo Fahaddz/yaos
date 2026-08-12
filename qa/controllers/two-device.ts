@@ -26,51 +26,8 @@ import { RawCdpObsidianClient } from "./obsidian-client-raw-cdp";
 import { ArtifactCollector } from "./collect-artifacts";
 import { analyzeTrace } from "../analyzers/analyzer";
 import { formatReport } from "../analyzers/report";
-import { runS11a } from "../obsidian-harness/scenarios/s11a-passive-stale-echo-witness";
-import { runS11b } from "../obsidian-harness/scenarios/s11b-disable-reenable-witness";
-import type { DeviceHandle, WitnessDeviceApi } from "../obsidian-harness/witness-primitives";
-import type {
-	ReceiptSnapshot,
-	ReceiptWaitCheckpoint,
-	YaosQaDebugApi,
-} from "../harness/qaDebugApi";
-import type { WitnessBufferEntry } from "../../src/diagnostics/deviceWitnessTracker";
-
 /** Union type for either client implementation. */
 type AnyObsidianClient = ObsidianClient | RawCdpObsidianClient;
-
-/**
- * Controller-side transport API for a CDP-connected device.
- *
- * This is deliberately distinct from the synchronous renderer API: a checkpoint
- * crosses the CDP boundary, so callers must await it before passing it to the
- * checkpoint wait method.
- */
-type CdpDeviceBridge = Partial<
-	Omit<YaosQaDebugApi, "captureReceiptCheckpoint" | "getReceiptSnapshot">
-> & WitnessDeviceApi & {
-	captureReceiptCheckpoint(): Promise<ReceiptWaitCheckpoint>;
-	waitForReceiptAfterCheckpoint(
-		checkpoint: ReceiptWaitCheckpoint,
-		timeoutMs: number,
-	): Promise<void>;
-	getReceiptSnapshot(): Promise<ReceiptSnapshot>;
-	computeWitnessStateHash(content: string): Promise<string>;
-	ingestDiskFileNow(path: string, reason?: "create" | "modify"): Promise<void>;
-	pauseEditorPropagation(path: string): Promise<boolean>;
-	resumeEditorPropagation(path: string): Promise<boolean>;
-	setExternalEditPolicyOverride(
-		policy: "always" | "closed-only" | "never" | null,
-	): Promise<{ previous: "always" | "closed-only" | "never" }>;
-	[key: string]: unknown;
-};
-
-type Assert<T extends true> = T;
-type _CdpCheckpointCaptureIsAsync = Assert<
-	ReturnType<CdpDeviceBridge["captureReceiptCheckpoint"]> extends Promise<ReceiptWaitCheckpoint>
-		? true
-		: false
->;
 
 function createClient(driver: string, port: number): AnyObsidianClient {
 	if (driver === "raw-cdp") {
@@ -354,113 +311,6 @@ async function s10fConvergence(
 		log("Final: active == passive hash ✓");
 	}
 }
-
-// -----------------------------------------------------------------------
-// CDP → DeviceHandle bridge for Phase 2 witness primitives
-// -----------------------------------------------------------------------
-
-/**
- * Wrap a CDP client as a DeviceHandle for Phase 2 witness primitives.
- * All renderer debug operations are proxied through evalRaw into Obsidian.
- */
-function makeCdpDeviceHandle(
-	client: AnyObsidianClient,
-	deviceId: string,
-): DeviceHandle<CdpDeviceBridge> {
-	const api: CdpDeviceBridge = {
-		// Readiness
-		isLocalReady: () => false,
-		isProviderSynced: () => false,
-		isProviderConnected: () => false,
-		isReconciled: () => false,
-		isReconcileInFlight: () => false,
-		disconnectProvider: () => {},
-		connectProvider: () => {},
-		setQaNetworkHold: () => {},
-		waitForLocalReady: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForLocalReady(${t})`),
-		waitForProviderSynced: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForProviderSynced(${t})`),
-		waitForProviderDisconnected: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForProviderDisconnected(${t})`),
-		waitForReconciled: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForReconciled(${t})`),
-		waitForIdle: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(${t})`),
-		waitForReceiptAfter: (ts, t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForReceiptAfter(${ts}, ${t})`),
-		// Keep the transport asynchronous: consumers must await this snapshot
-		// before starting the checkpoint wait, rather than serializing a Promise.
-		captureReceiptCheckpoint: (): Promise<ReceiptWaitCheckpoint> =>
-			client.evalRaw<ReceiptWaitCheckpoint>(`window.__YAOS_DEBUG__?.captureReceiptCheckpoint()`),
-		waitForReceiptAfterCheckpoint: (checkpoint, t): Promise<void> => client.evalRaw(
-			`window.__YAOS_DEBUG__?.waitForReceiptAfterCheckpoint(${JSON.stringify(checkpoint)}, ${t})`,
-		),
-		waitForMemoryReceipt: (t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForMemoryReceipt(${t})`),
-		waitForFile: (p, t) => client.evalRaw(`window.__YAOS_DEBUG__?.waitForFile(${JSON.stringify(p)}, ${t})`),
-		getReceiptSnapshot: (): Promise<ReceiptSnapshot> =>
-			client.evalRaw<ReceiptSnapshot>(`window.__YAOS_DEBUG__?.getReceiptSnapshot()`),
-		getDiskHash: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.getDiskHash(${JSON.stringify(p)})`),
-		getCrdtHash: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.getCrdtHash(${JSON.stringify(p)})`),
-		getEditorHash: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.getEditorHash(${JSON.stringify(p)})`),
-		getActiveMarkdownPaths: () => [],
-		getDiskMarkdownPaths: () => [],
-		getEditorBindingHealth: () => ({ leafOpen: false, bound: false, hasSyncFacet: false, yTextMatchesExpected: null, healthy: false, settling: false, issues: [] }),
-		getServerReceiptState: () => "no-candidate",
-		getConnectionState: () => "unknown",
-		startFlightTrace: (m, s) => client.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace(${JSON.stringify(m)}, ${JSON.stringify(s)})`),
-		stopFlightTrace: () => client.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`),
-		exportFlightTrace: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.exportFlightTrace(${JSON.stringify(p)})`),
-		forceReconcile: () => client.evalRaw(`window.__YAOS_DEBUG__?.forceReconcile()`),
-		forceReconnect: () => { void client.evalRaw(`window.__YAOS_DEBUG__?.forceReconnect()`); },
-		__qaOnlyForceCrdtContentUnsafe: (p, c, o) => client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyForceCrdtContentUnsafe(${JSON.stringify(p)}, ${JSON.stringify(c)}, ${JSON.stringify(o)})`),
-		ingestDiskFileNow: (p, r) => client.evalRaw(`window.__YAOS_DEBUG__?.ingestDiskFileNow(${JSON.stringify(p)}, ${JSON.stringify(r)})`),
-		pauseEditorPropagation: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.pauseEditorPropagation(${JSON.stringify(p)})`),
-		resumeEditorPropagation: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.resumeEditorPropagation(${JSON.stringify(p)})`),
-		setExternalEditPolicyOverride: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.setExternalEditPolicyOverride(${JSON.stringify(p)})`),
-		__qaOnlyEmitPhaseUnsafe: (p) => client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyEmitPhaseUnsafe(${JSON.stringify(p)})`),
-		witnessDeviceSettled: (p, o) => client.evalRaw(`window.__YAOS_DEBUG__?.witnessDeviceSettled(${JSON.stringify(p)}, ${JSON.stringify(o)})`),
-		computeWitnessStateHash: (c) => client.evalRaw(`window.__YAOS_DEBUG__?.computeWitnessStateHash(${JSON.stringify(c)})`),
-		getDeviceId: () => deviceId,
-		getActiveTraceInfo: () => null, // populated below via async call
-		getRuntimeState: () => "foreground",
-		getWitnessBuffer: () => undefined, // populated below via async polling
-		currentWitnessSeq: () => 0,
-	};
-
-	// Override getActiveTraceInfo and getWitnessBuffer with live CDP reads
-	// These are called synchronously by primitives, so we cache the last polled value
-	let cachedTraceInfo: ReturnType<YaosQaDebugApi["getActiveTraceInfo"]> = null;
-	let cachedBuffer: ReadonlyArray<WitnessBufferEntry> = [];
-	let cachedSeq = 0;
-
-	// Poll witness buffer every 200ms while scenario is running
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-	const startPolling = () => {
-		if (pollTimer) return;
-		pollTimer = setInterval(() => {
-			void client.evalRaw<ReturnType<YaosQaDebugApi["getActiveTraceInfo"]>>(
-				`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`,
-			).then((info) => { if (info) cachedTraceInfo = info; }).catch(() => {});
-
-			void client.evalRaw<ReadonlyArray<WitnessBufferEntry>>(
-				`window.__YAOS_DEBUG__?.getWitnessBuffer() ?? []`,
-			).then((buf) => { if (buf) cachedBuffer = buf; }).catch(() => {});
-
-			void client.evalRaw<number>(
-				`window.__YAOS_DEBUG__?.currentWitnessSeq() ?? 0`,
-			).then((seq) => { if (typeof seq === "number") cachedSeq = seq; }).catch(() => {});
-		}, 200);
-	};
-
-	const stopPolling = () => {
-		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-	};
-
-	(api as unknown as Record<string, unknown>).getActiveTraceInfo = () => cachedTraceInfo;
-	(api as unknown as Record<string, unknown>).getWitnessBuffer = () => cachedBuffer;
-	(api as unknown as Record<string, unknown>).currentWitnessSeq = () => cachedSeq;
-	(api as unknown as Record<string, unknown>)._startPolling = startPolling;
-	(api as unknown as Record<string, unknown>)._stopPolling = stopPolling;
-
-	return { deviceId, api };
-}
-
 // -----------------------------------------------------------------------
 // Two-device scenario definitions
 // -----------------------------------------------------------------------
@@ -2284,899 +2134,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 	},
 
 	/**
-	 * s11a-passive-stale-echo-witness (Layer 4 Phase 2, Requirement 13)
-	 *
-	 * Three explicit phases:
-	 *   Phase A -- preBurstBaseline: both devices witness initial hash
-	 *   Phase B -- activeBurst: negative-window checks (no stale/recovery/editor divergences)
-	 *   Phase C -- postBurstConvergence: Device A witnesses final hash locally first,
-	 *              then both devices eventually converge to that hash
-	 *
-	 * Expected final hash is derived from Device A's LOCAL witness (CRDT+disk+editor agree),
-	 * not from disk content alone.
-	 */
-	"s11a-passive-stale-echo-witness": async (a, b, log) => {
-		const errors: string[] = [];
-		const scratch = "QA-scratch/s11a-witness.md";
-		const SENTINEL = "SENTINEL_S11A_X9K7";
-		const INITIAL = `# S11a Witness\n\nBEFORE\n${SENTINEL}\nAFTER\n`;
-
-		// ── Setup: start trace with shared secret ────────────────────────
-
-		const QA_SECRET = `s11a-${Date.now()}`;
-		log(`s11a: starting qa-safe flight trace with shared secret (length=${QA_SECRET.length})...`);
-
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-			await client.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe", ${JSON.stringify(QA_SECRET)})`);
-			log(`s11a: trace started on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 800));
-
-		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
-		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
-		log(`s11a: deviceA=${deviceIdA}, deviceB=${deviceIdB}`);
-
-		const handleA = makeCdpDeviceHandle(a, deviceIdA ?? "device-a");
-		const handleB = makeCdpDeviceHandle(b, deviceIdB ?? "device-b");
-		const startPollingA = (handleA.api as unknown as Record<string, unknown>)._startPolling as () => void;
-		const startPollingB = (handleB.api as unknown as Record<string, unknown>)._startPolling as () => void;
-		const stopPollingA = (handleA.api as unknown as Record<string, unknown>)._stopPolling as () => void;
-		const stopPollingB = (handleB.api as unknown as Record<string, unknown>)._stopPolling as () => void;
-
-		startPollingA();
-		startPollingB();
-		log("s11a: waiting for witness buffer polling to prime...");
-		await new Promise((r) => setTimeout(r, 800));
-
-		const traceInfoA = (handleA.api as unknown as Record<string, unknown>).getActiveTraceInfo as () => unknown;
-		const traceInfoB = (handleB.api as unknown as Record<string, unknown>).getActiveTraceInfo as () => unknown;
-		const infoA = traceInfoA();
-		const infoB = traceInfoB();
-		log(`s11a: traceInfo A=${JSON.stringify(infoA)}`);
-		log(`s11a: traceInfo B=${JSON.stringify(infoB)}`);
-
-		if (!infoA || !infoB) {
-			errors.push("s11a: trace identity not available");
-			stopPollingA(); stopPollingB();
-			return { passedA: false, passedB: false, errors };
-		}
-
-		// ── Create and open test file ─────────────────────────────────────
-
-		log("s11a: creating test file on Device A...");
-		await a.evalRaw(`window.__YAOS_QA__?.createFile(${JSON.stringify(scratch)}, ${JSON.stringify(INITIAL)})`);
-		await a.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(15000)`);
-		await b.evalRaw(`window.__YAOS_DEBUG__?.waitForFile(${JSON.stringify(scratch)}, 20000)`);
-		await b.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(10000)`);
-		await new Promise((r) => setTimeout(r, 3000));
-
-		const fileIdA = await a.evalRaw<string | null>(`app.plugins.plugins['yaos']?.vaultSync?.getFileId(${JSON.stringify(scratch)}) ?? null`);
-		const fileIdB = await b.evalRaw<string | null>(`app.plugins.plugins['yaos']?.vaultSync?.getFileId(${JSON.stringify(scratch)}) ?? null`);
-		log(`s11a: fileId A=${fileIdA}, B=${fileIdB}`);
-
-		if (!fileIdA || !fileIdB) {
-			errors.push(`s11a: fileId not available -- A=${fileIdA}, B=${fileIdB}`);
-			stopPollingA(); stopPollingB();
-			return { passedA: false, passedB: false, errors };
-		}
-
-		log("s11a: opening file on both devices...");
-		await a.evalRaw(`window.__YAOS_QA__?.openFile(${JSON.stringify(scratch)})`);
-		await b.evalRaw(`window.__YAOS_QA__?.openFile(${JSON.stringify(scratch)})`);
-		await a.evalRaw(`window.__YAOS_QA__?.waitForCrdtBinding(${JSON.stringify(scratch)}, 10000)`);
-		await b.evalRaw(`window.__YAOS_QA__?.waitForCrdtBinding(${JSON.stringify(scratch)}, 10000)`);
-		await new Promise((r) => setTimeout(r, 2000));
-
-		// ── Pre-burst dirty trigger (anchors quorum start seq) ────────────
-
-		const triggerPreBurstDirty = async () => {
-			await new Promise((r) => setTimeout(r, 300));
-			await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-			await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-			await new Promise((r) => setTimeout(r, 2500));
-			const seqA = await a.evalRaw<number>(`window.__YAOS_DEBUG__?.currentWitnessSeq?.() ?? -1`);
-			const seqB = await b.evalRaw<number>(`window.__YAOS_DEBUG__?.currentWitnessSeq?.() ?? -1`);
-			log(`s11a: pre-burst dirty -- seqA=${seqA} seqB=${seqB}`);
-		};
-
-		// ── Run s11a with three explicit phases ───────────────────────────
-
-		log("s11a: running three-phase witness scenario...");
-		const [result] = await Promise.all([
-			runS11a({
-				deviceA: handleA,
-				deviceB: handleB,
-				path: scratch,
-				initialContent: INITIAL,
-				burstWindowMs: 30_000,
-				quorumTimeoutMs: 30_000,
-				minStableAfterMs: 1000,
-				performBurst: async (_deviceA, _path) => {
-					log("s11a: Phase B -- Device A deleting sentinel and typing in bursts...");
-					await a.evalRaw(`
-						(function() {
-							const editor = app.workspace.activeEditor?.editor;
-							if (!editor) return;
-							const doc = editor.getValue();
-							const idx = doc.indexOf(${JSON.stringify(SENTINEL)});
-							if (idx === -1) return;
-							const lineStart = doc.lastIndexOf("\\n", idx - 1) + 1;
-							let lineEnd = doc.indexOf("\\n", idx);
-							if (lineEnd === -1) lineEnd = doc.length; else lineEnd += 1;
-							editor.replaceRange("", editor.offsetToPos(lineStart), editor.offsetToPos(lineEnd));
-						})()
-					`);
-					const burstEnd = performance.now() + 28_000;
-					let i = 0;
-					while (performance.now() < burstEnd) {
-						await a.evalRaw(`
-							(function() {
-								const editor = app.workspace.activeEditor?.editor;
-								if (!editor) return;
-								editor.replaceRange(" x${i}", editor.getCursor());
-							})()
-						`);
-						i++;
-						await new Promise((r) => setTimeout(r, 1500));
-					}
-					log("s11a: burst typing complete, waiting for Device A to locally witness final state...");
-
-					// Wait for Device A to locally witness the final state (CRDT+disk+editor agree).
-					// This is the correct source for the cross-device convergence target.
-					// Clear suppression so A re-evaluates even if content hasn't changed.
-					await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-					await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-
-					// Wait for A's tracker to emit settled (up to 10s)
-					let finalHashWitnessedByA = "";
-					const anchorSeqA = await a.evalRaw<number>(`window.__YAOS_DEBUG__?.currentWitnessSeq?.() ?? 0`);
-					const waitStart = performance.now();
-					while (performance.now() - waitStart < 10_000) {
-						await new Promise((r) => setTimeout(r, 300));
-						const buf = await a.evalRaw<Array<{ kind: string; seq: number; data: Record<string, unknown> }>>(
-							`JSON.parse(JSON.stringify(window.__YAOS_DEBUG__?.getWitnessBuffer?.() ?? []))`
-						);
-						if (!buf) break;
-						const newSettled = buf.filter((e) => e.kind === "settled" && e.seq > anchorSeqA);
-						if (newSettled.length > 0) {
-							const latest = newSettled[newSettled.length - 1]!;
-							finalHashWitnessedByA = String(latest.data.stateHash ?? "");
-							log(`s11a: Device A locally witnessed final hash ${finalHashWitnessedByA} at seq=${latest.seq}`);
-							break;
-						}
-					}
-
-					if (!finalHashWitnessedByA) {
-						log("s11a: WARNING -- Device A did not witness a final settled hash within 10s");
-						// Fallback: read from witness segments
-						const traceId = (infoA as Record<string, unknown>).traceId as string | undefined;
-						if (traceId) {
-							const segs = await a.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments(${JSON.stringify(traceId)}) ?? null`);
-							if (segs) {
-								for (const line of segs.split("\n").reverse()) {
-									try {
-										const e = JSON.parse(line) as Record<string, unknown>;
-										if (e.kind === "device.witness.settled") {
-											finalHashWitnessedByA = String((e.data as Record<string, unknown>)?.stateHash ?? "");
-											log(`s11a: fallback -- final hash from segment: ${finalHashWitnessedByA}`);
-											break;
-										}
-									} catch { /* skip */ }
-								}
-							}
-						}
-					}
-
-					// Clear Device B's suppression so it re-evaluates when edits arrive
-					await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-					await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-					log(`s11a: Phase B complete. Final hash for Phase C: ${finalHashWitnessedByA || "(none)"}`);
-
-					return { finalHashWitnessedByA };
-				},
-			}),
-			triggerPreBurstDirty(),
-		]);
-
-		stopPollingA();
-		stopPollingB();
-
-		log(`s11a result: ${result.summary}`);
-		if (!result.ok) errors.push(`s11a failed: ${result.summary}`);
-
-		// ── Export both device segments with summary ──────────────────────
-		// If segment export is empty, embed the live-buffer events used for quorum
-		// so the report is self-contained and verifiable without the live process.
-
-		const traceId = (infoA as Record<string, unknown>).traceId as string | undefined;
-		const segmentSummaries: Record<string, unknown> = {};
-
-		for (const [client, label, devId] of [[a, "device-a", deviceIdA], [b, "device-b", deviceIdB]] as const) {
-			const ndjson = await client.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments(${JSON.stringify(traceId ?? "")}) ?? null`);
-			if (ndjson) {
-				try {
-					const { mkdirSync: mkdir, writeFileSync: write } = await import("fs");
-					mkdir("qa-runs/s11a", { recursive: true });
-					const outPath = `qa-runs/s11a/witness-${label}.ndjson`;
-					write(outPath, ndjson);
-					const lines = ndjson.split("\n").filter((l) => l.trim() && !l.includes("checkpoint.segment.header"));
-					let latestSettledHash = "";
-					let latestDivergenceReason = "";
-					let settledCount = 0;
-					let divergedCount = 0;
-					for (const line of lines) {
-						try {
-							const e = JSON.parse(line) as Record<string, unknown>;
-							if (e.kind === "device.witness.settled") { settledCount++; latestSettledHash = String((e.data as Record<string, unknown>)?.stateHash ?? ""); }
-							else if (e.kind === "device.witness.diverged") { divergedCount++; latestDivergenceReason = String((e.data as Record<string, unknown>)?.reason ?? ""); }
-						} catch { /* skip */ }
-					}
-					segmentSummaries[label] = { source: "exported_segments", status: "ok", path: outPath, eventCount: lines.length, settledCount, divergedCount, latestSettledHash, latestDivergenceReason };
-					log(`s11a: ${label} segments → ${outPath} (${settledCount} settled, ${divergedCount} diverged, latest hash=${latestSettledHash || "none"})`);
-				} catch (e) {
-					segmentSummaries[label] = { source: "exported_segments", status: "export_failed", error: String(e) };
-					log(`s11a: ${label} segment export failed: ${e}`);
-				}
-			} else {
-				// Segment export empty -- embed live-buffer events used for quorum so report is self-contained
-				const liveEvents = await client.evalRaw<Array<{ kind: string; seq: number; path: string; data: Record<string, unknown> }>>(
-					`JSON.parse(JSON.stringify((window.__YAOS_DEBUG__?.getWitnessBuffer?.() ?? []).filter(e => e.path === ${JSON.stringify(scratch)})))`
-				);
-				const trackerStatus = await client.evalRaw<string>(`
-					(function() {
-						const t = app.plugins.plugins['yaos']?.deviceWitnessTracker;
-						if (!t) return 'tracker_inactive';
-						return 'active_no_segments';
-					})()
-				`);
-				// Annotate each event with its role relative to the final hash
-				const finalHash = result.postBurst.finalHashWitnessedByA;
-				const annotatedEvents = (liveEvents ?? []).map((e) => ({
-					seq: e.seq,
-					kind: e.kind,
-					stateHash: String(e.data?.stateHash ?? ""),
-					role: e.kind === "settled"
-						? (String(e.data?.stateHash ?? "") === finalHash ? "final" : "intermediate")
-						: "diverged",
-					data: e.data,
-				}));
-				segmentSummaries[label] = {
-					source: "live_buffer",
-					status: trackerStatus,
-					deviceId: devId,
-					note: "segment export empty; live buffer embedded for postmortem verification",
-					eventsUsedForQuorum: annotatedEvents,
-					settledCount: annotatedEvents.filter((e) => e.kind === "settled").length,
-					divergedCount: annotatedEvents.filter((e) => e.kind === "diverged").length,
-					latestSettledHash: annotatedEvents.filter((e) => e.kind === "settled").at(-1)?.stateHash ?? "",
-				};
-				log(`s11a: ${label} segments -- status=${trackerStatus}, embedded ${annotatedEvents.length} live-buffer events (source=live_buffer)`);
-			}
-		}
-
-		// ── Emit dedicated Layer 4 report JSON ───────────────────────────
-
-		const layer4Report = {
-			scenario: "s11a-passive-stale-echo-witness",
-			acceptanceVersion: "s11a-three-phase-v1",
-			status: result.ok ? "current-pass" : "current-fail",
-			runAt: new Date().toISOString(),
-			deviceA: deviceIdA,
-			deviceB: deviceIdB,
-			ok: result.ok,
-			phases: {
-				A_preBurstBaseline: {
-					ok: result.preBurst.ok,
-					reason: result.preBurst.reason,
-					summary: result.preBurst.summary,
-				},
-				B_activeBurst: {
-					ok: result.activeBurst.ok,
-					noStaleOnB: { ok: result.activeBurst.noStaleOnB.ok, reason: result.activeBurst.noStaleOnB.reason },
-					noRecoveryOnB: { ok: result.activeBurst.noRecoveryOnB.ok, reason: result.activeBurst.noRecoveryOnB.reason },
-					editorStableOnA: { ok: result.activeBurst.editorStableOnA.ok, reason: result.activeBurst.editorStableOnA.reason },
-				},
-				C_postBurstConvergence: {
-					ok: result.postBurst.ok,
-					reason: result.postBurst.reason,
-					finalHashWitnessedByA: result.postBurst.finalHashWitnessedByA,
-					intermediateHashesOnB: result.postBurst.intermediateHashes[deviceIdB ?? ""] ?? [],
-					intermediateHashesOnA: result.postBurst.intermediateHashes[deviceIdA ?? ""] ?? [],
-					summary: result.postBurst.summary,
-					perDevice: result.postBurst.perDevice,
-				},
-			},
-			segmentSummaries,
-			note: "Layer 4 report is SEPARATE from legacy trace analyzer. Legacy analyzer PASS does not imply Layer 4 PASS.",
-		};
-
-		try {
-			const { mkdirSync: mkdir, writeFileSync: write } = await import("fs");
-			mkdir("qa-runs/s11a", { recursive: true });
-			const runId = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-			const reportPath = `qa-runs/s11a/layer4-report-${runId}.json`;
-			write(reportPath, JSON.stringify(layer4Report, null, 2));
-			// Also write latest (overwritten each run for convenience)
-			write("qa-runs/s11a/layer4-report.json", JSON.stringify(layer4Report, null, 2));
-			log(`s11a: Layer 4 report → ${reportPath}`);
-		} catch { /* best-effort */ }
-
-		log("NOTE: Legacy trace analyzer PASS ≠ Layer 4 scenario PASS. Check qa-runs/s11a/layer4-report.json for Layer 4 result.");
-
-		// ── Cleanup ───────────────────────────────────────────────────────
-
-		await a.evalRaw(`window.__YAOS_QA__?.closeFile(${JSON.stringify(scratch)})`).catch(() => {});
-		await b.evalRaw(`window.__YAOS_QA__?.closeFile(${JSON.stringify(scratch)})`).catch(() => {});
-		await a.evalRaw(`window.__YAOS_QA__?.deleteFile(${JSON.stringify(scratch)})`).catch(() => {});
-
-		return { passedA: errors.length === 0, passedB: errors.length === 0, errors };
-	},
-
-	/**
-	 * s11b-disable-reenable-witness (Layer 4 Phase 2, Requirement 14)
-	 *
-	 * Replicates Issue #22-B: disable/re-enable on Device B with concurrent
-	 * local-disk and remote edits. Proves conflict artifact preservation.
-	 *
-	 * Structure:
-	 *   1. Pre-disable baseline quorum
-	 *   2. Disable B, concurrent edits, re-enable B
-	 *   3. Wait for conflict artifact, compute actual hashes
-	 *   4. Quorum: both devices witness conflict artifact with expected hash
-	 *   5. Quorum: both devices witness original path with expected survivor hash
-	 *   6. Negative-window: no stale/recovery divergences during re-sync
-	 */
-	"s11b-disable-reenable-witness": async (a, b, log) => {
-		const errors: string[] = [];
-		const scratch = "QA-scratch/s11b-witness.md";
-		const INITIAL = "# S11b Witness\n\nOriginal content.\n";
-		const LOCAL_EDIT = "# S11b Witness\n\nOriginal content.\n\nEDITED LOCALLY ON B WHILE DISABLED. Marker S11B-LOCAL.\n";
-		const REMOTE_EDIT = "# S11b Witness\n\nOriginal content.\n\nEDITED REMOTELY ON A WHILE B DISABLED. Marker S11B-REMOTE.\n";
-
-		// ── Setup: start trace with shared secret ────────────────────────
-
-		const QA_SECRET = `s11b-${Date.now()}`;
-		log(`s11b: starting qa-safe flight trace (secret length=${QA_SECRET.length})...`);
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-			await client.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe", ${JSON.stringify(QA_SECRET)})`);
-			log(`s11b: trace started on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 800));
-
-		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
-		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
-		log(`s11b: deviceA=${deviceIdA}, deviceB=${deviceIdB}`);
-
-		const handleA = makeCdpDeviceHandle(a, deviceIdA ?? "device-a");
-		const handleB = makeCdpDeviceHandle(b, deviceIdB ?? "device-b");
-		const startPollingA = (handleA.api as unknown as Record<string, unknown>)._startPolling as () => void;
-		const startPollingB = (handleB.api as unknown as Record<string, unknown>)._startPolling as () => void;
-		const stopPollingA = (handleA.api as unknown as Record<string, unknown>)._stopPolling as () => void;
-		const stopPollingB = (handleB.api as unknown as Record<string, unknown>)._stopPolling as () => void;
-		startPollingA(); startPollingB();
-		await new Promise((r) => setTimeout(r, 800));
-
-		const infoA = ((handleA.api as unknown as Record<string, unknown>).getActiveTraceInfo as () => unknown)();
-		log(`s11b: traceInfo A=${JSON.stringify(infoA)}`);
-		if (!infoA) {
-			errors.push("s11b: trace identity not available");
-			stopPollingA(); stopPollingB();
-			return { passedA: false, passedB: false, errors };
-		}
-
-		// ── Create test file ──────────────────────────────────────────────
-
-		log("s11b: creating test file on Device A...");
-		await a.evalRaw(`window.__YAOS_QA__?.createFile(${JSON.stringify(scratch)}, ${JSON.stringify(INITIAL)})`);
-		await a.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(15000)`);
-		await b.evalRaw(`window.__YAOS_DEBUG__?.waitForFile(${JSON.stringify(scratch)}, 20000)`);
-		await b.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(10000)`);
-		await new Promise((r) => setTimeout(r, 3000));
-
-		const fileIdA = await a.evalRaw<string | null>(`app.plugins.plugins['yaos']?.vaultSync?.getFileId(${JSON.stringify(scratch)}) ?? null`);
-		const fileIdB = await b.evalRaw<string | null>(`app.plugins.plugins['yaos']?.vaultSync?.getFileId(${JSON.stringify(scratch)}) ?? null`);
-		log(`s11b: fileId A=${fileIdA}, B=${fileIdB}`);
-		if (!fileIdA || !fileIdB) {
-			errors.push(`s11b: fileId not available -- A=${fileIdA}, B=${fileIdB}`);
-			stopPollingA(); stopPollingB();
-			return { passedA: false, passedB: false, errors };
-		}
-
-		// ── Phase 1: Pre-disable baseline quorum ─────────────────────────
-
-		log("s11b: Phase 1 -- pre-disable baseline quorum...");
-		const initialHash = await handleA.api.computeWitnessStateHash(INITIAL);
-		// Trigger dirty concurrently with quorum (suppression cleared, quorum anchored first)
-		const triggerPreBaseline = async () => {
-			await new Promise((r) => setTimeout(r, 300));
-			await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-			await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-		};
-		const { witnessQuorum: wq } = await import("../obsidian-harness/witness-primitives");
-		const [preDisableQuorum] = await Promise.all([
-			wq([handleA, handleB], scratch,
-				{ pathId: scratch, stateKind: "present", expectedStateHash: initialHash, timeoutMs: 30_000, minStableAfterMs: 1000 }
-			),
-			triggerPreBaseline(),
-		]);
-		log(`s11b: Phase 1 result: ${preDisableQuorum.ok ? "PASS" : "FAIL -- " + (preDisableQuorum as { reason?: string }).reason}`);
-		if (!preDisableQuorum.ok) {
-			errors.push(`s11b Phase 1 failed: ${(preDisableQuorum as { reason?: string }).reason}`);
-			stopPollingA(); stopPollingB();
-			return { passedA: false, passedB: false, errors };
-		}
-
-		// ── Phase 2: Disable B, concurrent edits, re-enable B ────────────
-
-		log("s11b: Phase 2 -- disabling YAOS on B...");
-		await b.evalRaw(`app.plugins.disablePlugin("yaos")`);
-		await new Promise((r) => setTimeout(r, 3000));
-		const unloaded = await b.evalRaw<boolean>(`!app.plugins?.plugins?.yaos`);
-		if (!unloaded) { errors.push("s11b: YAOS did not unload on B"); stopPollingA(); stopPollingB(); return { passedA: false, passedB: false, errors }; }
-		log("s11b: YAOS unloaded on B ✓");
-
-		// Concurrent edits
-		log("s11b: writing local edit on B and remote edit on A concurrently...");
-		await Promise.all([
-			b.evalRaw(`
-				(async () => {
-					const f = app.vault.getAbstractFileByPath(${JSON.stringify(scratch)});
-					if (f) await app.vault.modify(f, ${JSON.stringify(LOCAL_EDIT)});
-				})()
-			`),
-			(async () => {
-				// Use editor-based edit on A (real CRDT transaction with correct baseline hash)
-				// This is the same approach as issue-22-disable-reenable-concurrent
-				await a.evalRaw(`window.__YAOS_QA__?.openFile(${JSON.stringify(scratch)})`);
-				await a.evalRaw(`window.__YAOS_QA__?.waitForCrdtBinding(${JSON.stringify(scratch)}, 10000)`);
-				await a.evalRaw(`
-					(function() {
-						const editor = app.workspace.activeEditor?.editor;
-						if (!editor) return;
-						const doc = editor.getValue();
-						editor.replaceRange(${JSON.stringify(REMOTE_EDIT)}, editor.offsetToPos(0), editor.offsetToPos(doc.length));
-					})()
-				`);
-				await a.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(15000)`);
-				log("s11b: A's remote edit synced to server ✓");
-			})(),
-		]);
-		log("s11b: concurrent edits complete ✓");
-
-		// Re-enable B
-		log("s11b: re-enabling YAOS on B...");
-		await b.evalRaw(`app.plugins.enablePlugin("yaos")`);
-		const ready = await b.evalRaw<boolean>(`
-			(async () => {
-				for (let i = 0; i < 60; i++) {
-					await new Promise(r => setTimeout(r, 500));
-					const d = window.__YAOS_DEBUG__;
-					if (d && d.isLocalReady() && d.isReconciled()) return true;
-				}
-				return false;
-			})()
-		`);
-		if (!ready) { errors.push("s11b: YAOS did not re-initialize on B"); stopPollingA(); stopPollingB(); return { passedA: false, passedB: false, errors }; }
-		log("s11b: YAOS re-initialized on B ✓");
-
-		// Restart trace on B (plugin was reloaded)
-		await b.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe", ${JSON.stringify(QA_SECRET)})`);
-		await new Promise((r) => setTimeout(r, 1000));
-
-		// ── Phase 3: Wait for conflict artifact ───────────────────────────
-
-		log("s11b: Phase 3 -- waiting for conflict artifact...");
-		const scratchBase = scratch.split("/").pop()?.replace(".md", "") ?? "";
-		let conflictArtifactPath = "";
-		for (let i = 0; i < 20; i++) {
-			await new Promise((r) => setTimeout(r, 1000));
-			const artifact = await b.evalRaw<string | null>(`
-				(function() {
-					const base = ${JSON.stringify(scratchBase)};
-					return app.vault.getFiles().map(f => f.path).find(p =>
-						p.includes(base) && (p.includes("conflict") || p.includes("YAOS")) && p !== ${JSON.stringify(scratch)}
-					) ?? null;
-				})()
-			`);
-			if (artifact) { conflictArtifactPath = artifact; log(`s11b: conflict artifact: ${artifact}`); break; }
-		}
-		if (!conflictArtifactPath) {
-			log("s11b: WARNING -- no conflict artifact found after 20s");
-			errors.push("s11b: no conflict artifact created -- conflict preservation may have failed");
-		}
-
-		// Compute actual hashes from disk content (the semantic proof targets)
-		const artifactContent = conflictArtifactPath ? await b.evalRaw<string | null>(`
-			(async () => { const f = app.vault.getAbstractFileByPath(${JSON.stringify(conflictArtifactPath)}); return f ? await app.vault.read(f) : null; })()
-		`) : null;
-		const survivorContent = await b.evalRaw<string | null>(`
-			(async () => { const f = app.vault.getAbstractFileByPath(${JSON.stringify(scratch)}); return f ? await app.vault.read(f) : null; })()
-		`);
-
-		// ── Semantic content assertions (Fix 1) ──────────────────────────
-		// YAOS conflict policy for this scenario (both-changed/winner=disk):
-		//   - Disk wins main file → original path has S11B-LOCAL (B's local edit)
-		//   - CRDT edit goes to artifact → artifact has S11B-REMOTE (A's remote edit)
-		// These assertions prove semantic preservation, not just hash persistence.
-		const LOCAL_MARKER = "S11B-LOCAL";
-		const REMOTE_MARKER = "S11B-REMOTE";
-
-		if (artifactContent !== null) {
-			if (!artifactContent.includes(REMOTE_MARKER)) {
-				errors.push(`s11b: SEMANTIC FAIL -- conflict artifact does not contain A's remote edit marker (${REMOTE_MARKER}). Content: ${artifactContent.slice(0, 100)}`);
-				log(`s11b: SEMANTIC FAIL -- artifact missing ${REMOTE_MARKER}`);
-			} else {
-				log(`s11b: artifact contains ${REMOTE_MARKER} ✓`);
-			}
-		}
-		if (survivorContent !== null) {
-			if (!survivorContent.includes(LOCAL_MARKER)) {
-				errors.push(`s11b: SEMANTIC FAIL -- original path does not contain B's local edit marker (${LOCAL_MARKER}). Content: ${survivorContent.slice(0, 100)}`);
-				log(`s11b: SEMANTIC FAIL -- survivor missing ${LOCAL_MARKER}`);
-			} else {
-				log(`s11b: survivor contains ${LOCAL_MARKER} ✓`);
-			}
-		}
-
-		const actualConflictHash = artifactContent ? await b.evalRaw<string>(`window.__YAOS_DEBUG__?.computeWitnessStateHash(${JSON.stringify(artifactContent)})`) : "";
-		const actualSurvivorHash = survivorContent ? await b.evalRaw<string>(`window.__YAOS_DEBUG__?.computeWitnessStateHash(${JSON.stringify(survivorContent)})`) : "";
-		log(`s11b: actualConflictHash=${actualConflictHash.slice(0, 12)}, actualSurvivorHash=${actualSurvivorHash.slice(0, 12)}`);
-
-		// ── Phase 4+5: Quorum + negative-window checks (inline, no runS11b) ─
-
-		log("s11b: Phase 4+5 -- running quorum and negative-window checks...");
-		const { witnessQuorumEventually: wqe, noStaleHashAfterNewerWitness: noStale, noRecoveryEmittedOldHash: noRecovery } = await import("../obsidian-harness/witness-primitives");
-
-		// Trigger dirty on both devices for the original path (clear suppression first)
-		await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-		await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-		await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-		await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-
-		// Anchor seqs before quorum calls
-		const resyncStartSeqA = handleA.api.currentWitnessSeq?.() ?? 0;
-		const resyncStartSeqB = handleB.api.currentWitnessSeq?.() ?? 0;
-
-		// Negative-window checks: no stale/recovery during re-sync
-		const [noStaleOnA, noStaleOnB, noRecoveryOnA, noRecoveryOnB] = await Promise.all([
-			noStale(handleA, scratch, { windowMs: 10_000 }),
-			noStale(handleB, scratch, { windowMs: 10_000 }),
-			noRecovery(handleA, scratch, { windowMs: 10_000 }),
-			noRecovery(handleB, scratch, { windowMs: 10_000 }),
-		]);
-
-		// Quorum: conflict artifact exists on Device B with expected content
-		// Note: conflict artifact is a local-only file on B (not synced to A in current YAOS)
-		let conflictArtifactLocalCheck: { ok: boolean; reason?: string; evidence: unknown[]; intermediateHashes: Record<string, unknown[]>; summary: string };
-		if (conflictArtifactPath && actualConflictHash) {
-			const hashB = await b.evalRaw<string | null>(`
-				(async () => {
-					const f = app.vault.getAbstractFileByPath(${JSON.stringify(conflictArtifactPath)});
-					if (!f) return null;
-					const content = await app.vault.read(f);
-					return window.__YAOS_DEBUG__?.computeWitnessStateHash(content);
-				})()
-			`);
-			log(`s11b: conflict artifact hash B=${hashB?.slice(0, 12)} expected=${actualConflictHash.slice(0, 12)}`);
-			if (hashB === actualConflictHash) {
-				conflictArtifactLocalCheck = { ok: true, evidence: [{ kind: "disk_hash_match_on_b", hashB, expected: actualConflictHash }], intermediateHashes: {}, summary: `Device B has conflict artifact with expected hash ${actualConflictHash}` };
-				log("s11b: conflict artifact content verified on B ✓");
-			} else {
-				conflictArtifactLocalCheck = { ok: false, reason: "conflict_artifact_hash_mismatch", evidence: [{ hashB, expected: actualConflictHash }], intermediateHashes: {}, summary: `Conflict artifact hash mismatch on B: got ${hashB} expected ${actualConflictHash}` };
-			}
-		} else {
-			conflictArtifactLocalCheck = { ok: false, reason: "no_conflict_artifact", evidence: [], intermediateHashes: {}, summary: "no conflict artifact" };
-		}
-
-		// Quorum: both devices witness original path with expected survivor hash
-		const originalPathQuorum = actualSurvivorHash
-			? await wqe([handleA, handleB], scratch, {
-				pathId: scratch,
-				stateKind: "present",
-				expectedStateHash: actualSurvivorHash,
-				timeoutMs: 30_000,
-				minStableAfterMs: 1000,
-				startSeqOverride: { [deviceIdA ?? ""]: resyncStartSeqA, [deviceIdB ?? ""]: resyncStartSeqB },
-			})
-			: { ok: false, reason: "no_survivor_hash", evidence: [], intermediateHashes: {}, summary: "no survivor hash" };
-
-		const phaseOk = noStaleOnA.ok && noStaleOnB.ok && noRecoveryOnA.ok && noRecoveryOnB.ok
-			&& conflictArtifactLocalCheck.ok && originalPathQuorum.ok
-			&& (artifactContent?.includes(REMOTE_MARKER) ?? false)
-			&& (survivorContent?.includes(LOCAL_MARKER) ?? false);
-
-		const resultSummary = phaseOk
-			? `s11b PASSED: conflict artifact preserved (${actualConflictHash.slice(0, 12)}), survivor hash (${actualSurvivorHash.slice(0, 12)}), no stale/recovery divergences`
-			: `s11b FAILED: ${[
-				!noStaleOnA.ok && `stale on A: ${noStaleOnA.reason}`,
-				!noStaleOnB.ok && `stale on B: ${noStaleOnB.reason}`,
-				!noRecoveryOnA.ok && `recovery on A: ${noRecoveryOnA.reason}`,
-				!noRecoveryOnB.ok && `recovery on B: ${noRecoveryOnB.reason}`,
-				!conflictArtifactLocalCheck.ok && `conflict artifact quorum: ${conflictArtifactLocalCheck.reason}`,
-				!originalPathQuorum.ok && `original path quorum: ${originalPathQuorum.reason}`,
-			].filter(Boolean).join("; ")}`;
-
-		stopPollingA(); stopPollingB();
-
-		log(`s11b result: ${resultSummary}`);
-		if (!phaseOk) errors.push(`s11b failed: ${resultSummary}`);
-
-		// ── Export segments and emit Layer 4 report ───────────────────────
-
-		const traceId = (infoA as Record<string, unknown>).traceId as string | undefined;
-		const segmentSummaries: Record<string, unknown> = {};
-		for (const [client, label, devId] of [[a, "device-a", deviceIdA], [b, "device-b", deviceIdB]] as const) {
-			const ndjson = await client.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments(${JSON.stringify(traceId ?? "")}) ?? null`);
-			if (ndjson) {
-				try {
-					const { mkdirSync: mkdir, writeFileSync: write } = await import("fs");
-					mkdir("qa-runs/s11b", { recursive: true });
-					const outPath = `qa-runs/s11b/witness-${label}.ndjson`;
-					write(outPath, ndjson);
-					const lines = ndjson.split("\n").filter((l) => l.trim() && !l.includes("checkpoint.segment.header"));
-					let settledCount = 0; let divergedCount = 0; let latestHash = "";
-					for (const line of lines) {
-						try {
-							const e = JSON.parse(line) as Record<string, unknown>;
-							if (e.kind === "device.witness.settled") { settledCount++; latestHash = String((e.data as Record<string, unknown>)?.stateHash ?? ""); }
-							else if (e.kind === "device.witness.diverged") divergedCount++;
-						} catch { /* skip */ }
-					}
-					segmentSummaries[label] = { source: "exported_segments", status: "ok", path: outPath, settledCount, divergedCount, latestHash };
-					log(`s11b: ${label} segments → ${outPath} (${settledCount} settled, ${divergedCount} diverged)`);
-				} catch (e) { segmentSummaries[label] = { source: "exported_segments", status: "export_failed", error: String(e) }; }
-			} else {
-				const liveEvents = await client.evalRaw<Array<{ kind: string; seq: number; path: string; data: Record<string, unknown> }>>(
-					`JSON.parse(JSON.stringify((window.__YAOS_DEBUG__?.getWitnessBuffer?.() ?? []).filter(e => e.path === ${JSON.stringify(scratch)} || e.path === ${JSON.stringify(conflictArtifactPath)})))`
-				);
-				segmentSummaries[label] = {
-					source: "live_buffer", status: "active_no_segments", deviceId: devId,
-					note: "segment export empty; live buffer embedded",
-					eventsUsedForQuorum: (liveEvents ?? []).map((e) => ({
-						seq: e.seq, kind: e.kind, path: e.path,
-						stateHash: String(e.data?.stateHash ?? ""),
-						role: e.kind === "settled" ? (String(e.data?.stateHash ?? "") === actualConflictHash || String(e.data?.stateHash ?? "") === actualSurvivorHash ? "final" : "intermediate") : "diverged",
-					})),
-				};
-				log(`s11b: ${label} segments -- embedded ${(liveEvents ?? []).length} live-buffer events`);
-			}
-		}
-
-		const layer4Report = {
-			scenario: "s11b-disable-reenable-witness",
-			acceptanceVersion: "s11b-local-artifact-v2",
-			status: errors.length === 0 ? "current-pass" : "current-fail",
-			runAt: new Date().toISOString(),
-			deviceA: deviceIdA, deviceB: deviceIdB,
-			ok: phaseOk && errors.length === 0,
-			conflictArtifactPath,
-			actualConflictHash,
-			actualSurvivorHash,
-			semanticChecks: {
-				artifactContainsLocalMarker: artifactContent?.includes(LOCAL_MARKER) ?? false,
-				survivorContainsRemoteMarker: survivorContent?.includes(REMOTE_MARKER) ?? false,
-				policy: "both-changed/winner=disk: disk wins main file (S11B-LOCAL), CRDT edit in artifact (S11B-REMOTE)",
-			},
-			phases: {
-				preDisableBaseline: { ok: preDisableQuorum.ok },
-				resyncNegativeWindow: {
-					ok: noStaleOnA.ok && noStaleOnB.ok && noRecoveryOnA.ok && noRecoveryOnB.ok,
-					noStaleOnA: { ok: noStaleOnA.ok, reason: noStaleOnA.reason },
-					noStaleOnB: { ok: noStaleOnB.ok, reason: noStaleOnB.reason },
-					noRecoveryOnA: { ok: noRecoveryOnA.ok, reason: noRecoveryOnA.reason },
-					noRecoveryOnB: { ok: noRecoveryOnB.ok, reason: noRecoveryOnB.reason },
-				},
-				conflictArtifactLocalCheck: { ok: conflictArtifactLocalCheck.ok, reason: conflictArtifactLocalCheck.reason },
-				originalPathQuorum: { ok: originalPathQuorum.ok, reason: originalPathQuorum.reason },
-			},
-			segmentSummaries,
-			note: "Layer 4 report is SEPARATE from legacy trace analyzer. Legacy analyzer PASS does not imply Layer 4 PASS.",
-		};
-
-		try {
-			const { mkdirSync: mkdir, writeFileSync: write } = await import("fs");
-			mkdir("qa-runs/s11b", { recursive: true });
-			const runId = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-			const reportPath = `qa-runs/s11b/layer4-report-${runId}.json`;
-			write(reportPath, JSON.stringify(layer4Report, null, 2));
-			write("qa-runs/s11b/layer4-report.json", JSON.stringify(layer4Report, null, 2));
-			log(`s11b: Layer 4 report → ${reportPath}`);
-		} catch { /* best-effort */ }
-
-		log("NOTE: Legacy trace analyzer PASS ≠ Layer 4 scenario PASS. Check qa-runs/s11b/layer4-report.json for Layer 4 result.");
-
-		// ── Cleanup ───────────────────────────────────────────────────────
-
-		if (conflictArtifactPath) {
-			await a.evalRaw(`window.__YAOS_QA__?.deleteFile(${JSON.stringify(conflictArtifactPath)})`).catch(() => {});
-			await b.evalRaw(`window.__YAOS_QA__?.deleteFile(${JSON.stringify(conflictArtifactPath)})`).catch(() => {});
-		}
-		await a.evalRaw(`window.__YAOS_QA__?.deleteFile(${JSON.stringify(scratch)})`).catch(() => {});
-
-		return { passedA: errors.length === 0, passedB: errors.length === 0, errors };
-	},
-
-	/**
-	 * s12a-local-two-vault -- Phase 3 pipeline smoke test.
-	 *
-	 * Runs the s12a scenario on two local Obsidian vaults (temenos + temenos-b).
-	 * Produces real exported bundles and an offline analyzer report.
-	 * This is NOT mobile validation -- it is a pipeline smoke test.
-	 *
-	 * Proves:
-	 *   - bundle export works end-to-end
-	 *   - bundle headers are correct (scenarioRunId, qaTraceSecretHash, scenarioStepIndex)
-	 *   - offline analyzer consumes real bundles
-	 *   - analyzeConvergenceEvidence produces a real positive report
-	 */
-	"s12a-local-two-vault": async (a, b, log) => {
-		const errors: string[] = [];
-		const scratch = "QA-scratch/s12a-witness.md";
-		const INITIAL = "# S12a Witness\n\nBaseline content.\n";
-		const EDIT = "# S12a Witness\n\nBaseline content.\n\nS12A-EDIT-1\n";
-		const RUN_ID = `s12a-local-${Date.now()}`;
-		const SCENARIO_ID = "s12a-local-two-vault";
-		const QA_SECRET = `s12a-${Date.now()}`;
-
-		log(`s12a: scenarioRunId=${RUN_ID}`);
-
-		// Start qa-safe traces with shared secret
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe", ${JSON.stringify(QA_SECRET)})`);
-			log(`s12a: trace started on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
-
-		// Set scenarioRunId on both devices
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlySetScenarioRunIdUnsafe?.(${JSON.stringify(RUN_ID)}, ${JSON.stringify(SCENARIO_ID)})`);
-			log(`s12a: scenarioRunId set on ${label}`);
-		}
-
-		// Get device IDs and trace info
-		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
-		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
-		const traceInfoA = await a.evalRaw<{ localTraceId: string; qaTraceSecretHash: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
-		const traceInfoB = await b.evalRaw<{ localTraceId: string; qaTraceSecretHash: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
-		log(`s12a: deviceA=${deviceIdA}, deviceB=${deviceIdB}`);
-		log(`s12a: traceA=${JSON.stringify(traceInfoA)}`);
-		log(`s12a: traceB=${JSON.stringify(traceInfoB)}`);
-
-		if (traceInfoA?.qaTraceSecretHash !== traceInfoB?.qaTraceSecretHash) {
-			errors.push(`s12a: qaTraceSecretHash mismatch: A=${traceInfoA?.qaTraceSecretHash} B=${traceInfoB?.qaTraceSecretHash}`);
-		}
-
-		// Create test file on A
-		await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyForceCrdtContentUnsafe?.(${JSON.stringify(scratch)}, ${JSON.stringify(INITIAL)}, { originClass: "remote", createIfMissing: true })`);
-		await new Promise((r) => setTimeout(r, 3000));
-		log("s12a: test file created, waiting for sync...");
-
-		// Step 1 -- pre-action baseline
-		// Advance step first, then wait briefly so any pre-step settled events are already emitted
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyAdvanceScenarioStepUnsafe?.(1, "pre-action-baseline")`);
-			log(`s12a: step 1 advanced on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-			log(`s12a: step 1 dirty triggered on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 5000));
-
-		// Step 2 -- Device A edits (remote origin so DiskMirror writes to disk)
-		await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyForceCrdtContentUnsafe?.(${JSON.stringify(scratch)}, ${JSON.stringify(EDIT)}, { originClass: "remote" })`);
-		log("s12a: Device A edit applied, waiting for propagation...");
-		await new Promise((r) => setTimeout(r, 5000));
-
-		// Step 3 -- post-edit convergence
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyAdvanceScenarioStepUnsafe?.(3, "post-edit-convergence")`);
-			log(`s12a: step 3 advanced on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-			log(`s12a: step 3 dirty triggered on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 6000));
-
-		// Export bundles from both devices via exportWitnessSegments
-		const traceIdA = traceInfoA?.localTraceId ?? "";
-		const traceIdB = traceInfoB?.localTraceId ?? "";
-
-		const segmentsA = await a.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments?.(${JSON.stringify(traceIdA)}) ?? null`);
-		const segmentsB = await b.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments?.(${JSON.stringify(traceIdB)}) ?? null`);
-
-		if (!segmentsA) errors.push("s12a: Device A produced no witness segments");
-		if (!segmentsB) errors.push("s12a: Device B produced no witness segments");
-
-		// Build bundle strings with proper headers
-		const buildBundle = (segments: string | null, deviceId: string, localTraceId: string, secretHash: string): string => {
-			const lines = segments ? segments.split("\n").filter((l) => l.trim()) : [];
-			const eventCount = lines.filter((l) => {
-				try { return (JSON.parse(l) as Record<string, unknown>).kind !== "checkpoint.segment.header"; } catch { return false; }
-			}).length;
-			const header = {
-				kind: "bundle.header",
-				bundleSchemaVersion: 1,
-				createdAt: new Date().toISOString(),
-				pluginVersion: "1.6.1",
-				deviceId,
-				deviceLabel: deviceId,
-				platform: "desktop",
-				runtimeState: "foreground",
-				localTraceId,
-				scenarioRunId: RUN_ID,
-				scenarioId: SCENARIO_ID,
-				qaTraceSecretHash: secretHash,
-				flightMode: "qa-safe",
-				eventCount,
-				containsRawPaths: false,
-				hashDomain: "witness-state-v1",
-				privacyMode: "safe",
-			};
-			return [JSON.stringify(header), ...(segments ? [segments.trimEnd()] : [])].join("\n") + "\n";
-		};
-
-		const bundleA = buildBundle(segmentsA, deviceIdA ?? "device-a", traceIdA, traceInfoA?.qaTraceSecretHash ?? "");
-		const bundleB = buildBundle(segmentsB, deviceIdB ?? "device-b", traceIdB, traceInfoB?.qaTraceSecretHash ?? "");
-
-		// Write bundles to disk
-		const { mkdirSync, writeFileSync } = await import("node:fs");
-		const outDir = "qa-runs/s12a-local-two-vault-pass";
-		mkdirSync(outDir, { recursive: true });
-		writeFileSync(`${outDir}/device-a.ndjson`, bundleA);
-		writeFileSync(`${outDir}/device-b.ndjson`, bundleB);
-		log(`s12a: bundles written to ${outDir}/`);
-
-		// Run offline analyzer
-		const { spawnSync } = await import("node:child_process");
-		const analyzerResult = spawnSync("bun", [
-			"run", "qa:analyze-bundles", "--",
-			`${outDir}/device-a.ndjson`,
-			`${outDir}/device-b.ndjson`,
-			"--out", `${outDir}/report.json`,
-		], { encoding: "utf-8" });
-		log(`s12a: analyzer stdout: ${analyzerResult.stdout?.trim()}`);
-		if (analyzerResult.status !== 0) {
-			errors.push(`s12a: offline analyzer failed (exit ${analyzerResult.status}): ${analyzerResult.stderr?.trim()}`);
-		} else {
-			log("s12a: offline analyzer PASS");
-		}
-
-		// Write summary
-		const summary = [
-			`# s12a-local-two-vault pipeline smoke`,
-			``,
-			`**Label**: s12a-local-two-vault (NOT mobile validation -- desktop pipeline smoke)`,
-			`**Date**: ${new Date().toISOString()}`,
-			`**scenarioRunId**: ${RUN_ID}`,
-			`**deviceA**: ${deviceIdA}`,
-			`**deviceB**: ${deviceIdB}`,
-			`**qaTraceSecretHash**: ${traceInfoA?.qaTraceSecretHash ?? "(unknown)"}`,
-			`**result**: ${errors.length === 0 ? "PASS" : "FAIL"}`,
-			errors.length > 0 ? `\n**errors**:\n${errors.map((e) => `- ${e}`).join("\n")}` : "",
-		].join("\n");
-		writeFileSync(`${outDir}/summary.md`, summary);
-		log(`s12a: summary written to ${outDir}/summary.md`);
-
-		// Cleanup
-		await a.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-		await b.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-
-		return { passedA: errors.length === 0, passedB: errors.length === 0, errors };
-	},
-
-	/**
 	 * s13-editor-open-remote-edit
 	 *
 	 * Device B has the target file open in the editor (CRDT binding active).
@@ -3191,28 +2148,19 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		const INITIAL = "# S13 Editor Open Remote Edit\n\nBASELINE\n";
 		const RUN_ID = `s13-${Date.now()}`;
 
-		// Stop any existing trace and start fresh to ensure clean tracker state
+		// Stop any existing trace and start fresh to ensure clean trace state
 		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
 			await client.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
 			await client.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe")`);
 			log(`s13: fresh trace started on ${label}`);
 		}
 		await new Promise((r) => setTimeout(r, 1000));
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlySetScenarioRunIdUnsafe?.(${JSON.stringify(RUN_ID)}, "s13-editor-open-remote-edit")`);
-		}
-		await new Promise((r) => setTimeout(r, 300));
-		const freshBufLenB = await b.evalRaw<number>(`(window.__YAOS_DEBUG__?.getWitnessBuffer() ?? []).length`);
-		log(`s13: B fresh buffer length after restart: ${freshBufLenB}`);
 
 		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
 		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
 		const traceInfoA = await a.evalRaw<{ localTraceId: string; qaTraceSecretHash: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
 		const traceInfoB = await b.evalRaw<{ localTraceId: string; qaTraceSecretHash: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
 		log(`s13: deviceA=${deviceIdA}, deviceB=${deviceIdB}`);
-		// Record the seq anchor on B before file creation so we can filter to post-creation events
-		const seqAnchorB = await b.evalRaw<number>(`window.__YAOS_DEBUG__?.currentWitnessSeq?.() ?? 0`);
-		log(`s13: B seq anchor before file creation: ${seqAnchorB}`);
 
 		if (traceInfoA?.qaTraceSecretHash !== traceInfoB?.qaTraceSecretHash) {
 			errors.push(`s13: qaTraceSecretHash mismatch`);
@@ -3243,46 +2191,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 			errors.push(`s13: B editor binding not healthy before edit: ${JSON.stringify(healthBefore)}`);
 		}
 
-		// Step 1 -- baseline witness on B (editor open)
-		// Advance step first, then wait so any pre-step events are already emitted
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyAdvanceScenarioStepUnsafe?.(1, "baseline-editor-open")`);
-			log(`s13: step 1 advanced on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-			log(`s13: step 1 dirty triggered on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 5000));
-
-		// Verify B settled with healthy_sampled at baseline
-		// Use checkpoint segments (not capped buffer) to get all events
-		const traceIdBForSegs = traceInfoB?.localTraceId ?? "";
-		const segsB1Raw = await b.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments?.(${JSON.stringify(traceIdBForSegs)}) ?? null`);
-		const bufBFromSegs: Array<{ kind: string; seq: number; data: Record<string, unknown> }> = [];
-		if (segsB1Raw) {
-			for (const line of segsB1Raw.split("\n")) {
-				if (!line.trim()) continue;
-				try {
-					const obj = JSON.parse(line) as Record<string, unknown>;
-					if (obj.kind === "device.witness.settled" || obj.kind === "device.witness.diverged") {
-						bufBFromSegs.push({ kind: obj.kind === "device.witness.settled" ? "settled" : "diverged", seq: Number(obj.seq ?? 0), data: (obj.data ?? {}) as Record<string, unknown> });
-					}
-				} catch { /* skip */ }
-			}
-		}
-		const bufBThisRun = bufBFromSegs.filter((e) => e.seq > seqAnchorB);
-		log(`s13: B segments total=${bufBFromSegs.length}, post-anchor=${bufBThisRun.length}, settled steps=${bufBThisRun.filter(e=>e.kind==="settled").map(e=>e.data.scenarioStepIndex).join(",")}`);
-		const bBaselineSettled = bufBThisRun.find((e) => e.kind === "settled" && Number(e.data.scenarioStepIndex) === 1);
-		if (!bBaselineSettled) {
-			errors.push("s13: B did not settle at baseline step 1");
-		} else if (bBaselineSettled.data.editorSampleKind !== "healthy_sampled") {
-			errors.push(`s13: B baseline editorSampleKind=${bBaselineSettled.data.editorSampleKind}, expected healthy_sampled`);
-		}
-		log(`s13: B baseline settled: ${JSON.stringify(bBaselineSettled?.data)}`);
-
 		// Step 2 -- Device A edits via normal YAOS path (editor insert)
 		await a.evalRaw(`window.__YAOS_QA__?.openFile(${JSON.stringify(scratch)})`);
 		await a.evalRaw(`window.__YAOS_QA__?.waitForCrdtBinding(${JSON.stringify(scratch)}, 10000)`);
@@ -3301,20 +2209,8 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		log("s13: A inserted REMOTE_EDIT_FROM_A via editor");
 		await new Promise((r) => setTimeout(r, 6000));
 
-		// Step 3 -- post-edit convergence
-		// Wait for A's editor to settle before advancing step (avoids transient disk_crdt_mismatch)
+		// Wait for A's editor to settle, then give B time to converge.
 		await a.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(8000)`).catch(() => {});
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyAdvanceScenarioStepUnsafe?.(3, "post-edit-convergence")`);
-			log(`s13: step 3 advanced on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
-		// Only trigger dirty on B (passive observer) -- A will naturally emit settled after edit
-		await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-		await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-		await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-		await a.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-		log("s13: step 3 dirty triggered on A and B");
 		await new Promise((r) => setTimeout(r, 6000));
 
 		// Check B editor binding health after edit
@@ -3343,106 +2239,23 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 			log(`s13: content check -- BASELINEx${baselineCount}, REMOTE_EDIT_FROM_Ax${editCount}`);
 		}
 
-		// Check witness events on B for forbidden divergences -- use segments (not capped buffer)
-		const segsB2Raw = await b.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments?.(${JSON.stringify(traceIdBForSegs)}) ?? null`);
-		const bufBFinal: Array<{ kind: string; seq: number; data: Record<string, unknown> }> = [];
-		if (segsB2Raw) {
-			for (const line of segsB2Raw.split("\n")) {
-				if (!line.trim()) continue;
-				try {
-					const obj = JSON.parse(line) as Record<string, unknown>;
-					if (obj.kind === "device.witness.settled" || obj.kind === "device.witness.diverged") {
-						bufBFinal.push({ kind: obj.kind === "device.witness.settled" ? "settled" : "diverged", seq: Number(obj.seq ?? 0), data: (obj.data ?? {}) as Record<string, unknown> });
-					}
-				} catch { /* skip */ }
-			}
-		}
-		const bufBFinalThisRun = bufBFinal.filter((e) => e.seq > seqAnchorB);
-		// disk_crdt_mismatch is NOT forbidden here — transient open-editor disk lag is classified as diagnostic
-		// by the offline analyzer. Persistent disk_crdt_mismatch will still fail analyzeWitnessQuorum.
-		const FORBIDDEN = ["stale_hash_after_newer_witness", "recovery_emitted_old_hash", "editor_crdt_mismatch"];
-		for (const e of bufBFinalThisRun) {
-			if (e.kind === "diverged") {
-				const reason = String(e.data.reason ?? "");
-				if (FORBIDDEN.includes(reason)) {
-					errors.push(`s13: B forbidden divergence: ${reason} at seq=${e.seq}`);
-				}
-			}
-		}
-
-		// Check B settled at step 3 with healthy_sampled
-		const bFinalSettled = bufBFinalThisRun.filter((e) => e.kind === "settled" && Number(e.data.scenarioStepIndex) === 3).pop();
-		if (!bFinalSettled) {
-			errors.push("s13: B did not settle at step 3");
-		} else {
-			if (bFinalSettled.data.editorSampleKind !== "healthy_sampled") {
-				errors.push(`s13: B final editorSampleKind=${bFinalSettled.data.editorSampleKind}, expected healthy_sampled`);
-			}
-			// All three hashes must agree
-			const { stateHash, crdtHash, diskHash, editorHash } = bFinalSettled.data as Record<string, string>;
-			if (crdtHash !== stateHash) errors.push(`s13: B crdtHash≠stateHash`);
-			if (diskHash !== stateHash) errors.push(`s13: B diskHash≠stateHash`);
-			if (editorHash !== stateHash) errors.push(`s13: B editorHash≠stateHash`);
-			log(`s13: B final hashes -- state=${stateHash?.slice(0,16)} crdt=${crdtHash?.slice(0,16)} disk=${diskHash?.slice(0,16)} editor=${editorHash?.slice(0,16)}`);
-		}
-
-		// Get pathId for the s13 file to filter bundle events to only this file
-		const pathIdA = await a.evalRaw<string | null>(`(async () => { const r = await window.__YAOS_DEBUG__?.getActiveTraceInfo?.(); const ftc = app.plugins.plugins.yaos?.flightTrace; if (!ftc) return null; const p = await ftc.getPathId(${JSON.stringify(scratch)}); return p?.pathId ?? null; })()`);
-		log(`s13: pathId for s13 file: ${pathIdA}`);
-
-		// Export bundles and run offline analyzer -- filter to s13 file events only
-		const buildBundle = (segments: string | null, deviceId: string, localTraceId: string, secretHash: string, platform: string, filterPathId: string | null): string => {
-			const allLines = segments ? segments.split("\n").filter((l) => l.trim()) : [];
-			// Keep segment headers and events for the s13 file only
-			const filteredLines = allLines.filter((l) => {
-				try {
-					const obj = JSON.parse(l) as Record<string, unknown>;
-					if (obj.kind === "checkpoint.segment.header") return true;
-					if (!filterPathId) return true;
-					// Keep events for this pathId or events without pathId (non-witness events)
-					if (obj.kind !== "device.witness.settled" && obj.kind !== "device.witness.diverged") return true;
-					return obj.pathId === filterPathId || (obj.data as Record<string, unknown>)?.pathId === filterPathId;
-				} catch { return false; }
-			});
-			const eventCount = filteredLines.filter((l) => { try { const o = JSON.parse(l) as Record<string, unknown>; return o.kind !== "checkpoint.segment.header"; } catch { return false; } }).length;
-			const header = { kind: "bundle.header", bundleSchemaVersion: 1, createdAt: new Date().toISOString(), pluginVersion: "1.6.1", deviceId, deviceLabel: deviceId, platform, runtimeState: "foreground", localTraceId, scenarioRunId: RUN_ID, scenarioId: "s13-editor-open-remote-edit", qaTraceSecretHash: secretHash, flightMode: "qa-safe", eventCount, containsRawPaths: false, hashDomain: "witness-state-v1", privacyMode: "safe" };
-			return [JSON.stringify(header), ...filteredLines].join("\n") + "\n";
-		};
-
-		const segsA = await a.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments?.(${JSON.stringify(traceInfoA?.localTraceId ?? "")}) ?? null`);
-		const segsB = await b.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments?.(${JSON.stringify(traceInfoB?.localTraceId ?? "")}) ?? null`);
-		const bundleA = buildBundle(segsA, deviceIdA ?? "device-a", traceInfoA?.localTraceId ?? "", traceInfoA?.qaTraceSecretHash ?? "", "desktop", pathIdA);
-		const bundleB = buildBundle(segsB, deviceIdB ?? "device-b", traceInfoB?.localTraceId ?? "", traceInfoB?.qaTraceSecretHash ?? "", "desktop", pathIdA);
+		// B's disk, CRDT, and editor content must all agree after convergence.
+		const diskHashB = await b.evalRaw<string | null>(`window.__YAOS_DEBUG__?.getDiskHash(${JSON.stringify(scratch)})`);
+		const crdtHashB = await b.evalRaw<string | null>(`window.__YAOS_DEBUG__?.getCrdtHash(${JSON.stringify(scratch)})`);
+		const editorHashB = await b.evalRaw<string | null>(`window.__YAOS_DEBUG__?.getEditorHash(${JSON.stringify(scratch)})`);
+		log(`s13: B hashes -- disk=${diskHashB?.slice(0, 16)} crdt=${crdtHashB?.slice(0, 16)} editor=${editorHashB?.slice(0, 16)}`);
+		if (!crdtHashB) errors.push("s13: B crdtHash is null");
+		if (diskHashB !== crdtHashB) errors.push(`s13: B diskHash≠crdtHash`);
+		if (editorHashB !== crdtHashB) errors.push(`s13: B editorHash≠crdtHash`);
 
 		const { mkdirSync, writeFileSync } = await import("node:fs");
 		const outDir = errors.length === 0 ? "qa-runs/s13-editor-open-remote-edit-pass" : "qa-runs/s13-editor-open-remote-edit-fail";
 		mkdirSync(outDir, { recursive: true });
-		writeFileSync(`${outDir}/device-a.ndjson`, bundleA);
-		writeFileSync(`${outDir}/device-b.ndjson`, bundleB);
-
-		const { spawnSync } = await import("node:child_process");
-		const analyzerResult = spawnSync("bun", ["run", "qa:analyze-bundles", "--", `${outDir}/device-a.ndjson`, `${outDir}/device-b.ndjson`, "--out", `${outDir}/report.json`], { encoding: "utf-8" });
-		log(`s13: analyzer: ${analyzerResult.stdout?.trim()}`);
-		// Note: analyzeWitnessQuorum may flag transient disk_crdt_mismatch during editor open.
-		// The scenario's own checks (content, hashes, binding health, forbidden divergences) are authoritative.
-		// Only fail on analyzer if convergence evidence fails (the key correctness property).
-		if (analyzerResult.status !== 0) {
-			try {
-				const report = JSON.parse(require("fs").readFileSync(`${outDir}/report.json`, "utf-8")) as Record<string, unknown>;
-				const rules = (report.rules as Array<Record<string, unknown>>) ?? [];
-				// transient_open_editor_disk_lag is the only non-fatal analyzer observation
-				const fatalFailed = rules.filter((r) => !r.ok);
-				if (fatalFailed.length > 0) {
-					const summary = fatalFailed.map((r) => `${r.ruleName}: ${r.summary}`).join("; ");
-					errors.push(`s13: offline analyzer failed: ${summary}`);
-				}
-			} catch { errors.push(`s13: offline analyzer failed`); }
-		}
 
 		const summary = [
 			`# s13-editor-open-remote-edit`,
 			`**Date**: ${new Date().toISOString()}`,
-			`**scenarioRunId**: ${RUN_ID}`,
+			`**runId**: ${RUN_ID}`,
 			`**deviceA**: ${deviceIdA} (desktop)`,
 			`**deviceB**: ${deviceIdB} (desktop)`,
 			`**result**: ${errors.length === 0 ? "PASS" : "FAIL"}`,
@@ -3470,10 +2283,9 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 	 */
 	"s12a-with-edit": async (a, b, log) => {
 		const errors: string[] = [];
-		const scratch = "QA-scratch/s12a-edit-witness.md";
-		const INITIAL = "# S12a Edit Witness\n\nBASELINE\n";
+		const scratch = "QA-scratch/s12a-edit.md";
+		const INITIAL = "# S12a Edit\n\nBASELINE\n";
 		const RUN_ID = `s12a-edit-${Date.now()}`;
-		const SCENARIO_ID = "s12a-with-edit";
 		const QA_SECRET = `s12a-${Date.now()}`;
 
 		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
@@ -3482,9 +2294,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 			log(`s12a-edit: trace started on ${label}`);
 		}
 		await new Promise((r) => setTimeout(r, 1000));
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlySetScenarioRunIdUnsafe?.(${JSON.stringify(RUN_ID)}, ${JSON.stringify(SCENARIO_ID)})`);
-		}
 
 		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
 		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
@@ -3506,19 +2315,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		await b.evalRaw(`window.__YAOS_QA__?.waitForCrdtBinding(${JSON.stringify(scratch)}, 20000)`).catch(() => {});
 		await new Promise((r) => setTimeout(r, 2000));
 
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyAdvanceScenarioStepUnsafe?.(1, "pre-edit-baseline")`);
-		}
-		await new Promise((r) => setTimeout(r, 500));
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-		}
-		await new Promise((r) => setTimeout(r, 5000));
-		log("s12a-edit: baseline witnesses triggered");
-
-		const seqAnchorB = await b.evalRaw<number>(`window.__YAOS_DEBUG__?.currentWitnessSeq?.() ?? 0`);
-
 		await a.evalRaw(`window.__YAOS_QA__?.openFile(${JSON.stringify(scratch)})`);
 		await new Promise((r) => setTimeout(r, 2000));
 		await a.evalRaw(`window.__YAOS_QA__?.waitForCrdtBinding(${JSON.stringify(scratch)}, 20000)`).catch(() => {});
@@ -3526,17 +2322,8 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		await a.evalRaw(`(function(){const e=app.workspace.activeEditor?.editor;if(!e)return;const l=e.lastLine();e.replaceRange("EDIT_FROM_A\\n",{line:l,ch:e.getLine(l).length});})()`);
 		log("s12a-edit: A inserted EDIT_FROM_A, waiting for propagation...");
 		await a.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(8000)`).catch(() => {});
-		await new Promise((r) => setTimeout(r, 6000));
-
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyAdvanceScenarioStepUnsafe?.(3, "post-edit-convergence")`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-		}
-		await new Promise((r) => setTimeout(r, 6000));
+		// Allow B to converge on A's edit.
+		await new Promise((r) => setTimeout(r, 12_000));
 
 		const finalContentB = await b.evalRaw<string | null>(`(function(){const f=app.vault.getFileByPath(${JSON.stringify(scratch)});if(!f)return null;const e=app.workspace.activeEditor?.editor;return e?e.getValue():null;})()`);
 		log(`s12a-edit: B final content: ${JSON.stringify(finalContentB?.slice(0, 100))}`);
@@ -3556,50 +2343,10 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		if (!healthB?.healthy) errors.push(`s12a-edit: B editor binding not healthy`);
 
 		const { mkdirSync, writeFileSync } = await import("node:fs");
-		const { spawnSync } = await import("node:child_process");
 		const outDir = errors.length === 0 ? "qa-runs/s12a-with-edit-pass" : "qa-runs/s12a-with-edit-fail";
 		mkdirSync(outDir, { recursive: true });
 
-		const buildBundle = async (client: typeof a, label: string, platform: string) => {
-			const traceId = await client.evalRaw<string>(`window.__YAOS_DEBUG__?.getActiveTraceInfo()?.localTraceId ?? ""`);
-			const deviceId = await client.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId()`);
-			const secretHash = await client.evalRaw<string>(`window.__YAOS_DEBUG__?.getActiveTraceInfo()?.qaTraceSecretHash ?? ""`);
-			const segs = await client.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments?.(${JSON.stringify(traceId)}) ?? null`);
-			const pathIdRaw = await client.evalRaw<string | null>(`(async()=>{const ftc=app.plugins.plugins.yaos?.flightTrace;if(!ftc)return null;const p=await ftc.getPathId(${JSON.stringify(scratch)});return p?.pathId??null;})()`);
-			const lines = (segs || "").split("\n").filter((l) => l.trim());
-			const filtered = lines.filter((l) => {
-				try {
-					const obj = JSON.parse(l) as Record<string, unknown>;
-					if (obj.kind === "checkpoint.segment.header") return true;
-					if (obj.kind !== "device.witness.settled" && obj.kind !== "device.witness.diverged") return true;
-					return obj.pathId === pathIdRaw;
-				} catch { return false; }
-			});
-			const eventCount = filtered.filter((l) => { try { return (JSON.parse(l) as Record<string, unknown>).kind !== "checkpoint.segment.header"; } catch { return false; } }).length;
-			const header = { kind: "bundle.header", bundleSchemaVersion: 1, createdAt: new Date().toISOString(), pluginVersion: "1.6.1", deviceId, deviceLabel: label, platform, runtimeState: "foreground", localTraceId: traceId, scenarioRunId: RUN_ID, scenarioId: SCENARIO_ID, qaTraceSecretHash: secretHash, flightMode: "qa-safe", eventCount, containsRawPaths: false, hashDomain: "witness-state-v1", privacyMode: "safe" };
-			return [JSON.stringify(header), ...filtered].join("\n") + "\n";
-		};
-
-		const bundleA = await buildBundle(a, "device-a", "desktop");
-		const bundleB = await buildBundle(b, "device-b", "desktop");
-		writeFileSync(`${outDir}/device-a.ndjson`, bundleA);
-		writeFileSync(`${outDir}/device-b.ndjson`, bundleB);
-
-		const analyzerResult = spawnSync("bun", ["run", "qa:analyze-bundles", "--", `${outDir}/device-a.ndjson`, `${outDir}/device-b.ndjson`, "--out", `${outDir}/report.json`], { encoding: "utf-8" });
-		log(`s12a-edit: analyzer: ${analyzerResult.stdout?.trim()}`);
-		if (analyzerResult.status !== 0) {
-			try {
-				const report = JSON.parse(require("fs").readFileSync(`${outDir}/report.json`, "utf-8")) as Record<string, unknown>;
-				const rules = (report.rules as Array<Record<string, unknown>>) ?? [];
-				const fatalFailed = rules.filter((r) => !r.ok);
-				if (fatalFailed.length > 0) {
-					const summary = fatalFailed.map((r) => `${r.ruleName}: ${r.summary}`).join("; ");
-					errors.push(`s12a-edit: offline analyzer failed: ${summary}`);
-				}
-			} catch { errors.push("s12a-edit: offline analyzer failed"); }
-		}
-
-		const summary = [`# s12a-with-edit`, `**Date**: ${new Date().toISOString()}`, `**scenarioRunId**: ${RUN_ID}`, `**deviceA**: ${deviceIdA}`, `**deviceB**: ${deviceIdB}`, `**result**: ${errors.length === 0 ? "PASS" : "FAIL"}`, `**B final content**: ${JSON.stringify(finalContentB?.slice(0, 200))}`, `**B binding health**: ${JSON.stringify(healthB)}`, errors.length > 0 ? `\n**errors**:\n${errors.map((e) => `- ${e}`).join("\n")}` : ""].join("\n");
+		const summary = [`# s12a-with-edit`, `**Date**: ${new Date().toISOString()}`, `**runId**: ${RUN_ID}`, `**deviceA**: ${deviceIdA}`, `**deviceB**: ${deviceIdB}`, `**result**: ${errors.length === 0 ? "PASS" : "FAIL"}`, `**B final content**: ${JSON.stringify(finalContentB?.slice(0, 200))}`, `**B binding health**: ${JSON.stringify(healthB)}`, errors.length > 0 ? `\n**errors**:\n${errors.map((e) => `- ${e}`).join("\n")}` : ""].join("\n");
 		writeFileSync(`${outDir}/summary.md`, summary);
 		log(`s12a-edit: artifacts written to ${outDir}/`);
 
@@ -3619,12 +2366,11 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 	 */
 	"s12c-conflict": async (a, b, log) => {
 		const errors: string[] = [];
-		const scratch = "QA-scratch/s12c-conflict-witness.md";
+		const scratch = "QA-scratch/s12c-conflict.md";
 		const INITIAL = "# S12c Conflict\n\nBASELINE\n";
 		const REMOTE_FROM_A = "# S12c Conflict\n\nBASELINE\nREMOTE_FROM_A\n";
 		const LOCAL_ON_B = "# S12c Conflict\n\nBASELINE\nLOCAL_ON_B\n";
 		const RUN_ID = `s12c-conflict-${Date.now()}`;
-		const SCENARIO_ID = "s12c-conflict";
 		const QA_SECRET = `s12c-${Date.now()}`;
 
 		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
@@ -3633,9 +2379,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 			log(`s12c: trace started on ${label}`);
 		}
 		await new Promise((r) => setTimeout(r, 1000));
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlySetScenarioRunIdUnsafe?.(${JSON.stringify(RUN_ID)}, ${JSON.stringify(SCENARIO_ID)})`);
-		}
 
 		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
 		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
@@ -3647,17 +2390,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		await b.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(10000)`);
 		await new Promise((r) => setTimeout(r, 3000));
 		log("s12c: baseline synced to both devices");
-
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyAdvanceScenarioStepUnsafe?.(1, "baseline-quorum")`);
-		}
-		await new Promise((r) => setTimeout(r, 500));
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`);
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`);
-		}
-		await new Promise((r) => setTimeout(r, 5000));
-		log("s12c: baseline quorum triggered");
 
 		await b.evalRaw(`app.plugins.disablePlugin("yaos")`);
 		await new Promise((r) => setTimeout(r, 2000));
@@ -3715,46 +2447,15 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		if (artifactOnA) errors.push(`s12c: Conflict artifact(s) exist on A (should be local-only on B): ${JSON.stringify(artifactsOnA)}`);
 		log(`s12c: artifact on A: ${artifactOnA} (expected: false)`);
 
+		// B's trace died with the plugin disable — restart it so the run collects one.
 		await b.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe", ${JSON.stringify(QA_SECRET)})`).catch(() => {});
 		await new Promise((r) => setTimeout(r, 1000));
-		await b.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlySetScenarioRunIdUnsafe?.(${JSON.stringify(RUN_ID)}, ${JSON.stringify(SCENARIO_ID)})`).catch(() => {});
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyAdvanceScenarioStepUnsafe?.(3, "post-resync-convergence")`).catch(() => {});
-		}
-		await new Promise((r) => setTimeout(r, 500));
-		for (const [client] of [[a], [b]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyClearWitnessSuppressionUnsafe?.(${JSON.stringify(scratch)})`).catch(() => {});
-			await client.evalRaw(`window.__YAOS_DEBUG__?.__qaOnlyTriggerWitnessDirtyUnsafe?.(${JSON.stringify(scratch)})`).catch(() => {});
-		}
-		await new Promise((r) => setTimeout(r, 6000));
 
 		const { mkdirSync, writeFileSync } = await import("node:fs");
-		const { spawnSync } = await import("node:child_process");
 		const outDir = errors.length === 0 ? "qa-runs/s12c-conflict-pass" : "qa-runs/s12c-conflict-fail";
 		mkdirSync(outDir, { recursive: true });
 
-		const buildBundle = async (client: typeof a, label: string) => {
-			const traceId = await client.evalRaw<string>(`window.__YAOS_DEBUG__?.getActiveTraceInfo()?.localTraceId ?? ""`);
-			const deviceId = await client.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId()`);
-			const secretHash = await client.evalRaw<string>(`window.__YAOS_DEBUG__?.getActiveTraceInfo()?.qaTraceSecretHash ?? ""`);
-			const segs = await client.evalRaw<string | null>(`window.__YAOS_DEBUG__?.exportWitnessSegments?.(${JSON.stringify(traceId)}) ?? null`);
-			const pathIdRaw = await client.evalRaw<string | null>(`(async()=>{const ftc=app.plugins.plugins.yaos?.flightTrace;if(!ftc)return null;const p=await ftc.getPathId(${JSON.stringify(scratch)});return p?.pathId??null;})()`);
-			const lines = (segs || "").split("\n").filter((l) => l.trim());
-			const filtered = lines.filter((l) => { try { const obj = JSON.parse(l) as Record<string, unknown>; if (obj.kind === "checkpoint.segment.header") return true; if (obj.kind !== "device.witness.settled" && obj.kind !== "device.witness.diverged") return true; return obj.pathId === pathIdRaw; } catch { return false; } });
-			const eventCount = filtered.filter((l) => { try { return (JSON.parse(l) as Record<string, unknown>).kind !== "checkpoint.segment.header"; } catch { return false; } }).length;
-			const header = { kind: "bundle.header", bundleSchemaVersion: 1, createdAt: new Date().toISOString(), pluginVersion: "1.6.1", deviceId, deviceLabel: label, platform: "desktop", runtimeState: "foreground", localTraceId: traceId, scenarioRunId: RUN_ID, scenarioId: SCENARIO_ID, qaTraceSecretHash: secretHash, flightMode: "qa-safe", eventCount, containsRawPaths: false, hashDomain: "witness-state-v1", privacyMode: "safe" };
-			return [JSON.stringify(header), ...filtered].join("\n") + "\n";
-		};
-
-		const bundleA = await buildBundle(a, "device-a");
-		const bundleB = await buildBundle(b, "device-b");
-		writeFileSync(`${outDir}/device-a.ndjson`, bundleA);
-		writeFileSync(`${outDir}/device-b.ndjson`, bundleB);
-
-		const analyzerResult = spawnSync("bun", ["run", "qa:analyze-bundles", "--", `${outDir}/device-a.ndjson`, `${outDir}/device-b.ndjson`, "--out", `${outDir}/report.json`], { encoding: "utf-8" });
-		log(`s12c: analyzer: ${analyzerResult.stdout?.trim()}`);
-
-		const summary = [`# s12c-conflict`, `**Date**: ${new Date().toISOString()}`, `**scenarioRunId**: ${RUN_ID}`, `**deviceA**: ${deviceIdA}`, `**deviceB**: ${deviceIdB}`, `**result**: ${errors.length === 0 ? "PASS" : "FAIL"}`, `**B survivor content**: ${JSON.stringify(survivorContent?.slice(0, 200))}`, `**B artifact path**: ${artifactPath}`, `**B artifact content**: ${JSON.stringify(artifactContent?.slice(0, 200))}`, `**artifact on A**: ${artifactOnA}`, errors.length > 0 ? `\n**errors**:\n${errors.map((e) => `- ${e}`).join("\n")}` : ""].join("\n");
+		const summary = [`# s12c-conflict`, `**Date**: ${new Date().toISOString()}`, `**runId**: ${RUN_ID}`, `**deviceA**: ${deviceIdA}`, `**deviceB**: ${deviceIdB}`, `**result**: ${errors.length === 0 ? "PASS" : "FAIL"}`, `**B survivor content**: ${JSON.stringify(survivorContent?.slice(0, 200))}`, `**B artifact path**: ${artifactPath}`, `**B artifact content**: ${JSON.stringify(artifactContent?.slice(0, 200))}`, `**artifact on A**: ${artifactOnA}`, errors.length > 0 ? `\n**errors**:\n${errors.map((e) => `- ${e}`).join("\n")}` : ""].join("\n");
 		writeFileSync(`${outDir}/summary.md`, summary);
 		log(`s12c: artifacts written to ${outDir}/`);
 

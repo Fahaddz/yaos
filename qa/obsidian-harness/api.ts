@@ -4,7 +4,7 @@
  */
 
 import type { App } from "obsidian";
-import type { YaosQaDebugApi } from "../../src/qaDebugApi";
+import type { YaosQaDebugApi } from "../harness/qaDebugApi";
 import type {
 	QaConsoleApi,
 	QaContext,
