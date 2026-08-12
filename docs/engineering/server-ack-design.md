@@ -1,20 +1,24 @@
 # Server acknowledgement design (FU-8)
 
-> **Status: LEVEL 3 MVP IMPLEMENTED — baseline + post-apply server SV echoes are wired.**
+> **Status: IMPLEMENTED — baseline and post-apply server echoes are wired, and the
+> receipt is gated on the server's durable persist counter.**
 > Protocol spike findings: `docs/archive/server-ack-spike.md`.
 > Wire protocol uses `__YPS:` JSON channel (not a new binary message type).
-> Implemented scope remains Level 3 only: server Y.Doc in-memory receipt.
-> It is not durable persistence and does not prove another device applied the state.
+> A confirmed receipt means the server completed a write of this device's state to
+> storage. It does NOT prove another device received or applied that state. Against a
+> server that predates the durability marker the receipt falls back to the older
+> state-vector echo and keeps that server's weaker in-memory meaning — see
+> "From state-vector gating to persist-counter gating".
 >
 > This is a living design/implementation note. The main remaining open thread is
-> product/status integration and wording, not whether the Level 3 receipt mechanism exists.
+> echo-cost measurement and possible batching, not the receipt mechanism or its label.
 
 ## The problem
 
 Historically, `UpdateTracker` recorded `lastLocalUpdateWhileConnectedAt` — the last time a local
 Y.Doc update occurred while the WebSocket was open. This is the strongest claim the
-client could make without a server-side signal. FU-8 adds a stronger Level 3
-server-receipt signal, but the older timestamp still does NOT mean:
+client could make without a server-side signal. FU-8 adds a stronger server-receipt
+signal — a durable-write receipt — but the older timestamp still does NOT mean:
 
 - the update was put on the wire
 - the server received the update
@@ -40,10 +44,18 @@ There are five distinct levels. Each is cheaper and weaker than the next:
 | 1 | Frame sent | WebSocket `send()` returned without error |
 | 2 | Server received frame | Server echoes a receipt to the sending client |
 | 3 | Server applied | Server applied the update to the room Y.Doc in memory |
-| 4 | Server persisted | Update is in the journal (survives server restart) |
+| 4 | Server persisted | Update is in the journal or checkpoint (survives server restart) |
 
-Level 0 and Level 3 are implemented. Levels 1, 2, and 4 are not exposed as separate
-product claims.
+Level 0 and Level 4 are what ship today: a candidate is confirmed only after the
+server's persist counter advances, which happens only when a write completes. Level 3
+survives as the fallback against servers that predate the durability marker. Levels 1
+and 2 are not exposed as separate product claims.
+
+The analysis in the rest of this section and in "Design options for Level 3" is the
+original period record. It recommended Level 3 and Option A, and Option A is what
+shipped first. Read it as what was decided at the time, not as current behaviour; the
+move to a durable gate is documented in "From state-vector gating to persist-counter
+gating".
 
 **Recommendation: target Level 3 (server applied).**
 
@@ -140,6 +152,120 @@ State vector echo is the most natural fit for Y.js semantics:
 
 ---
 
+## Why a state-vector receipt was unsound (the motivating bug)
+
+A state vector maps Yjs client ID to highest clock: it describes **inserts only**.
+Deletions live in the delete set, which a state vector does not describe at all. Two
+documents differing by an arbitrary number of deletions can have byte-identical state
+vectors.
+
+The persistence layer used to skip a save when the state vector was unchanged. Deletion-
+only changes therefore hit a save that reported success and wrote nothing. Observed in
+production: a client reaped 40 tombstoned bodies, the server logged
+`save.skipped_equal_sv`, and the room reverted to 178 texts while the client held 138 —
+both sides reporting themselves synced.
+
+The save gate is now the update-driven `dirty` flag in `PersistenceCoordinator`, never a
+state-vector comparison. The same reasoning disqualifies the state vector as the basis
+for a *receipt*: it cannot represent the class of change most likely to be lost, so an
+echo of it confirms a deletion that may never have been stored. A receipt built on it is
+strongest exactly where it is least trustworthy.
+
+---
+
+## From state-vector gating to persist-counter gating
+
+**What shipped first** (Option A, above): the server echoed its state vector, and the
+client confirmed its pending candidate once the echoed vector covered the candidate's
+clocks. That proved an in-memory apply and nothing more.
+
+**What ships now**: the receipt is gated on a durable persist counter.
+
+- `PersistenceCoordinator.health.persistedGeneration` is a monotonic count of successful
+  persists by that coordinator instance. It advances **only** after a save completes
+  successfully. A **skipped** save does not advance it — `executeSave()` returns early
+  when the document is not dirty and when the computed delta is empty. A **failed** save
+  does not advance it either; the failure path marks health `degraded` and re-arms
+  `dirty` so the next save retries.
+- `PersistenceCoordinator.health.generationEpoch` is a value unique to the coordinator
+  instance, generated in its constructor — in practice, unique per Durable Object
+  instance.
+- The echo carries both alongside the state vector, as `gen` and `genEpoch`
+  (`server/src/svEcho.ts`).
+- The client records the generation in force when it captures a candidate
+  (`generationAtCapture`), and confirms that candidate only when a later echo reports a
+  generation **strictly greater** than that baseline (`src/sync/serverAckTracker.ts`).
+
+Because the counter advances only on a completed write, a receipt now means "your state
+was written to storage". This is a strengthening of the guarantee, not a relabelling of
+it: the previous mechanism could confirm state the server had merged in memory and never
+saved.
+
+### The epoch and the re-baselining rule
+
+The counter lives in memory, so a Durable Object restart resets it. A client holding
+generation 40 would otherwise wait forever for 41. `genEpoch` makes a restart
+distinguishable from progress: when the reported epoch differs from the one the client
+last saw, the client re-baselines its capture generation to the newly reported value.
+
+On re-baseline the client deliberately leaves any pending candidate **unconfirmed**. The
+new instance loaded the document from storage and may not hold an unsaved change;
+claiming otherwise would be a lie. Failing closed here costs a redundant "not saved yet"
+state and one more echo; failing open costs the user the change with a green light next
+to it.
+
+The same rule applies after a client restart, where `generationAtCapture` starts null:
+the first marker-bearing echo only establishes the baseline, and confirmation waits for a
+later echo.
+
+### The retained state-vector fallback: two coexisting guarantee levels
+
+The state-vector comparison remains in place as the fallback for servers that predate the
+durability marker. When an echo arrives without a usable `gen`/`genEpoch` pair, the client
+falls back to `isStateVectorGe(serverSv, candidateSv)`. That preserves those servers'
+existing behaviour rather than withdrawing receipts from them — a client talking to an old
+server keeps the weaker receipt it already had instead of losing status entirely.
+
+Two guarantee levels therefore coexist, distinguished by whether the marker is present:
+
+| Marker | Confirmation gate | What a confirmed receipt proves |
+|--------|-------------------|---------------------------------|
+| present | echoed `gen` > generation at candidate capture, same epoch | the server completed a write of your state to storage |
+| absent | echoed state vector covers the candidate state vector | the server applied your state to the room Y.Doc in memory |
+
+`ServerAckTracker.receiptGuaranteeIsDurable` reports which is in force — true once a
+durability marker has been seen. UI copy must be driven from that flag, never from an
+assumption that the stronger guarantee applies.
+
+### The schema was deliberately not bumped
+
+`gen`, `genEpoch`, and `degraded` are additive optional fields on the existing
+`schema: 1` payload. The client rejects an echo on strict schema inequality
+(`p.schema !== SV_ECHO_SCHEMA` in `src/sync/svEchoMessage.ts`), so bumping the schema
+would make every already-deployed client discard every echo and lose the receipts it
+currently has. Extending the payload instead costs nothing: old clients ignore unknown
+fields. A partial or malformed marker is treated as absent, not as a parse failure.
+
+### `degraded`: persistence health on the same channel
+
+The echo also carries an optional `degraded` boolean, emitted only when the room's
+persistence health is degraded. It rides this channel because the echo is the only
+message the client already receives on connect and on every update-bearing frame.
+
+Without it, a server that cannot store writes is invisible: the socket stays healthy
+while saves fail, so the client has no signal short of polling the debug endpoint.
+`ServerAckTracker.serverPersistenceDegraded` exposes it so the UI can say the server is
+not saving. An echo without a marker leaves the last known value alone rather than
+claiming health, since such a server cannot report it.
+
+**Caveat**: `kv-fallback` storage mode suppresses SV echoes entirely
+(`server/src/server.ts`), because echoing in that mode would advertise durability the
+store cannot deliver. That state therefore presents as **silence** — no echoes, no
+receipts, no `degraded` flag — not as a raised flag. Absence of echoes must never be read
+as health.
+
+---
+
 ## Wire protocol (implementation sketch)
 
 **Spike finding**: binary unknown message types are silently dropped by the
@@ -154,8 +280,9 @@ This section records the intended implementation shape. The working code is now 
 - `server/src/syncMessageClassifier.ts` — update-bearing Yjs sync frame classifier
 - `server/src/svEcho.ts` — `__YPS:` SV echo payload and send helper
 - `server/src/server.ts` — baseline echo in `onConnect()`, post-apply echo in `handleMessage()`
-- `src/sync/svEchoMessage.ts` — client parser, detailed failure reasons, counters
-- `src/sync/serverAckTracker.ts` — state-vector dominance truth gate
+- `server/src/persistenceCoordinator.ts` — `persistedGeneration`, `generationEpoch`, health status
+- `src/sync/svEchoMessage.ts` — client parser, optional durability marker, failure reasons, counters
+- `src/sync/serverAckTracker.ts` — generation truth gate, with state-vector dominance as fallback
 - `src/sync/vaultSync.ts` — client custom-message handler and receipt diagnostics
 
 See `docs/archive/server-ack-spike.md` for the protocol findings and caveats
@@ -167,10 +294,19 @@ See `docs/archive/server-ack-spike.md` for the protocol findings and caveats
 ```ts
 // In VaultSyncServer — sendSvEcho helper (sketch — see spike doc for caveats):
 private sendSvEcho(connection: Connection): void {
-    // Level 3 only: after in-memory Y.Doc apply; intentionally before persistence.
+    // Emitted after the in-memory Y.Doc apply. The emission point is NOT what makes the
+    // receipt durable — the marker in the payload is. The client confirms only on an
+    // echo whose generation exceeds its capture baseline, i.e. one sent after a save
+    // completed.
     const sv = Y.encodeStateVector(this.document);
-    // Use namespaced, schema-versioned payload. Use chunked base64 for large SVs.
-    this.sendCustomMessage(connection, JSON.stringify({ type: "yaos/sv-echo", schema: 1, sv: toBase64(sv) }));
+    const health = this.getPersistenceCoordinator().health;
+    // Namespaced, schema-versioned payload; chunked base64 for large SVs.
+    // gen/genEpoch/degraded are additive and optional — the schema is NOT bumped.
+    this.sendCustomMessage(connection, JSON.stringify({
+        type: "yaos/sv-echo", schema: 1, sv: toBase64(sv),
+        gen: health.persistedGeneration, genEpoch: health.generationEpoch,
+        ...(health.status === "degraded" ? { degraded: true } : {}),
+    }));
 }
 
 // On baseline connect (override onConnect):
@@ -211,8 +347,12 @@ needed beyond `lib0/decoding` for the inner-type peek.
 // In VaultSync — wire up after provider is created (sketch — see spike doc for caveats):
 // Register this handler BEFORE any provider message processing can fire.
 provider.on("custom-message", (msg: string) => {
-    const svBytes = parseSvEchoMessage(msg); // pure parser — validates type, schema, size
-    if (svBytes) this.updateTracker.recordServerSvEcho(svBytes);
+    // Pure parser — validates type, schema, and size, and returns the optional
+    // durability marker. A partial or malformed marker is reported as absent.
+    const result = parseSvEchoMessageDetailed(msg);
+    if (result.kind === "valid_sv_echo") {
+        this.updateTracker.recordServerSvEcho(result.sv, result.durability);
+    }
 });
 ```
 
@@ -255,6 +395,10 @@ confirmation, not per-update delivery tracking.
 onLocalUpdate(): void {
     this._lastUnconfirmedCandidateSv = Y.encodeStateVector(this.doc); // captured after transaction
     this._serverAppliedLocalState = false;
+    // Baseline for the durability gate: this candidate is confirmed only once an echo
+    // reports a persist generation strictly beyond this value. Null until the first
+    // marker-bearing echo arrives, which then becomes the baseline.
+    this._generationAtCapture = this._lastSeenServerGeneration;
     this._lastLocalUpdateAt = Date.now();
     if (this._connected) {
         this._lastLocalUpdateWhileConnectedAt = Date.now();
@@ -279,10 +423,35 @@ onReconnect(): void {
 }
 
 // On server SV echo:
-recordServerSvEcho(serverSv: Uint8Array): void {
+recordServerSvEcho(serverSv: Uint8Array, durability: SvEchoDurability | null): void {
     this._lastServerReceiptEchoAt = Date.now();
+    // An absent marker means a server too old to report health. Keep the last known
+    // value rather than claiming healthy.
+    if (durability !== null) this._serverPersistenceDegraded = durability.degraded === true;
+
+    // A restart resets the counter, so re-baseline on epoch change instead of waiting
+    // forever for a generation the new instance will never reach.
+    const epochChanged = durability !== null
+        && this._lastServerGenerationEpoch !== null
+        && durability.epoch !== this._lastServerGenerationEpoch;
+    if (epochChanged) this._generationAtCapture = durability.generation;
+    if (durability !== null) {
+        this._lastServerGenerationEpoch = durability.epoch;
+        this._lastSeenServerGeneration = durability.generation;
+    }
+
     if (this._lastUnconfirmedCandidateSv !== null) {
-        this._serverAppliedLocalState = isStateVectorGe(serverSv, this._lastUnconfirmedCandidateSv);
+        this._serverAppliedLocalState = durability !== null
+            // Durable gate: a write completed after this candidate was captured. An
+            // epoch change never confirms — the new instance may not hold the change.
+            ? !epochChanged
+                && this._generationAtCapture !== null
+                && durability.generation > this._generationAtCapture
+            // Fallback for servers predating the marker: in-memory apply only.
+            : isStateVectorGe(serverSv, this._lastUnconfirmedCandidateSv);
+        if (durability !== null && this._generationAtCapture === null) {
+            this._generationAtCapture = durability.generation; // first baseline
+        }
     }
     // If no candidate: update lastServerReceiptEchoAt but leave serverAppliedLocalState null.
     this._persistCandidateState();
@@ -296,9 +465,10 @@ onStartup(): void {
     this._lastUnconfirmedCandidateSv = stored.candidateSv;
 
     // Do NOT restore serverAppliedLocalState = true as active truth.
-    // Level 3 is not durable: the DO may have crashed before enqueueSave().
-    // A persisted `true` means "server had it at that moment" — not "server still has it."
-    // Wait for a fresh echo to revalidate.
+    // A persisted `true` means "the server had written it at that moment" — not "the
+    // server still has it": server reset and room reclaim are undetectable from client
+    // state alone, and the generation baseline the confirmation was judged against does
+    // not survive restart. Wait for a fresh echo to revalidate.
     this._serverAppliedLocalState = null;
     this._lastKnownServerReceiptEchoAt = stored.lastKnownServerReceiptEchoAt ?? null;
 
@@ -331,11 +501,10 @@ private _validateCandidateAgainstDoc(): void {
     if (docDominatesCandidate && !candidateDominatesDoc) {
         // Local doc has advanced past the candidate (e.g. IDB crash gap, merge).
         // Replace candidate with the current local doc SV and mark unconfirmed.
-        // This is conservative: the replacement SV may include remote state that
-        // arrived while offline or was already confirmed. That is acceptable because
-        // the server dominance check (`isStateVectorGe(serverSv, candidateSv)`) is
-        // the truth gate — a candidate that includes remote state will still be
-        // confirmed by the server's next echo. It will not produce false `true`.
+        // arrived while offline or was already confirmed. That is acceptable because the
+        // truth gate is the server's persist generation, not the candidate's contents: a
+        // candidate carrying extra remote state is still confirmed by the next echo that
+        // reports a completed write. It will not produce false `true`.
         this._lastUnconfirmedCandidateSv = currentSv;
         this._serverAppliedLocalState = false;
         this._persistCandidateState();
@@ -403,8 +572,9 @@ type PersistedCandidateState = {
     candidateSvBase64: string | null;    // base64-encoded Uint8Array
     candidateCapturedAt: number | null;  // ms timestamp
     // Historical-only: persisted `serverAppliedLocalState=true` is NOT restored as
-    // active truth after restart. Level 3 is not durable — the DO may have crashed
-    // before enqueueSave(). Use `lastKnownServerReceiptEchoAt` only for "last known" UI.
+    // active truth after restart. It records a completed server write at that moment,
+    // not the current room's state, and the generation baseline it was judged against
+    // is gone. Use `lastKnownServerReceiptEchoAt` only for "last known" UI.
     lastKnownServerReceiptEchoAt: number | null;
 };
 ```
@@ -481,22 +651,27 @@ state"** that discards the persisted candidate and resets `serverAppliedLocalSta
 
 Two distinct echo events are required. One alone is not sufficient.
 
-### Echo 1: Post-apply echo (the primary confirmation signal)
+### Echo 1: Post-apply echo (the carrier of the durability marker)
 
-In Phase A, the echo is sent after the server processes a Yjs sync message with inner
-type 1 (SyncStep2) or 2 (Update). This is named "post-apply" because the normal case
-is that `Y.applyUpdate()` ran and the server's Y.Doc now includes the client's ops.
+The echo is sent after the server processes a Yjs sync message with inner type 1
+(SyncStep2) or 2 (Update). It is named "post-apply" because the normal case is that
+`Y.applyUpdate()` ran and the server's Y.Doc now includes the client's ops.
 
-**Important caveat**: Phase A does not prove a new update was applied. It proves the
-server processed a may-contain-update sync frame and is echoing its current state vector.
-For duplicate or no-op updates (server already had those ops), the echo still fires — and
-the client's `isStateVectorGe(serverSv, candidateSv)` check is the truth gate. If the
-server SV dominates the candidate, the update was confirmed (either by this message or
-an earlier one). This is intentional: the echo provides a fresh server-state receipt
-regardless of whether any new ops were applied.
+**A post-apply echo does not itself confirm the candidate.** It reports the persist
+generation as of that moment, which is the generation *before* the just-applied update
+has been saved. Confirmation arrives on a later echo — the next post-apply echo, or the
+baseline echo on the next connect — once a save has completed and the generation has
+advanced past the client's capture baseline. Confirmation therefore trails the write by
+one save cycle (`onSave` is debounced by the framework) plus one echo. That latency is
+the price of the receipt meaning "stored" rather than "in memory".
 
-This is what confirms offline edits after reconnect are received by the server's Y.Doc.
-The baseline echo is NOT sufficient for this — it fires before the sync exchange completes.
+An echo also fires for duplicate or no-op sync frames. That is intentional: every echo is
+a fresh report of server state, and the client's gate — generation, or state-vector
+dominance against a server predating the marker — decides whether it confirms anything.
+
+This is the mechanism that eventually confirms offline edits delivered after reconnect.
+The baseline echo alone is not sufficient: it fires before the sync exchange completes,
+so it can only report a generation predating those edits.
 
 ### Echo 2: Baseline echo on room load / client connect
 
@@ -525,15 +700,18 @@ updates) is what provides confirmation.
 
 ```text
 Client reconnects with offline edits.
-Server emits baseline echo.            ← server does not have offline edits yet
-  → client sees serverAppliedLocalState = false (correct — echoed SV < candidate SV)
+Server emits baseline echo.            ← server does not have the offline edits yet
+  → client re-baselines if the epoch changed; candidate stays unconfirmed
 Client sends missing updates (Yjs sync exchange).
 Server applies missing updates.
-Server emits post-apply echo.          ← this echo confirms the offline edits
-  → client sees serverAppliedLocalState = true (correct)
+Server emits post-apply echo.          ← generation not advanced yet; still unconfirmed
+Server's debounced save completes.     ← persistedGeneration++
+Next echo (post-apply or baseline).    ← generation now beyond the capture baseline
+  → client sees serverAppliedLocalState = true (correct: the edits are in storage)
 ```
 
-Both states are correct and expected. The transition false → true is the signal.
+Every state before the last is correct and expected. The transition false → true is the
+signal, and it now waits for a completed write rather than for an in-memory apply.
 
 ### Echo failure / connection close
 
@@ -580,6 +758,9 @@ anywhere in code, comments, or tests.**
 ```ts
 // UpdateTracker fields:
 lastUnconfirmedCandidateSv: Uint8Array | null  // SV snapshot at last unconfirmed local write
+generationAtCapture: number | null              // persist generation in force when the candidate was captured
+lastSeenServerGeneration: number | null         // most recent generation reported by an echo
+lastServerGenerationEpoch: string | null        // server instance the generation belongs to
 serverAppliedLocalState: boolean | null         // null = no candidate loaded this session
 lastServerReceiptEchoAt: number | null              // timestamp of last SV echo THIS session (resets to null on restart)
 lastKnownServerReceiptEchoAt: number | null         // persisted historical timestamp; survives restart; "last known"
@@ -588,6 +769,8 @@ lastKnownServerReceiptEchoAt: number | null         // persisted historical time
 serverAppliedLocalState: boolean | null
 lastServerReceiptEchoAt: number | null              // present if a fresh echo arrived this session
 lastKnownServerReceiptEchoAt: number | null         // present if historical persisted timestamp exists
+receiptGuaranteeIsDurable: boolean                  // true once a durability marker has been seen
+serverPersistenceDegraded: boolean                  // server reported it cannot store writes
 ```
 
 These two timestamps have different semantics and must not be merged:
@@ -601,17 +784,34 @@ The UI must use `lastServerReceiptEchoAt` when the session is active and a fresh
 has arrived. It must fall back to `lastKnownServerReceiptEchoAt` only for the "last known"
 display after restart — never as a substitute for current-session confirmation.
 
-The internal name `serverAppliedLocalState` is precise: Level 3 means the server
-Y.Doc has applied the update (not merely received a frame — that would be Level 2).
-Using "received" as an internal name blurs the Level 2 / Level 3 distinction.
+The internal name `serverAppliedLocalState` is retained because it is the shipped field
+name across the tracker, `SyncFacts`, diagnostics, and the persisted store. It now reads
+as an understatement: when `receiptGuaranteeIsDurable` is true, the field means the server
+completed a write of this device's latest local state. Against a server predating the
+durability marker it keeps its original meaning of an in-memory apply. Do not rename it
+without migrating the persisted store, and do not let UI copy inherit the older, weaker
+meaning.
 
-The UI label "Server received" is acceptable human copy for Level 3. Any expanded
-status or tooltip must clarify:
+Any expanded status or tooltip must state the guarantee actually in force. The shipped
+strings live in `src/status/statusBarController.ts` as `SERVER_RECEIPT_STATUS_TITLE`
+(durability marker present):
 
 ```
-Server received this device's latest local state (applied to server Y.Doc in memory).
-This does not guarantee durability — see "Saved to server" for persistence confirmation.
+Server receipt means this device's latest local CRDT state was written to the server's
+storage. It does not prove that another device received the change.
 ```
+
+and `SERVER_RECEIPT_STATUS_TITLE_LEGACY`, used when `receiptGuaranteeIsDurable` is false,
+where the state-vector fallback proves only an in-memory apply:
+
+```
+Server receipt means this device's latest local CRDT state was applied to the server
+Y.Doc in memory. This server does not report storage confirmation, so the receipt does
+not prove durable storage or that another device received the change.
+```
+
+Keep them as two separate strings. Softening the durable one into a hedge would describe
+the common case as though it were still the weak case, which is the mistake this replaces.
 
 ### UI combination rule
 
@@ -625,14 +825,22 @@ A bare boolean is not enough:
 
 Example copy:
 
-| `serverAppliedLocalState` | `connected` | `lastServerReceiptEchoAt` | Display |
+| `serverAppliedLocalState` | `connected` | `lastServerReceiptEchoAt` | Display (shipped strings) |
 |--------------------------|-------------|----------------------|---------|
-| `null` | any | — | "Server receipt: not tracked yet" |
-| `false` | `true` | — | "Local state not yet received by server" |
-| `false` | `false` | — | "Offline — local state not yet received by server" |
-| `true` | `true` | present | "Server received latest local state" |
-| `true` | `false` | present | "Offline — last server receipt at [time]" (use `lastServerReceiptEchoAt`) |
-| `null` | any | — (only `lastKnownServerReceiptEchoAt`) | "Last known server receipt: [time]; checking…" |
+| `null` | any | — | "Receipt: not tracked yet" |
+| `false` | `true` | — | "Receipt: local state not yet received by server" |
+| `false` | `false` | — | "Receipt: offline — local state not yet received by server" |
+| `true` | `true` | present | durable: "Receipt: server saved latest local state" / fallback: "Receipt: server received latest local state" |
+| `true` | `false` | present | durable: "Receipt: offline — server saved at [time]" / fallback: "Receipt: offline — server receipt at [time]" (use `lastServerReceiptEchoAt`) |
+| `null` | any | — (only `lastKnownServerReceiptEchoAt`) | "Receipt: last known server receipt at [time] — checking…" |
+
+The unconfirmed rows say "not yet received" rather than "not yet saved": before a receipt
+arrives the client cannot tell which of the two the server failed to do, and the weaker
+wording is the one that is always true.
+
+`serverPersistenceDegraded` is a separate segment ("Server not saving"), ranked ahead of
+the receipt and shown even while connected — a healthy socket is exactly what makes that
+failure invisible. Echo silence carries no segment at all, so it cannot be read as health.
 
 The `null` row means no candidate has been captured in this session or loaded from
 persistence — it does NOT necessarily mean there are pending updates.
@@ -640,16 +848,20 @@ persistence — it does NOT necessarily mean there are pending updates.
 **After plugin restart**: `serverAppliedLocalState` is always `null` until a fresh echo
 arrives (persisted `true` is never restored as active truth). If `lastKnownServerReceiptEchoAt`
 is present from persistence, use the bottom row: "Last known server receipt: [time]; checking…".
-Never show "Server received" based on persisted state alone. Once a fresh SV echo arrives and
-confirms the current candidate, `serverAppliedLocalState` becomes `true` and `lastServerReceiptEchoAt`
-is set — then the normal `true` rows apply.
+Never show a saved-or-received status based on persisted state alone. After restart the
+generation baseline is gone too, so the first marker-bearing echo only establishes it and
+confirmation needs a later echo reporting a completed write. Once that arrives,
+`serverAppliedLocalState` becomes `true` and `lastServerReceiptEchoAt` is set — then the
+normal `true` rows apply.
 
-Do not show a naked "Server received" when the transport is currently offline. A
-user seeing "Server received" while offline may assume their notes are safe. The
-guarantee is only that the server's in-memory Y.Doc had the update the last time
-the echo arrived.
+Do not show a naked status when the transport is currently offline. The guarantee is
+about the last echo that arrived, not about now: the server had saved the state that
+reached it by then, and anything written since is unconfirmed. Always pair the status
+with its timestamp.
 
-**Do not** use `serverAcked`, `synced`, `saved`, `confirmed`, or `serverReceivedLocalState`.
+**Do not** use `serverAcked` or `serverReceivedLocalState` as internal names, and do not
+use "synced" or "confirmed" in copy — neither is proven by a receipt. "Saved" is now
+correct copy, but only while `receiptGuaranteeIsDurable` is true.
 Do not use "Pending local edits" — maintenance writes also create candidates.
 
 ---
@@ -669,14 +881,19 @@ ever required.
 ### Exact hook point
 
 The echo is emitted **after `Y.applyUpdate()` returns successfully**, **before**
-`enqueueSave()` runs. This means:
+`enqueueSave()` runs. The emission point was never moved; the guarantee comes from the
+durability marker in the payload, not from when the frame is sent:
 
 ```text
-Level 3 guarantee: server Y.Doc in memory has your update.
-NOT guaranteed: update is in the journal or checkpoint.
+Receipt guarantee: the server completed a write of your state to storage.
+Carried by:        gen / genEpoch, where gen advances only on a successful save.
+Confirmed by:      a later echo whose gen exceeds the client's capture baseline.
+NOT guaranteed:    another device has received the change.
 ```
 
-This is intentional for Phase A. A future Phase B would emit after persistence.
+Emitting after persistence instead proved unnecessary. Making the client wait for the
+generation to advance yields the durable guarantee without holding an echo open across a
+save, and it also credits writes flushed by a save the client did not trigger.
 
 ---
 
@@ -686,53 +903,72 @@ Under Cloudflare DO hibernation, the in-memory Y.Doc is rebuilt from
 `ChunkedDocStore` on cold start. State vectors are derived from document state — they
 survive correctly.
 
+The persist counter does NOT survive: `persistedGeneration` is in-memory and restarts at
+zero, and `generationEpoch` is regenerated per coordinator instance. That is precisely
+what the epoch is for — a client seeing a new epoch re-baselines and leaves any pending
+candidate unconfirmed, because the rebuilt document came from storage and cannot vouch
+for a change that was never saved.
+
 **Required**: on room cold-start, after the document is loaded and the connection is
 admitted, the server emits a baseline SV echo to the newly connected client.
 
-The ack knowledge is recoverable after reconnect: the server regenerates the echo
-from the current room doc state; the client compares it against its persisted
-unconfirmed candidate. The echo message itself does not need to persist.
+Receipt knowledge is only partly recoverable after a cold start. The server regenerates an
+echo from the current room doc, but the generation it reports belongs to a new epoch, so a
+pending candidate is re-baselined and left unconfirmed until this device's state is written
+again. That is the honest answer: the rebuilt document holds only what storage had. Against
+a server predating the durability marker the older recovery still applies — the echoed state
+vector is compared against the persisted candidate directly. The echo message itself never
+needs to persist.
 
 ---
 
 ## What this does NOT solve
 
-**"Server applied" ≠ "durable"** — maintain this boundary in docs and UI labels.
+**"Server saved" ≠ "other devices have it"** — this is the boundary to maintain in docs
+and UI labels.
 
-Level 3 ack means "server Y.Doc in memory has your update." It does NOT mean:
-- the update has been written to the journal
-- the update has been checkpointed
-- the update survives a Durable Object crash before `enqueueSave()` runs
+A confirmed receipt means the server completed a write of this device's captured state to
+storage. It does NOT mean:
 
-Two-phase rollout:
-- **Phase A** (this design): `serverAppliedLocalState` signal → label **"Server received"**
-- **Phase B** (future): `serverPersistedLocalState` signal → label **"Saved to server"**
+- another device has received or applied the change
+- the change is visible in any other client's document
+- a local change made after the confirmed candidate is saved — the receipt covers the
+  candidate it confirmed, nothing later
 
-**Multi-device**: The ack confirms the server has the update. It does not confirm
-Device B has received or applied it.
+**Two guarantee levels coexist.** Against a server predating the durability marker the
+receipt falls back to state-vector dominance and proves only an in-memory apply. UI copy
+must follow `receiptGuaranteeIsDurable` instead of assuming the stronger claim.
+
+**Degraded and silent servers.** `degraded` reports that the server cannot store writes.
+`kv-fallback` mode emits no echoes at all, so that failure appears as an absence of
+receipts rather than as a flag; absence of an echo is not evidence of health.
 
 **Offline edits**: The candidate is persisted across disconnect and plugin restart.
-After reconnect, the post-apply echo confirms offline edits from any session in which
-the local update was captured and persisted.
+After reconnect, the first echo reporting a persist generation beyond the capture
+baseline confirms those offline edits, from any session in which the local update was
+captured and persisted.
 
 ---
 
 ## UI label discipline
 
-Do NOT use these labels for Level 3 (server-applied) ack:
-- "Synced" — implies durability and multi-device delivery
-- "Saved" — implies persistence
+Do NOT use these labels for a confirmed receipt:
+- "Synced" — implies multi-device delivery, which no receipt proves
 - "Confirmed" — implies end-to-end delivery
 - "Acked" — too technical and over-implies safety
 - "Pending local edits" — implies user edits only; use "local state"
 
 Use:
-- "Server received" — accurate for Level 3
+- "server saved" wording — accurate for a confirmed receipt while
+  `receiptGuaranteeIsDurable` is true (shipped: "Receipt: server saved latest local state")
+- "server received" wording — the fallback against a server predating the durability
+  marker, where the receipt proves an in-memory apply only
+- "Server not saving" — for `serverPersistenceDegraded`
 
 Always combine status with connection state and timestamp. See Naming section.
 
-Reserve "Saved to server" or "Durably saved" for when persistence before echo is
-implemented.
+"Saved" wording must never appear while `receiptGuaranteeIsDurable` is false, and must
+never be stretched to mean other devices are up to date.
 
 ---
 
@@ -742,8 +978,8 @@ These are settled. Do not relitigate them in implementation.
 
 | Decision | Choice |
 |----------|--------|
-| Ack level | Phase A: server-applied (Level 3). Persisted ack is Phase B. |
-| UI label | "Server received" — not "synced", "saved", "confirmed", or "acked" |
+| Ack level | Durable write: gated on the server's persist generation, which advances only on a completed save. State-vector dominance is retained only as the fallback for servers predating the durability marker. |
+| UI label | "Saved to server" when the durability marker is present; "Server received" against fallback servers. Never "synced", "confirmed", or "acked". |
 | Echo target | Phase A: sender-only plus baseline echo on connect. No broadcast. |
 | Pending representation | `boolean \| null` — not a count. Latest-state, not per-update. |
 | Candidate SV | `lastUnconfirmedCandidateSv` — captured at write time, not current doc SV. |
@@ -797,8 +1033,15 @@ candidate contains old local client ID; server has it at the correct clock => tr
 ```text
 local update while connected: candidate captured, serverAppliedLocalState=false, persisted
 local update while disconnected: candidate captured, serverAppliedLocalState=false, persisted
-echo dominating candidate: serverAppliedLocalState=true, persisted
-echo not dominating candidate: serverAppliedLocalState=false
+marker echo with gen beyond capture baseline: serverAppliedLocalState=true, persisted
+marker echo with gen equal to capture baseline: serverAppliedLocalState=false
+marker echo with changed epoch: baseline re-set, candidate left unconfirmed [NON-NEGOTIABLE]
+first marker echo after restart: establishes baseline only, does not confirm
+echo without marker, dominating candidate: serverAppliedLocalState=true (fallback path)
+echo without marker, not dominating candidate: serverAppliedLocalState=false
+echo without marker: receiptGuaranteeIsDurable stays false
+degraded flag on echo: serverPersistenceDegraded=true; a healthy marker echo clears it
+echo without marker: serverPersistenceDegraded keeps its last known value
 echo with no candidate: lastServerReceiptEchoAt updated, serverAppliedLocalState stays null
 disconnect: unconfirmed candidate retained in memory, serverAppliedLocalState unchanged
 reconnect: server echo compared against retained candidate
@@ -831,6 +1074,11 @@ server does NOT emit post-apply echo before applyUpdate succeeds
 server emits baseline SV echo to newly connected client after room load
 server does NOT broadcast post-apply echo to unrelated clients in Phase A
 echoed SV actually dominates the just-applied document state
+echo carries gen and genEpoch and keeps schema at 1
+gen does not advance across a skipped save
+gen does not advance across a failed save
+degraded flag present only when persistence health is degraded
+no echo at all in kv-fallback mode
 ```
 
 Current coverage:
@@ -838,13 +1086,16 @@ Current coverage:
 - `tests/server-sync-message-classifier.ts`
 - `tests/server-sv-echo.ts`
 - `tests/server-post-apply-wiring.ts`
+- `tests/receipt-durability.ts` — generation gating, epoch re-baselining, fallback path
+- `tests/status-label.ts` — durable vs fallback copy, degraded segment
 - `tests/provider-manual-connect.mjs` through `npm run test:integration:worker`
 
 ### Integration test
 
 ```text
-offline candidate survives disconnect; reconnect sync delivers missing update;
-server post-apply echo marks serverAppliedLocalState=true on the client [NON-NEGOTIABLE]
+offline candidate survives disconnect; reconnect sync delivers missing update; the first
+echo reporting a persist generation beyond the capture baseline marks
+serverAppliedLocalState=true on the client [NON-NEGOTIABLE]
 ```
 
 The current live Worker smoke proves the wire-level core of this path:
@@ -885,12 +1136,16 @@ Implementation status:
    - `serverAppliedLocalState`
    - `lastServerReceiptEchoAt` (diagnostic copy: last server receipt echo observed)
    - `lastKnownServerReceiptEchoAt`
+   - `receiptGuaranteeIsDurable` and `serverPersistenceDegraded`
    - persistence health/failure fields
    - client and server SV echo counters
 
-5. **Status label** — still pending:
-   - must combine state + connection + timestamp
-   - must not say "synced", "saved", "confirmed", or "durable"
+5. **Status label** — implemented in `src/status/statusBarController.ts`:
+   - combines state + connection + timestamp
+   - follows `receiptGuaranteeIsDurable`: "saved" wording only while it is true, with the
+     legacy "received" wording and tooltip against fallback servers
+   - surfaces `serverPersistenceDegraded` as its own "Server not saving" segment
+   - says neither "synced" nor "confirmed" — a receipt proves neither
 
 6. **Tests** — implemented for pure logic, server helpers, server wire shape, and live Worker smoke.
 

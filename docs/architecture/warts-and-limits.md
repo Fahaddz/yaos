@@ -5,19 +5,34 @@ It is intentionally fact-first: hard constraints, current implementation truth, 
 
 Maintaining one vault-level `Y.Doc` gives strong cross-file transactional behavior, but it also means persistence must handle a large binary state graph on infrastructure with strict per-entry limits. YAOS addresses this with a checkpoint + journal storage engine rather than single-value rewrites.
 
+## Hard platform limits
+
+YAOS is built to run on Cloudflare's free tier, and those quotas are the binding constraints on the entire design. They are not soft: exceeding one makes further operations of that type *fail*, it does not throttle them.
+
+- Storage: 1 GB per Durable Object, 5 GB per account.
+- Rows written: 100,000 per day. Deletes count as writes, and index updates count as additional rows on top of the row you asked for.
+- Rows read: 5,000,000 per day.
+- Row and BLOB size: 2 MB. SQL statement size: 100 KB.
+- Isolate memory: 128 MB.
+
+The row budgets, not the byte budgets, are what actually shape the storage engine. A design that writes a row per edit, or that keeps a log bounded by deleting the oldest entry on every append, exhausts the daily allowance long before it comes anywhere near the gigabyte.
+
 ## Current server persistence model
 
 YAOS keeps a monolithic vault-level `Y.Doc` in memory, but persistence is no longer a single-value rewrite:
 
-- Checkpoint layer: full-state snapshots chunked into 512 KiB segments.
-- Journal layer: coalesced state-vector deltas appended at `onSave()` cadence.
+- Checkpoint layer: full-state snapshots split across 1 MB rows (`snapshot_chunks`) in Durable Object SQLite, sized with margin under the 2 MB row limit.
+- Journal layer: coalesced state-vector deltas appended at `onSave()` cadence, each row capped at 1.5 MB.
 - Baseline anchor: checkpoint state vector is persisted and validated on load.
 - Integrity layer: SHA-256 verification on checkpoint and journal payloads.
 
 Compaction policy is deterministic:
 
 - Compact when journal exceeds 50 entries, or
-- Compact when journal exceeds 1 MiB total bytes.
+- Compact when journal exceeds 1 MB total bytes.
+- Rewrite a full checkpoint instead of appending when a single delta exceeds 2 MB, or after 2 consecutive append failures.
+
+The legacy KV-backed store (`ChunkedDocStore`) survives as a read-only fallback and migration source. It uses 64 KB chunks, sized for the Durable Object KV per-value limit rather than the SQLite row limit. Nothing in the current write path touches it.
 
 Operationally, this solved the "final boss" of CRDT scaling for this architecture: write amplification from full-state rewrites on tiny edits.
 
@@ -28,13 +43,21 @@ Order-of-magnitude effect:
 
 ## Practical ceilings (what hurts first)
 
-Very large vaults are still constrained by:
+Storage capacity is not the limit. The limit is the in-memory `Y.Doc`, measured against a 128 MB isolate.
 
-- CPU cost for `Y.encodeStateAsUpdate()` and merge/apply work.
-- Durable Object memory pressure on cold start/replay.
-- Client-side parse/apply latency (especially mobile), even if transport limits are higher.
+A cold-loaded document is cheap. Decoding state into a fresh `Y.Doc` costs roughly 1.16 bytes per character for ASCII content and ~2.1 for UTF-16; 112 MB of text cold-loads at 130 MiB of heap. If that were the whole story the ceiling would be generous.
 
-In practice, compute and memory behavior usually become the first bottlenecks before raw storage capacity for CRDTs.
+It is not, because documents do not stay cold. A warm document — one that was edited in place rather than loaded from encoded state — costs 4-7x a freshly cold-loaded document holding byte-identical state. This is not Yjs item overhead. Yjs merges adjacent inserts from the same client by concatenating strings (`str += str`), and V8 represents that as a deep rope which is never flattened. Typing builds the rope; nothing tears it down, and hibernation does not reclaim it.
+
+Measured on one real vault's Durable Object, hourly peaks over 48 hours, for a 3.66 MB document: min 3.3 MiB, median 36.0 MiB, max 64.4 MiB.
+
+Re-materialising the document — decoding its own encoded state into a fresh `Y.Doc` — recovers 73-76% of that overhead at realistic edit locality and returns the document to its cold-load footprint. At pathological locality, switching note on every edit, only 33-39% comes back: the remainder is item fragmentation, which no re-encode can undo.
+
+That puts the practical ceiling at roughly 11 MB of vault content without re-materialisation, and roughly 50 MB with it.
+
+A measurement trap worth recording, because it wasted real time: content decoded from a Yjs update lands in V8's `external` memory, not `heapUsed`. Instrumentation reporting `heapUsed + arrayBuffers` shows near-zero for decoded content, which looks like an excellent result rather than a broken gauge.
+
+Below that ceiling, the costs that bite are CPU for `Y.encodeStateAsUpdate()` and merge/apply work, and client-side parse/apply latency (especially mobile), which lags well behind what the transport would allow.
 
 ## Safety invariants
 
@@ -79,6 +102,8 @@ In YAOS, markdown tombstones (records of deleted files) are intentionally retain
 Reason: without tombstones, stale offline clients can reintroduce deleted files during reconnect, causing resurrection bugs.
 
 Tradeoff: tombstones increase long-term graph size and add lookup overhead, but they preserve deletion correctness under reconnect/offline churn. This is a correctness-first choice.
+
+What is *not* retained forever is the deleted file's content. Deleting a file leaves its `Y.Text` body in `idToText`, unreachable but still live as far as Yjs is concerned and therefore never collected, so the document grows with the vault's lifetime content rather than its current content. A reaper reclaims the bodies of long-tombstoned files after a 30-day grace period and leaves the tombstones themselves in place, so resurrection prevention and the tombstone-conflict reconcile path behave exactly as before. The grace period exists because a device receiving a remote delete reads the body as a baseline to decide whether the local file was modified; with no baseline it fails safe and preserves the file.
 
 ### Local plugin persistence is serialized on purpose
 
