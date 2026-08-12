@@ -1,11 +1,15 @@
 /**
- * installTelemetryRuntime — wires passive Observer machinery given a
- * TelemetryRuntimeHost.
+ * installTelemetryRuntime — constructs the passive debug/Observer machinery
+ * given a TelemetryRuntimeHost.
  *
- * This is the single entry point for the telemetry/observer runtime.
- * main.ts imports this ONLY via dynamic import when settings.debug or
- * settings.qaDebugMode is true. In a production build with code splitting
- * this file and all its transitive imports stay out of the main chunk.
+ * This is a normal module inside main.js. It used to be a separate bundle
+ * entry point loaded by eval; it no longer is, and there is no ABI, no loader
+ * and no dynamic import left. main.ts calls it directly when settings.debug
+ * (or qaDebugMode) is on, and holds the returned handle.
+ *
+ * The handle stays a named seam rather than being inlined into main.ts: it is
+ * the one list of everything product code is allowed to ask the debug runtime
+ * to do, and it is short on purpose.
  *
  * Observer contract:
  *   - May contain: FlightRecorder, SafeDiagnostics,
@@ -25,15 +29,14 @@ import type { TelemetryRuntimeHost } from "./telemetryRuntimeHost";
 import { FlightTraceController } from "./debug/flightTraceController";
 import { FlightTraceSink } from "./debug/flightTraceSink";
 import { DiagnosticsService } from "./diagnostics/diagnosticsService";
-import type { FlightMode, FlightPathEventInput, FlightEventInput } from "./debug/flightEvents";
-import type { ProductFlightPathEventInput } from "../observability/traceSink";
+import type { FlightPathEventInput, FlightEventInput } from "./debug/flightEvents";
+import type { ProductFlightPathEventInput, TraceSink } from "../observability/traceSink";
 import { PersistentTraceLogger } from "./debug/trace";
 import type { TraceLoggerPort, TraceLoggerConfig } from "../observability/traceLogger";
-export { TELEMETRY_RUNTIME_ABI_VERSION as telemetryRuntimeAbiVersion } from "./telemetryRuntimeAbi";
+import type { FrontmatterQuarantineEntry } from "../sync/frontmatterQuarantine";
 
 /**
- * Handle returned to main.ts after telemetry runtime is installed.
- * All methods use primitive types only — no telemetry types leak through.
+ * Handle returned to main.ts after the debug runtime is installed.
  *
  * This interface contains ONLY passive/observer capabilities.
  * FORBIDDEN: forceCrdtContent, forceSyncFileFromDisk, setQaNetworkHold,
@@ -42,30 +45,31 @@ export { TELEMETRY_RUNTIME_ABI_VERSION as telemetryRuntimeAbiVersion } from "./t
  */
 export interface TelemetryRuntimeHandle {
 	// TraceSink adapter — product code routes events here
-	readonly traceSink: import("../observability/traceSink").TraceSink;
+	readonly traceSink: TraceSink;
 
 	// Called by main.ts on every path event (from reconciliation, sync)
 	recordFlightPathEvent(event: ProductFlightPathEventInput | FlightPathEventInput): void;
 	recordFlightEvent(event: FlightEventInput): void;
 
-	// Flight trace lifecycle
+	// Flight trace lifecycle. There is no start/stop pair: recording is a pure
+	// function of settings.debug, and refreshFlightTraceState applies it.
 	setupFlightTrace(deps: {
 		getDocSchemaVersion(): number | null;
 		buildCheckpoint(): Promise<Record<string, unknown>>;
 	}): void;
 	refreshFlightTraceState(reason: string): Promise<void>;
-	scheduleTraceStateSnapshot(reason: string): void;
 
-	// Passive trace commands (safe, read-only diagnostic operations)
-	startTelemetryTrace(mode?: string): Promise<void>;
-	stopTelemetryTrace(): Promise<void>;
-	exportSafeFlightTrace(): Promise<void>;
-	exportFullFlightTrace(): Promise<void>;
-	showTimelineForCurrentFile(): void;
+	// Passive trace commands (safe, read-only diagnostic operations).
+	// includeFilenames only widens the export header; event lines are identical.
+	exportDebugTrace(includeFilenames: boolean): Promise<void>;
 	clearFlightLogs(): Promise<void>;
 
-	// QA trace secret hash (for cross-device identity verification — read-only)
-	getQaTraceSecretHash(): string | null;
+	/**
+	 * Fingerprint of the derived path-pseudonymisation salt, `sha256:<32 hex>`,
+	 * or null when no trace is active. Lets two devices in one vault confirm
+	 * they are producing correlatable pathIds. Read-only.
+	 */
+	getPathSaltFingerprint(): string | null;
 
 	// ---------------------------------------------------------------------------
 	// QA harness accessors — read-only references to internal Observer objects.
@@ -74,30 +78,38 @@ export interface TelemetryRuntimeHandle {
 	// ---------------------------------------------------------------------------
 
 	/** Returns the FlightTraceController instance (for QA harness phase recording). */
-	getFlightTraceController?(): import("./debug/flightTraceController").FlightTraceController | null;
+	getFlightTraceController?(): FlightTraceController | null;
 
-	// Diagnostics — typed as unknown to avoid nominal type mismatch between
-	// src/telemetry/diagnostics/diagnosticsService and src/diagnostics/diagnosticsService.
-	// They are structurally identical; call sites cast as needed.
-	readonly diagnosticsService: unknown;
+	readonly diagnosticsService: DiagnosticsService;
 
 	// Called on plugin unload
 	dispose(): void;
 
-	/** Creates a PersistentTraceLogger bound to the telemetry runtime. */
+	/** Creates a PersistentTraceLogger bound to the debug runtime. */
 	createTraceLogger(app: App, config: TraceLoggerConfig): TraceLoggerPort;
 
 	/**
-	 * Register all telemetry commands with the plugin.
+	 * Register all debug commands with the plugin.
 	 * Called once during initSync, after product commands are registered.
-	 * Telemetry owns: passive trace commands, safe trace export, log clearing.
+	 * The debug runtime owns: trace export and log clearing.
 	 */
 	registerCommands(plugin: Pick<Plugin, "addCommand">): void;
 }
 
+/**
+ * Path-event kinds that admit a file into the CRDT. For these (and for the
+ * target side of an observed rename) the recorder annotates whether sync
+ * policy excluded the path, which is the difference between "never admitted"
+ * and "admitted then lost".
+ */
+const ADMISSION_KINDS: Record<string, true> = {
+	"crdt.file.created": true,
+	"crdt.file.renamed": true,
+	"crdt.file.revived": true,
+};
+
 export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promise<TelemetryRuntimeHandle> {
 	let flightTrace: FlightTraceController | null = null;
-	let _qaTraceSecretHash: string | null = null;
 
 	// -----------------------------------------------------------------------
 	// DiagnosticsService
@@ -112,11 +124,12 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 		getTraceHttpContext: () => host.getTraceHttpContext(),
 		getEventRing: () => host.getEventRing() as Array<{ ts: string; msg: string }>,
 		getRecentServerTrace: () => host.getRecentServerTrace() as unknown[],
-		getFrontmatterQuarantineEntries: () => host.getFrontmatterQuarantineEntries() as import("../sync/frontmatterQuarantine").FrontmatterQuarantineEntry[],
+		getFrontmatterQuarantineEntries: () => host.getFrontmatterQuarantineEntries() as FrontmatterQuarantineEntry[],
 		getState: () => host.getRuntimeDiagnosticsState(),
 		isMarkdownPathSyncable: (path) => host.isMarkdownPathSyncable(path),
 		collectOpenFileTraceState: () => host.collectOpenFileTraceState(),
 		sha256Hex: (text) => host.sha256Hex(text),
+		getServerVersion: () => host.getServerVersion(),
 		log: (message) => host.log(message),
 	});
 
@@ -131,13 +144,8 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	// -----------------------------------------------------------------------
 
 	function recordFlightPathEvent(event: ProductFlightPathEventInput | FlightPathEventInput): void {
-		const admissionKinds = new Set([
-			"crdt.file.created",
-			"crdt.file.renamed",
-			"crdt.file.revived",
-		]);
 		const isAdmissionOrRenameTarget =
-			admissionKinds.has(event.kind) ||
+			ADMISSION_KINDS[event.kind] === true ||
 			(event.kind === "disk.rename.observed" &&
 				event.data?.renameRole === "target");
 
@@ -156,35 +164,17 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	}
 
 	// -----------------------------------------------------------------------
-	// Telemetry / trace commands (passive, safe)
+	// Trace export (passive, safe)
+	//
+	// Redaction is a property of the export, not a persistent mode. The
+	// recorder always writes hardened event lines; includeFilenames only adds
+	// the pathId → path directory and unredacted identity to the header.
 	// -----------------------------------------------------------------------
 
-	async function startTelemetryTrace(mode?: string): Promise<void> {
-		const resolved = (mode ?? host.getSettings().qaTraceMode) as FlightMode;
-		await flightTrace?.start(resolved, host.getSettings().qaTraceSecret || null, {
-			manualStart: true,
-		});
-		const secret = host.getSettings().qaTraceSecret ?? "";
-		try {
-			const bytes = new TextEncoder().encode(`yaos-qa-trace-secret:${secret}`);
-			const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-			const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-			_qaTraceSecretHash = `sha256:${hex}`;
-		} catch {
-			_qaTraceSecretHash = `len:${secret.length}`;
-		}
-		new Notice(`Telemetry trace started (mode: ${resolved}).`, 4000);
-	}
-
-	async function stopTelemetryTrace(): Promise<void> {
-		await flightTrace?.stop();
-		new Notice("Telemetry trace stopped.", 4000);
-	}
-
-	async function exportFlightTrace(requestedPrivacy: "safe" | "full"): Promise<void> {
+	async function exportDebugTrace(includeFilenames: boolean): Promise<void> {
 		const controller = flightTrace;
 		if (!controller) {
-			new Notice("No active flight trace to export.", 4000);
+			new Notice("Debug mode is off — there is no trace to export.", 6000);
 			return;
 		}
 		const diagDir = await diagnosticsService.ensureDiagnosticsDir().catch(() => null);
@@ -192,9 +182,9 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			new Notice("Could not resolve diagnostics directory.", 4000);
 			return;
 		}
-		const result = await controller.exportTrace({ requestedPrivacy: requestedPrivacy, diagDir });
+		const result = await controller.exportTrace({ diagDir, includeFilenames });
 		if (result.ok) {
-			new Notice(`Flight trace exported: ${result.path}`, 6000);
+			new Notice(`Debug trace exported: ${result.path}`, 6000);
 		} else {
 			new Notice(`Export failed: ${result.reason}`, 6000);
 		}
@@ -214,18 +204,18 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 			getPluginVersion: () => host.getPluginVersion(),
 			getDocSchemaVersion: () => deps.getDocSchemaVersion(),
 			buildCheckpoint: () => deps.buildCheckpoint(),
+			collectTraceHeaderInput: () => diagnosticsService.collectTraceHeaderInput(),
 			registerCleanup: (cleanup) => host.registerCleanup(cleanup),
 			log: (message) => host.log(message),
 		});
 	}
 
+	/**
+	 * Apply settings.debug to the recorder. This is the whole lifecycle: main.ts
+	 * calls it once at startup and again whenever settings change.
+	 */
 	async function refreshFlightTraceState(reason: string): Promise<void> {
 		await flightTrace?.refreshFromSettings(reason);
-	}
-
-	function scheduleTraceStateSnapshot(reason: string): void {
-		// No-op: snapshot scheduling happens internally in FlightTraceController
-		void reason;
 	}
 
 	// -----------------------------------------------------------------------
@@ -237,48 +227,33 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	}
 
 	// -----------------------------------------------------------------------
-	// registerCommands — passive telemetry command surface only
+	// registerCommands — passive debug command surface only.
 	//
-	// Allowed: enable/start passive trace, stop passive trace, export safe
-	// telemetry trace, show recent telemetry state, clear telemetry logs.
+	// Allowed: export the trace (redacted or with filenames), clear trace logs.
+	// There is deliberately no start/stop command: recording follows
+	// settings.debug, so a command could not desynchronise from it.
 	//
 	// Forbidden: run VFS torture, force CRDT, force sync, pause editor
 	// binding, unsafe-local export, network hold / offline hold controls.
 	// -----------------------------------------------------------------------
 
 	function registerTelemetryCommands(plugin: Pick<Plugin, "addCommand">): void {
-		// Passive flight trace commands
 		plugin.addCommand({
-			id: "telemetry-trace-start",
-			name: "Start telemetry trace",
-			callback: () => { void startTelemetryTrace(); },
+			id: "export-debug-trace",
+			name: "Export debug trace",
+			callback: () => { void exportDebugTrace(false); },
 		});
 		plugin.addCommand({
-			id: "telemetry-trace-stop",
-			name: "Stop telemetry trace",
-			callback: () => { void stopTelemetryTrace(); },
+			id: "export-debug-trace-with-filenames",
+			name: "Export debug trace with filenames",
+			callback: () => { void exportDebugTrace(true); },
 		});
 		plugin.addCommand({
-			id: "telemetry-trace-export-safe",
-			name: "Export safe telemetry trace",
-			callback: () => { void exportFlightTrace("safe"); },
-		});
-		plugin.addCommand({
-			id: "telemetry-trace-export-full",
-			name: "Export telemetry trace with filenames",
-			callback: () => { void exportFlightTrace("full"); },
-		});
-		plugin.addCommand({
-			id: "telemetry-trace-timeline-current-file",
-			name: "Show timeline for current file",
-			callback: () => { new Notice("Timeline view not yet implemented in telemetry runtime.", 4000); },
-		});
-		plugin.addCommand({
-			id: "telemetry-trace-clear-logs",
-			name: "Clear telemetry logs",
+			id: "clear-debug-trace-logs",
+			name: "Clear debug trace logs",
 			callback: () => {
 				void (flightTrace?.clearLogs() ?? Promise.resolve()).then(() => {
-					new Notice("Telemetry logs cleared.", 4000);
+					new Notice("Debug trace logs cleared.", 4000);
 				});
 			},
 		});
@@ -296,18 +271,9 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 		},
 		setupFlightTrace,
 		refreshFlightTraceState,
-		scheduleTraceStateSnapshot,
-		startTelemetryTrace,
-		stopTelemetryTrace,
-		exportSafeFlightTrace: () => exportFlightTrace("safe"),
-		exportFullFlightTrace: () => exportFlightTrace("full"),
-		showTimelineForCurrentFile() {
-			new Notice("Timeline view not yet implemented in telemetry runtime.", 4000);
-		},
+		exportDebugTrace,
 		clearFlightLogs: () => flightTrace?.clearLogs() ?? Promise.resolve(),
-		getQaTraceSecretHash(): string | null {
-			return _qaTraceSecretHash;
-		},
+		getPathSaltFingerprint: () => flightTrace?.pathSaltFingerprint ?? null,
 		getFlightTraceController: () => flightTrace,
 		diagnosticsService,
 		dispose,

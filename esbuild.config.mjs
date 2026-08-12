@@ -67,7 +67,9 @@ if (qaProduct) {
 }
 
 // ---------------------------------------------------------------------------
-// Product bundle — shipped to users. Must not contain Engine control capabilities.
+// Product bundle — the only shipped artifact. Contains the sync engine and the
+// debug/Observer runtime (src/telemetry/), which is reachable only when
+// settings.debug is on. Must not contain Engine control capabilities:
 // __YAOS_QA_HARNESS_ENABLED__=false → esbuild dead-code-eliminates the port.
 // ---------------------------------------------------------------------------
 const mainContext = await esbuild.context({
@@ -80,25 +82,9 @@ const mainContext = await esbuild.context({
 	},
 });
 
-// Telemetry/Observer bundle — FlightRecorder, DeviceWitnessTracker, DiagnosticsService
-// Loaded dynamically by main.ts only when settings.debug or settings.qaDebugMode.
-// Must NOT contain VFS torture, scenario steppers, unsafe CRDT/sync, network holds,
-// or any mutation harness code. Mutation harness (Puppeteer) lives in qa/.
-const telemetryContext = await esbuild.context({
-	...sharedConfig,
-	entryPoints: ["src/telemetry/installTelemetryRuntime.ts"],
-	outfile: "telemetry.js",
-});
-
 if (prod) {
-	await Promise.all([
-		mainContext.rebuild(),
-		telemetryContext.rebuild(),
-	]);
+	await mainContext.rebuild();
 	process.exit(0);
 } else {
-	await Promise.all([
-		mainContext.watch(),
-		telemetryContext.watch(),
-	]);
+	await mainContext.watch();
 }

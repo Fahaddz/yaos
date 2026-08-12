@@ -1,12 +1,21 @@
 /**
- * Pure diagnostics bundle builder (INV-SEC-02).
+ * Pure trace-header builder (INV-SEC-02).
+ *
+ * The flight trace says what happened; this header says what world it happened
+ * in. It is emitted as line 1 of the exported NDJSON file, ahead of the causally
+ * ordered events, because the recipient — the maintainer, or an LLM the user
+ * pastes the file into — has no other context about the vault, the versions or
+ * the sync state the events were produced under.
+ *
+ * That consumer constraint is why every key here is spelled out rather than
+ * abbreviated, and why the object carries its own format version and an explicit
+ * `redacted` flag: a reader must be able to tell, from the file alone, whether
+ * `pathId` values are pseudonyms or whether real filenames are present.
  *
  * This module is intentionally Obsidian-free so it can be imported and tested
  * under Node without any Obsidian mock. All callers must pre-gather data and
- * pass it as DiagnosticsBundleInput. No I/O, no Notice, no vault adapter.
- *
- * The function is side-effect-free (deterministic given a fixed salt). The
- * salt is generated externally — pass a fixed salt in tests for reproducibility.
+ * pass it in. No I/O, no Notice, no vault adapter. The function is
+ * side-effect-free and deterministic given a fixed salt.
  */
 
 import { type SyncFacts } from "../../runtime/connectionFacts";
@@ -21,7 +30,18 @@ import {
 	type Sha256Hex,
 } from "./pathRedactor";
 
-type EventEntry = { ts: string; msg: string };
+export const TRACE_HEADER_FORMAT_VERSION = 1;
+
+const HEADER_README =
+	"First line of a YAOS debug trace. Every following line is one JSON event, " +
+	"ordered causally by its `seq` field. When `redacted` is true, vault file " +
+	"paths appear only as stable `pathId` pseudonyms and the server URL, vault id " +
+	"and device name are withheld; when it is false, `pathDirectory` maps every " +
+	"pathId to its real vault path.";
+
+type LogLine = { ts: string; msg: string };
+
+type ContentHash = { hash: string; length: number };
 
 type LastReconcileStats = {
 	at: string;
@@ -49,10 +69,22 @@ function describeServerReceiptStartupValidation(state: string | null): string {
 	}
 }
 
-/** All pre-gathered data passed into buildDiagnosticsBundle. No Obsidian I/O. */
-export interface DiagnosticsBundleInput {
+export interface TraceHeaderPlatform {
+	obsidianApiVersion: string | null;
+	operatingSystem: string;
+	isMobile: boolean;
+	isDesktopApp: boolean;
+}
+
+/**
+ * Point-in-time state gathered by DiagnosticsService. Everything here is a
+ * plain value; nothing in this module touches Obsidian or the vault.
+ */
+export interface TraceHeaderStateInput {
 	generatedAt: string;
-	generationMs: number;
+	generationDurationMs: number;
+	platform: TraceHeaderPlatform;
+	serverVersion: string | null;
 	settings: {
 		host: string;
 		token: string | null | undefined;
@@ -62,39 +94,39 @@ export interface DiagnosticsBundleInput {
 		enableAttachmentSync: boolean;
 		externalEditPolicy: string;
 	};
-	stateSnapshot: {
-		reconciled: boolean;
+	syncState: {
+		reconcileCompleted: boolean;
 		reconcileInFlight: boolean;
 		reconcilePending: boolean;
 		lastReconcileStats: LastReconcileStats | null;
 		awaitingFirstProviderSyncAfterStartup: boolean;
 		lastReconciledGeneration: number;
-		connected: boolean;
+		connectedToServer: boolean;
 		providerSynced: boolean;
-		localReady: boolean;
+		localCacheReady: boolean;
 		connectionGeneration: number;
 		fatalAuthError: boolean;
 		fatalAuthCode: string | null;
 		fatalAuthDetails: unknown;
-		idbError: boolean;
-		idbErrorDetails: unknown;
+		indexedDbError: boolean;
+		indexedDbErrorDetails: unknown;
 		serverReceiptStartupValidation: string | null;
-		svEcho: unknown;
-		pathToIdCount: number;
-		activePathCount: number;
+		serverReceiptEchoCounters: unknown;
+		activeCrdtPathCount: number;
 		blobPathCount: number;
-		diskFileCount: number;
+		syncableMarkdownFileCountOnDisk: number;
 		openFileCount: number;
-		schema: { supportedByClient: number | null; storedInDoc: number | null | undefined };
+		documentSchemaVersionSupportedByClient: number | null;
+		documentSchemaVersionStoredInDocument: number | null | undefined;
 	};
 	syncFacts: SyncFacts;
-	/** Raw trace context — passed through opaquely into the bundle. */
-	trace: unknown;
-	diskHashes: Map<string, { hash: string; length: number }>;
-	crdtHashes: Map<string, { hash: string; length: number }>;
-	eventRing: EventEntry[];
-	syncEvents: EventEntry[];
-	serverTrace: unknown[];
+	/** Raw HTTP trace context — passed through opaquely. */
+	httpTraceContext: unknown;
+	diskHashes: Map<string, ContentHash>;
+	crdtHashes: Map<string, ContentHash>;
+	pluginLogLines: LogLine[];
+	syncLogLines: LogLine[];
+	serverTraceEvents: unknown[];
 	openFiles: Array<Record<string, unknown>>;
 	diskMirrorSnapshot: unknown;
 	blobSyncSnapshot: unknown;
@@ -102,123 +134,199 @@ export interface DiagnosticsBundleInput {
 	sha256Hex: Sha256Hex;
 }
 
-export interface DiagnosticsBundleResult {
-	bundle: Record<string, unknown>;
-	/** True if a known vault path survived redaction. Caller should abort and warn. */
+/** Facts contributed by the flight recorder at export time. */
+export interface TraceHeaderTraceFacts {
+	traceId: string;
+	bootId: string;
+	deviceId: string;
+	vaultIdHash: string;
+	serverHostHash: string;
+	pluginVersion: string;
+	flightEventSchemaVersion: number;
+	flightEventTaxonomyVersion: number;
+	exportedAt: string;
+	eventCount: number;
+	segmentCount: number;
+	segmentsRotated: boolean;
+	pathIdentityDegraded: boolean;
+	droppedEventCount: number;
+	droppedEventCountByKind: Record<string, number>;
+	pathPseudonymSaltFingerprint: string | null;
+	/** pathId ↔ real path for every path the recorder resolved this session. */
+	pathDirectory: Array<{ pathId: string; path: string }>;
+}
+
+export interface TraceHeaderInput {
+	trace: TraceHeaderTraceFacts;
+	/**
+	 * Point-in-time world state. null when sync is not initialised: the trace
+	 * still exports, the header just says so instead of inventing state.
+	 */
+	state: TraceHeaderStateInput | null;
+}
+
+export interface TraceHeaderResult {
+	header: Record<string, unknown>;
+	/** True if a known vault path survived redaction. Caller must abort the export. */
 	leakDetected: boolean;
 	missingOnDiskCount: number;
 	missingInCrdtCount: number;
 	hashMismatchCount: number;
 }
 
-export async function buildDiagnosticsBundle(
-	input: DiagnosticsBundleInput,
-	options: { includeFilenames: boolean; salt?: string },
-): Promise<DiagnosticsBundleResult> {
-	const { settings, stateSnapshot: s } = input;
-	const knownPaths = [
-		...Array.from(input.diskHashes.keys()),
-		...Array.from(input.crdtHashes.keys()),
-	];
+export async function buildTraceHeader(
+	input: TraceHeaderInput,
+	options: { redacted?: boolean; salt?: string } = {},
+): Promise<TraceHeaderResult> {
+	// Redaction is opt-out, never opt-in: an export that forgets to say what it
+	// wants gets the shareable one.
+	const redacted = options.redacted ?? true;
+	const { trace, state } = input;
 
-	const allPaths = new Set<string>([...input.diskHashes.keys(), ...input.crdtHashes.keys()]);
-	const missingOnDisk: string[] = [];
-	const missingInCrdt: string[] = [];
-	const hashMismatches: Array<{ path: string; diskHash: string; crdtHash: string; diskLength: number; crdtLength: number }> = [];
-	for (const path of allPaths) {
-		const disk = input.diskHashes.get(path);
-		const crdt = input.crdtHashes.get(path);
-		if (!disk && crdt) { missingOnDisk.push(path); continue; }
-		if (disk && !crdt) { missingInCrdt.push(path); continue; }
-		if (disk && crdt && disk.hash !== crdt.hash) {
-			hashMismatches.push({ path, diskHash: disk.hash, crdtHash: crdt.hash, diskLength: disk.length, crdtLength: crdt.length });
+	const pathIdByPath = new Map(trace.pathDirectory.map((entry) => [entry.path, entry.pathId]));
+	const identify = (path: string) => ({
+		pathId: pathIdByPath.get(path) ?? "p:unresolved",
+		...(redacted ? {} : { path }),
+	});
+
+	const knownPaths = state ? [...state.diskHashes.keys(), ...state.crdtHashes.keys()] : [];
+	const allPaths = new Set(knownPaths);
+	const filesMissingOnDisk: Array<Record<string, unknown>> = [];
+	const filesMissingInCrdt: Array<Record<string, unknown>> = [];
+	const contentHashMismatches: Array<Record<string, unknown>> = [];
+	if (state) {
+		for (const path of allPaths) {
+			const disk = state.diskHashes.get(path);
+			const crdt = state.crdtHashes.get(path);
+			if (!disk && crdt) {
+				filesMissingOnDisk.push(identify(path));
+				continue;
+			}
+			if (disk && !crdt) {
+				filesMissingInCrdt.push(identify(path));
+				continue;
+			}
+			if (disk && crdt && disk.hash !== crdt.hash) {
+				contentHashMismatches.push({
+					...identify(path),
+					diskContentHash: redacted ? `${disk.hash.slice(0, 12)}…` : disk.hash,
+					crdtContentHash: redacted ? `${crdt.hash.slice(0, 12)}…` : crdt.hash,
+					diskContentLength: disk.length,
+					crdtContentLength: crdt.length,
+				});
+			}
 		}
 	}
 
-	const salt = options.salt ?? generateBundleSalt();
-	const redactor = options.includeFilenames
-		? createPassthroughRedactor()
-		: await createPathRedactor(salt, input.sha256Hex, { knownPaths });
+	// The redactor is the backstop for free-form text (log lines, server trace
+	// payloads) where a path can appear inside a message string. The structured
+	// path lists above are already pseudonymised through the recorder's own
+	// pathId namespace so that they join against the event lines below.
+	const redactor = redacted && state
+		? await createPathRedactor(options.salt ?? generateBundleSalt(), state.sha256Hex, { knownPaths })
+		: createPassthroughRedactor();
 
-	const safeHash = (hash: string) =>
-		options.includeFilenames ? hash : `${hash.slice(0, 12)}…`;
-
-	const rawDiagnostics: Record<string, unknown> = {
-		generatedAt: input.generatedAt,
-		generationMs: input.generationMs,
-		redaction: {
-			mode: options.includeFilenames ? "with-filenames" : "safe-summary",
-			schema: 1,
+	const rawHeader: Record<string, unknown> = {
+		recordType: "trace-header",
+		traceHeaderFormatVersion: TRACE_HEADER_FORMAT_VERSION,
+		redacted,
+		readme: HEADER_README,
+		generatedAt: state?.generatedAt ?? trace.exportedAt,
+		generationDurationMs: state?.generationDurationMs ?? 0,
+		exportedAt: trace.exportedAt,
+		versions: {
+			pluginVersion: trace.pluginVersion,
+			serverVersion: state?.serverVersion ?? null,
+			documentSchemaVersionSupportedByClient:
+				state?.syncState.documentSchemaVersionSupportedByClient ?? null,
+			documentSchemaVersionStoredInDocument:
+				state?.syncState.documentSchemaVersionStoredInDocument ?? null,
+			flightEventSchemaVersion: trace.flightEventSchemaVersion,
+			flightEventTaxonomyVersion: trace.flightEventTaxonomyVersion,
 		},
-		syncFacts: input.syncFacts,
-		trace: input.trace ?? null,
-		settings: {
-			host: options.includeFilenames ? settings.host : "(redacted)",
-			token: { present: !!settings.token },
-			vaultId: options.includeFilenames ? settings.vaultId : "(redacted)",
-			deviceName: options.includeFilenames ? settings.deviceName : "(redacted)",
-			debug: settings.debug,
-			enableAttachmentSync: settings.enableAttachmentSync,
-			externalEditPolicy: settings.externalEditPolicy,
+		platform: state?.platform ?? null,
+		traceIdentity: {
+			traceId: trace.traceId,
+			bootId: trace.bootId,
+			deviceId: trace.deviceId,
+			vaultIdHash: trace.vaultIdHash,
+			serverHostHash: trace.serverHostHash,
+			pathPseudonymSaltFingerprint: trace.pathPseudonymSaltFingerprint,
 		},
-		state: {
-			reconciled: s.reconciled,
-			reconcileInFlight: s.reconcileInFlight,
-			reconcilePending: s.reconcilePending,
-			lastReconcile: s.lastReconcileStats,
-			awaitingFirstProviderSyncAfterStartup: s.awaitingFirstProviderSyncAfterStartup,
-			lastReconciledGeneration: s.lastReconciledGeneration,
-			connected: s.connected,
-			providerSynced: s.providerSynced,
-			localReady: s.localReady,
-			connectionGeneration: s.connectionGeneration,
-			fatalAuthError: s.fatalAuthError,
-			fatalAuthCode: s.fatalAuthCode,
-			fatalAuthDetails: s.fatalAuthDetails,
-			idbError: s.idbError,
-			idbErrorDetails: s.idbErrorDetails,
-			serverReceiptStartupValidation: s.serverReceiptStartupValidation,
-			serverReceiptStartupValidationDetail: describeServerReceiptStartupValidation(s.serverReceiptStartupValidation),
-			svEcho: s.svEcho,
-			pathToIdCount: s.pathToIdCount,
-			activePathCount: s.activePathCount,
-			blobPathCount: s.blobPathCount,
-			diskFileCount: s.diskFileCount,
-			openFileCount: s.openFileCount,
-			schema: s.schema,
+		traceContents: {
+			eventCount: trace.eventCount,
+			segmentCount: trace.segmentCount,
+			segmentsRotated: trace.segmentsRotated,
+			pathIdentityDegraded: trace.pathIdentityDegraded,
+			droppedEventCount: trace.droppedEventCount,
+			droppedEventCountByKind: trace.droppedEventCountByKind,
 		},
-		hashDiff: {
-			missingOnDisk,
-			missingInCrdt,
-			hashMismatches: hashMismatches.map((entry) => ({
-				...entry,
-				diskHash: safeHash(entry.diskHash),
-				crdtHash: safeHash(entry.crdtHash),
-			})),
-			matchingCount: allPaths.size - missingOnDisk.length - missingInCrdt.length - hashMismatches.length,
-			totalCompared: allPaths.size,
+		pathPseudonymization: {
+			scheme: "sha256(vaultScopedSalt || NUL || normalizedVaultPath), first 128 bits, prefixed p:",
+			saltScope: "vault",
+			stableAcrossDevicesOfSameVault: true,
+			stableAcrossTraceSessions: true,
+			note: "Traces sharing a pathPseudonymSaltFingerprint use the same pathId namespace and can be merged across devices.",
 		},
-		recentEvents: {
-			plugin: input.eventRing.slice(-240),
-			sync: input.syncEvents.slice(-240),
+		pathDirectory: redacted ? null : trace.pathDirectory,
+		syncStateAvailable: state !== null,
+		settingsSnapshot: state
+			? {
+				serverHost: redacted ? "(redacted)" : state.settings.host,
+				tokenConfigured: !!state.settings.token,
+				vaultId: redacted ? "(redacted)" : state.settings.vaultId,
+				deviceName: redacted ? "(redacted)" : state.settings.deviceName,
+				debugModeEnabled: state.settings.debug,
+				attachmentSyncEnabled: state.settings.enableAttachmentSync,
+				externalEditPolicy: state.settings.externalEditPolicy,
+			}
+			: null,
+		syncFacts: state?.syncFacts ?? null,
+		syncState: state
+			? {
+				...state.syncState,
+				serverReceiptStartupValidationExplanation: describeServerReceiptStartupValidation(
+					state.syncState.serverReceiptStartupValidation,
+				),
+			}
+			: null,
+		vaultVersusCrdtComparison: state
+			? {
+				filesMissingOnDisk,
+				filesMissingInCrdt,
+				contentHashMismatches,
+				matchingFileCount:
+					allPaths.size -
+					filesMissingOnDisk.length -
+					filesMissingInCrdt.length -
+					contentHashMismatches.length,
+				comparedFileCount: allPaths.size,
+			}
+			: null,
+		httpTraceContext: state?.httpTraceContext ?? null,
+		recentLogLines: {
+			plugin: state?.pluginLogLines.slice(-240) ?? [],
+			sync: state?.syncLogLines.slice(-240) ?? [],
 		},
-		openFiles: input.openFiles,
-		diskMirror: input.diskMirrorSnapshot ?? null,
-		blobSync: input.blobSyncSnapshot ?? null,
-		serverTrace: input.serverTrace,
-		frontmatterQuarantine: buildFrontmatterQuarantineDebugLines(input.frontmatterQuarantine),
+		openFiles: state?.openFiles ?? [],
+		diskMirror: state?.diskMirrorSnapshot ?? null,
+		blobSync: state?.blobSyncSnapshot ?? null,
+		serverTraceEvents: state?.serverTraceEvents ?? [],
+		frontmatterQuarantineNotes: state
+			? buildFrontmatterQuarantineDebugLines(state.frontmatterQuarantine)
+			: [],
 	};
 
-	const bundle = redactContentFingerprints(
-		redactor.redactDeep(rawDiagnostics),
-		options.includeFilenames,
+	const header = redactContentFingerprints(
+		redactor.redactDeep(rawHeader),
+		redacted,
 	) as Record<string, unknown>;
 
 	// Post-redaction leak check (INV-SEC-02): abort if any known vault path
-	// survived into the serialised safe bundle.
+	// survived into the serialised redacted header.
 	let leakDetected = false;
-	if (!options.includeFilenames && redactor.active) {
-		const serialized = JSON.stringify(bundle);
+	if (redacted && redactor.active) {
+		const serialized = JSON.stringify(header);
 		for (const path of knownPaths) {
 			if (serialized.includes(path)) {
 				leakDetected = true;
@@ -228,11 +336,11 @@ export async function buildDiagnosticsBundle(
 	}
 
 	return {
-		bundle,
+		header,
 		leakDetected,
-		missingOnDiskCount: missingOnDisk.length,
-		missingInCrdtCount: missingInCrdt.length,
-		hashMismatchCount: hashMismatches.length,
+		missingOnDiskCount: filesMissingOnDisk.length,
+		missingInCrdtCount: filesMissingInCrdt.length,
+		hashMismatchCount: contentHashMismatches.length,
 	};
 }
 
@@ -240,6 +348,8 @@ const CONTENT_FINGERPRINT_KEYS = new Set([
 	"hash",
 	"diskHash",
 	"crdtHash",
+	"diskContentHash",
+	"crdtContentHash",
 	"diskHashBefore",
 	"diskHashAfter",
 	"expectedHash",
@@ -247,10 +357,10 @@ const CONTENT_FINGERPRINT_KEYS = new Set([
 	"remoteHash",
 ]);
 
-function redactContentFingerprints(value: unknown, includeFull: boolean): unknown {
-	if (includeFull || value === null) return value;
+function redactContentFingerprints(value: unknown, redacted: boolean): unknown {
+	if (!redacted || value === null) return value;
 	if (Array.isArray(value)) {
-		return value.map((item) => redactContentFingerprints(item, includeFull));
+		return value.map((item) => redactContentFingerprints(item, redacted));
 	}
 	if (typeof value === "object") {
 		const out: Record<string, unknown> = {};
@@ -262,7 +372,7 @@ function redactContentFingerprints(value: unknown, includeFull: boolean): unknow
 			) {
 				out[key] = `${nested.slice(0, 12)}…`;
 			} else {
-				out[key] = redactContentFingerprints(nested, includeFull);
+				out[key] = redactContentFingerprints(nested, redacted);
 			}
 		}
 		return out;

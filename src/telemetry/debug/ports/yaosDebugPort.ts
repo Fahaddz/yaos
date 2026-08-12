@@ -70,8 +70,8 @@ export interface YaosDebugPort {
 	connectProvider(reason?: string): void;
 
 	// --- Flight trace (observability only) ---
-	startFlightTrace(mode: string, secret?: string): Promise<void>;
-	stopFlightTrace(): Promise<void>;
+	//
+	// Recording follows settings.debug; there is no start/stop capability.
 	exportFlightTrace(privacy: "safe" | "full"): Promise<string>;
 	getActiveTraceInfo(): Record<string, unknown> | null;
 }

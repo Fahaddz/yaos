@@ -21,21 +21,20 @@ const MAX_TOTAL_BYTES = 100 * 1024 * 1024;         // 100 MB
 const MAX_DAYS = 7;
 
 /** Keys that must never appear in data for safe/qa-safe events. */
-const SENSITIVE_DATA_KEYS = new Set([
-	"path",
-	"requestedPath",
-	"resolvedPath",
-	"oldPath",
-	"newPath",
-	"host",
-	"token",
-	"vaultId",
-	"deviceName",
-	"qaTraceSecret",
-]);
+const SENSITIVE_DATA_KEYS: Record<string, true> = {
+	path: true,
+	requestedPath: true,
+	resolvedPath: true,
+	oldPath: true,
+	newPath: true,
+	host: true,
+	token: true,
+	vaultId: true,
+	deviceName: true,
+};
 
 /** Keys that must never appear in ANY mode's event data. */
-const ABSOLUTELY_FORBIDDEN_KEYS = new Set(["token", "qaTraceSecret"]);
+const ABSOLUTELY_FORBIDDEN_KEYS: Record<string, true> = { token: true };
 
 export type FlightRecorderOptions = {
 	mode: FlightMode;
@@ -679,7 +678,7 @@ export class FlightRecorder {
 	 */
 	private findSensitiveKey(obj: Record<string, unknown>): string | null {
 		for (const key of Object.keys(obj)) {
-			if (SENSITIVE_DATA_KEYS.has(key)) return key;
+			if (SENSITIVE_DATA_KEYS[key]) return key;
 			const val = obj[key];
 			if (val && typeof val === "object" && !Array.isArray(val)) {
 				const nested = this.findSensitiveKey(val as Record<string, unknown>);
@@ -691,7 +690,7 @@ export class FlightRecorder {
 
 	private findForbiddenKey(obj: Record<string, unknown>): string | null {
 		for (const key of Object.keys(obj)) {
-			if (ABSOLUTELY_FORBIDDEN_KEYS.has(key)) return key;
+			if (ABSOLUTELY_FORBIDDEN_KEYS[key]) return key;
 			const val = obj[key];
 			if (val && typeof val === "object" && !Array.isArray(val)) {
 				const nested = this.findForbiddenKey(val as Record<string, unknown>);

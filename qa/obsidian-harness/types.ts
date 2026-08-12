@@ -128,17 +128,11 @@ export interface QaScenario {
 	requiredPlugins?: string[];
 
 	/**
-	 * Recording mode for the flight trace during this scenario.
-	 * Separate from exportPrivacy — these are different concepts.
-	 * "qa-safe" = record without filenames (default).
-	 * "safe" = same redaction but standard mode.
-	 * "full" = include filenames (requires explicit confirmation).
-	 */
-	traceRecordingMode?: "qa-safe" | "safe";
-
-	/**
 	 * Privacy level for the exported trace artifact.
 	 * Defaults to "safe". Only set "full" if filenames are needed for RCA.
+	 *
+	 * Recording itself has no mode: the recorder always writes hardened event
+	 * lines, and "full" only widens the export header.
 	 */
 	traceExportPrivacy?: "safe" | "full";
 
@@ -201,10 +195,8 @@ export interface QaConsoleApi {
 	manifest(): Promise<VaultManifest>;
 	compareManifest(expected: VaultManifest): Promise<ManifestDiff>;
 
-	// Flight trace
-	startTrace(recordingMode?: string, secret?: string): Promise<void>;
-	stopTrace(): Promise<void>;
-	/** Export the active trace. exportPrivacy is separate from recordingMode. */
+	// Flight trace. Recording follows the product's settings.debug — the
+	// prepared QA vault turns it on — so there is nothing to start or stop.
 	exportTrace(exportPrivacy?: "safe" | "full"): Promise<string>;
 	analyzeTrace(tracePath: string, scenarioId?: string): Promise<unknown>;
 	exportTraceWithAnalyzer(exportPrivacy?: "safe" | "full", scenarioId?: string): Promise<{ tracePath: string; report: unknown }>;

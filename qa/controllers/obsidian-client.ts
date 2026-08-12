@@ -143,21 +143,18 @@ export class ObsidianClient {
 		`);
 	}
 
-	/** Start QA flight trace. */
-	async startTrace(mode = "qa-safe"): Promise<void> {
-		await this.evalRaw(`window.__YAOS_QA__?.startTrace(${JSON.stringify(mode)})`);
-	}
-
-	/** Stop flight trace and return export path. */
-	async stopAndExportTrace(privacy: "safe" | "full" = "safe"): Promise<string> {
+	/**
+	 * Export the active flight trace and return its path.
+	 *
+	 * The trace is not stopped: recording follows the product's settings.debug,
+	 * which the prepared QA vault sets to true, and stays on for the session.
+	 */
+	async exportTrace(privacy: "safe" | "full" = "safe"): Promise<string> {
 		const result = await this.evalRaw<string>(`
 			(async () => {
 				const qa = window.__YAOS_QA__;
 				if (!qa) throw new Error('__YAOS_QA__ not found');
-				// Export while trace is still active, then stop.
-				const path = await qa.exportTrace(${JSON.stringify(privacy)});
-				await qa.stopTrace();
-				return path;
+				return await qa.exportTrace(${JSON.stringify(privacy)});
 			})()
 		`);
 		return result;

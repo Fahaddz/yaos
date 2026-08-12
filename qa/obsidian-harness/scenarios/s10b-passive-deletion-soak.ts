@@ -52,7 +52,6 @@ export const s10bPassiveDeletionSoak: QaScenario = {
 	id: "issue-22-passive-deletion-soak",
 	title: "Issue #22: 10 remote deletions do not oscillate on passive device",
 	tags: ["issue-22", "passive", "deletion", "soak", "single-device", "regression", "P0"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx: QaContext): Promise<void> {

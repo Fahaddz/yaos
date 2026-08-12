@@ -2,13 +2,15 @@
  * Flight recorder tests (updated for v2 spec).
  *
  * Covers:
- *   - PathIdentityResolver: async SHA-256 promise cache, modes, cross-instance consistency
+ *   - PathIdentityResolver: async SHA-256 promise cache, vault-derived salt,
+ *     cross-device correlation, directory() for unredacted exports
  *   - FlightRecorder: priority-aware queue, safeToShare/includesFilenames, validateSafeEvent
  *   - FlightTraceController: flush(), recordPath() ordering
  *   - Event model: FLIGHT_KIND constants, FlightKind type
  */
 
-import { PathIdentityResolver } from "../src/telemetry/debug/pathIdentity";
+import { PathIdentityResolver, deriveVaultPathSalt, deriveSaltFingerprint } from "../src/telemetry/debug/pathIdentity";
+import { FlightRecorder } from "../src/telemetry/debug/flightRecorder";
 import { FLIGHT_KIND } from "../src/telemetry/debug/flightEvents";
 
 let passed = 0;
@@ -48,19 +50,16 @@ async function trackingSha256(input: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: PathIdentityResolver — safe mode produces consistent pathIds
+// Test 1: PathIdentityResolver — stable pseudonyms, never a raw path
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 1: PathIdentityResolver safe mode ---");
+console.log("\n--- Test 1: PathIdentityResolver pseudonymizes every path ---");
 {
-	const resolver = new PathIdentityResolver(sha256Hex, {
-		mode: "safe",
-		pathSecret: "test-secret-safe",
-	});
+	const resolver = new PathIdentityResolver(sha256Hex, { salt: "test-salt-one" });
 
 	const id1 = await resolver.getPathIdentity("Daily/2026-05-12.md");
 	const id2 = await resolver.getPathIdentity("Daily/2026-05-12.md");
 	assert(id1.pathId === id2.pathId, "Same path gets same pathId within session");
-	assert(!id1.path, "safe mode does not expose raw path");
+	assert(!id1.path, "Resolver never returns a raw path");
 	assert(id1.pathId.startsWith("p:"), "pathId has p: prefix");
 	assert(id1.pathId.length >= 34, "pathId has >=32 hex chars (128 bits) after 'p:'");
 
@@ -69,78 +68,81 @@ console.log("\n--- Test 1: PathIdentityResolver safe mode ---");
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: PathIdentityResolver — full mode exposes raw path
+// Test 2: directory() is the only place raw paths leave the resolver
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 2: PathIdentityResolver full mode ---");
+console.log("\n--- Test 2: directory() maps pseudonyms back to raw paths ---");
 {
-	const resolver = new PathIdentityResolver(sha256Hex, {
-		mode: "full",
-		pathSecret: "test-secret-full",
-	});
-
+	const resolver = new PathIdentityResolver(sha256Hex, { salt: "test-salt-two" });
 	const id = await resolver.getPathIdentity("Daily/2026-05-12.md");
-	assert(id.path === "Daily/2026-05-12.md", "full mode exposes raw path");
-	assert(!!id.pathId, "full mode still produces pathId");
+	await resolver.getPathIdentity("Projects/foo.md");
+
+	const directory = resolver.directory();
+	assert(directory.length === 2, "directory() lists every path resolved so far");
+	const entry = directory.find((e) => e.pathId === id.pathId);
+	assert(entry?.path === "Daily/2026-05-12.md", "directory() pairs a pseudonym with its raw path");
+	assert(directory.every((e) => e.pathId.startsWith("p:")), "directory() keys are pathIds, not bare digests");
+
+	// Resolving the same path again must not duplicate the directory entry.
+	await resolver.getPathIdentity("Daily/2026-05-12.md");
+	assert(resolver.directory().length === 2, "directory() does not duplicate repeated paths");
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: safe and full produce same pathId with same secret
+// Test 3: deriveVaultPathSalt is deterministic, vault-scoped, and opaque
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 3: pathId is consistent across modes (same secret) ---");
+console.log("\n--- Test 3: deriveVaultPathSalt determinism ---");
 {
-	const secret = "shared-secret-123";
-	const safeResolver = new PathIdentityResolver(sha256Hex, { mode: "safe", pathSecret: secret });
-	const fullResolver = new PathIdentityResolver(sha256Hex, { mode: "full", pathSecret: secret });
+	const vaultId = "vault-abc-123";
+	const salt = await deriveVaultPathSalt(sha256Hex, vaultId);
+	const saltAgain = await deriveVaultPathSalt(sha256Hex, `  ${vaultId}  `);
+	const otherSalt = await deriveVaultPathSalt(sha256Hex, "vault-xyz-789");
+	const bareDigest = await sha256Hex(vaultId);
 
-	const safeId = await safeResolver.getPathIdentity("inbox/note.md");
-	const fullId = await fullResolver.getPathIdentity("inbox/note.md");
-	assert(safeId.pathId === fullId.pathId, "safe and full produce same pathId with same secret");
+	assert(salt === saltAgain, "Same vaultId derives the same salt (whitespace-insensitive)");
+	assert(salt !== otherSalt, "Different vaultId derives a different salt");
+	assert(!salt.includes(vaultId), "Salt does not carry the vaultId verbatim");
+	assert(salt !== bareDigest, "Salt is domain-separated, not a bare digest of the vaultId");
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: qa-safe uses qaTraceSecret for cross-device correlation
+// Test 4: two devices on one vault correlate with no shared user secret
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 4: QA-safe mode uses qaTraceSecret ---");
+console.log("\n--- Test 4: cross-device pathId correlation ---");
 {
-	const qaSecret = "qa-secret-abc";
-	const pathSecret = "path-secret-xyz";
+	const vaultId = "shared-vault-id";
+	const saltA = await deriveVaultPathSalt(sha256Hex, vaultId);
+	const saltB = await deriveVaultPathSalt(sha256Hex, vaultId);
+	const deviceA = new PathIdentityResolver(sha256Hex, { salt: saltA });
+	const deviceB = new PathIdentityResolver(sha256Hex, { salt: saltB });
 
-	const qaResolver = new PathIdentityResolver(sha256Hex, {
-		mode: "qa-safe",
-		pathSecret,
-		qaTraceSecret: qaSecret,
-	});
-	// QA-safe should produce same result as safe-mode resolver using qaSecret as pathSecret.
-	const safeResolver = new PathIdentityResolver(sha256Hex, {
-		mode: "safe",
-		pathSecret: qaSecret,
-	});
+	const idA = await deviceA.getPathIdentity("notes/project.md");
+	const idB = await deviceB.getPathIdentity("notes/project.md");
+	assert(idA.pathId === idB.pathId, "Same vault, two devices, same pathId — no user-managed secret involved");
 
-	const qaId = await qaResolver.getPathIdentity("notes/project.md");
-	const safeWithSameSecret = await safeResolver.getPathIdentity("notes/project.md");
-	assert(qaId.pathId === safeWithSameSecret.pathId, "qa-safe uses qaTraceSecret, not pathSecret");
-
-	// Two qa-safe resolvers with same secret must match (multi-device merge).
-	const qaResolver2 = new PathIdentityResolver(sha256Hex, {
-		mode: "qa-safe",
-		pathSecret: "different-path-secret",
-		qaTraceSecret: qaSecret,
-	});
-	const qaId2 = await qaResolver2.getPathIdentity("notes/project.md");
-	assert(qaId.pathId === qaId2.pathId, "Same qaTraceSecret matches across devices regardless of pathSecret");
+	const fingerprintA = await deriveSaltFingerprint(sha256Hex, saltA);
+	const fingerprintB = await deriveSaltFingerprint(sha256Hex, saltB);
+	assert(fingerprintA === fingerprintB, "Both devices publish the same salt fingerprint");
+	assert(fingerprintA !== saltA, "Fingerprint is not the salt itself");
+	assert(!fingerprintA.includes(saltA), "Fingerprint does not embed the salt");
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: Different secrets produce different pathIds (cross-bundle isolation)
+// Test 5: different vaults are uncorrelated
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 5: Different secrets produce different pathIds ---");
+console.log("\n--- Test 5: different vaults produce different pathIds ---");
 {
-	const r1 = new PathIdentityResolver(sha256Hex, { mode: "safe", pathSecret: "secret-A" });
-	const r2 = new PathIdentityResolver(sha256Hex, { mode: "safe", pathSecret: "secret-B" });
+	const saltA = await deriveVaultPathSalt(sha256Hex, "vault-A");
+	const saltB = await deriveVaultPathSalt(sha256Hex, "vault-B");
+	const r1 = new PathIdentityResolver(sha256Hex, { salt: saltA });
+	const r2 = new PathIdentityResolver(sha256Hex, { salt: saltB });
 
 	const id1 = await r1.getPathIdentity("Daily/2026-05-12.md");
 	const id2 = await r2.getPathIdentity("Daily/2026-05-12.md");
-	assert(id1.pathId !== id2.pathId, "Different salts produce different pathIds");
+	assert(id1.pathId !== id2.pathId, "Different vault salts produce different pathIds");
+
+	const f1 = await deriveSaltFingerprint(sha256Hex, saltA);
+	const f2 = await deriveSaltFingerprint(sha256Hex, saltB);
+	assert(f1 !== f2, "Different salts publish different fingerprints, so traces cannot be merged by mistake");
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +150,7 @@ console.log("\n--- Test 5: Different secrets produce different pathIds ---");
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 6: prime() prepopulates cache ---");
 {
-	const resolver = new PathIdentityResolver(sha256Hex, { mode: "safe", pathSecret: "prime-test" });
+	const resolver = new PathIdentityResolver(sha256Hex, { salt: "prime-test" });
 	const paths = ["a.md", "b.md", "c.md"];
 	await resolver.prime(paths);
 
@@ -165,7 +167,7 @@ console.log("\n--- Test 6: prime() prepopulates cache ---");
 console.log("\n--- Test 7: PathIdentityResolver uses crypto hash, not FNV ---");
 {
 	sha256CallCount = 0;
-	const resolver = new PathIdentityResolver(trackingSha256, { mode: "safe", pathSecret: "test" });
+	const resolver = new PathIdentityResolver(trackingSha256, { salt: "test" });
 	await resolver.getPathIdentity("some/file.md");
 	assert(sha256CallCount > 0, "sha256Hex was called at least once (not FNV)");
 
@@ -180,7 +182,6 @@ console.log("\n--- Test 7: PathIdentityResolver uses crypto hash, not FNV ---");
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 8: FlightRecorder safeToShare / includesFilenames ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const mockApp = {
 		vault: {
 			configDir: ".obsidian",
@@ -232,7 +233,6 @@ console.log("\n--- Test 8: FlightRecorder safeToShare / includesFilenames ---");
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 9: validateSafeEvent drops events with raw path in data ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const writtenLines: string[] = [];
 	const mockApp = {
 		vault: {
@@ -295,7 +295,6 @@ console.log("\n--- Test 9: validateSafeEvent drops events with raw path in data 
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 10: Critical events survive full-buffer pressure ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const written: string[] = [];
 	const mockApp = {
 		vault: {
@@ -365,7 +364,6 @@ console.log("\n--- Test 10: Critical events survive full-buffer pressure ---");
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 11: Verbose events dropped before important events ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const written: string[] = [];
 	const mockApp = {
 		vault: {
@@ -417,7 +415,6 @@ console.log("\n--- Test 11: Verbose events dropped before important events ---")
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 12: flight.events.dropped includes droppedByPriority ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const written: string[] = [];
 	const mockApp = {
 		vault: {
@@ -478,7 +475,6 @@ console.log("\n--- Test 12: flight.events.dropped includes droppedByPriority ---
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 13: Map indexes rebuild after ring trim ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const mockApp = {
 		vault: {
 			configDir: ".obsidian",
@@ -543,11 +539,10 @@ console.log("\n--- Test 14: FLIGHT_KIND taxonomy constants ---");
 }
 
 // ---------------------------------------------------------------------------
-// Test 15: qaTraceSecret must never appear in any serialized event
+// Test 15: the derived path salt must never appear in any serialized event
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 15: qaTraceSecret never leaks into NDJSON ---");
+console.log("\n--- Test 15: path salt never leaks into NDJSON ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const written: string[] = [];
 	const mockApp = {
 		vault: {
@@ -566,31 +561,38 @@ console.log("\n--- Test 15: qaTraceSecret never leaks into NDJSON ---");
 		},
 	};
 
-	const SECRET = "super-secret-qa-trace-key-do-not-leak";
+	// The salt is the one value that would let a reader of an exported trace
+	// brute-force vault paths back out of the pathIds. It lives in the
+	// resolver and must never reach a written line.
+	const salt = await deriveVaultPathSalt(sha256Hex, "leak-test-vault-id");
+	const resolver = new PathIdentityResolver(sha256Hex, { salt });
 	const recorder = new FlightRecorder(mockApp as never, {
-		mode: "qa-safe",
+		mode: "safe",
 		deviceId: "test-device",
 		vaultIdHash: "0".repeat(64),
 		serverHostHash: "1".repeat(64),
 		pluginVersion: "1.0.0",
 	});
 
-	// Record an event that tries to smuggle the secret
+	const { pathId } = await resolver.getPathIdentity("Projects/secret/finance.md");
 	recorder.record({
 		priority: "important",
-		kind: FLIGHT_KIND.qaTraceStarted,
+		kind: FLIGHT_KIND.diskModifyObserved,
 		severity: "info",
-		scope: "diagnostics",
-		source: "diagnostics",
-		layer: "diagnostics",
-		data: { mode: "qa-safe" }, // no secret here — this is correct
+		scope: "file",
+		source: "vaultEvents",
+		layer: "disk",
+		pathId,
 	});
 
 	await recorder.flushNow();
 	await recorder.shutdown();
 
 	const allOutput = written.join("");
-	assert(!allOutput.includes(SECRET), "qaTraceSecret did not leak into NDJSON output");
+	assert(allOutput.includes(pathId), "pathId is written (the event was actually recorded)");
+	assert(!allOutput.includes(salt), "Derived path salt did not leak into NDJSON output");
+	assert(!allOutput.includes("leak-test-vault-id"), "Raw vaultId did not leak into NDJSON output");
+	assert(!allOutput.includes("Projects/secret/finance.md"), "Raw path did not leak into NDJSON output");
 }
 
 // ---------------------------------------------------------------------------

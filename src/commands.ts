@@ -1,5 +1,4 @@
 import { Notice, type Plugin } from "obsidian";
-import type { DiagnosticsService } from "./telemetry/diagnostics/diagnosticsService";
 import type { ConnectionController } from "./runtime/connectionController";
 import type { SnapshotService } from "./snapshots/snapshotService";
 import type { ReconcileMode, VaultSync } from "./sync/vaultSync";
@@ -7,9 +6,7 @@ import type { ReconcileMode, VaultSync } from "./sync/vaultSync";
 export interface CommandsRuntimeHost {
 	getVaultSync(): VaultSync | null;
 	getConnectionController(): ConnectionController | null;
-	getDiagnosticsService(): DiagnosticsService | null;
 	getSnapshotService(): SnapshotService | null;
-	getFilesNeedingAttentionText(): string;
 	getUntrackedFileCount(): number;
 	runReconciliation(mode: ReconcileMode): Promise<void>;
 	runSchemaMigrationToV2(): void;
@@ -42,65 +39,6 @@ export function registerCommands(
 			if (!vaultSync) return;
 			const mode = vaultSync.getSafeReconcileMode();
 			void host.runReconciliation(mode);
-		},
-	});
-
-	registrar.addCommand({
-		id: "debug-status",
-		name: "Show sync debug info",
-		callback: () => {
-			const info = host.getDiagnosticsService()?.buildDebugInfo() ?? "Sync not initialized";
-			new Notice(info, 10000);
-			console.debug("[yaos] Debug status:\n" + info);
-		},
-	});
-
-	registrar.addCommand({
-		id: "copy-debug",
-		name: "Copy debug info to clipboard",
-		callback: () => {
-			const info = host.getDiagnosticsService()?.buildDebugInfo() ?? "Sync not initialized";
-			navigator.clipboard.writeText(info).then(
-				() => new Notice("Debug info copied to clipboard."),
-				() => new Notice("Failed to copy to clipboard. Check console.", 5000),
-			);
-			console.debug("[yaos] Debug info:\n" + info);
-		},
-	});
-
-	registrar.addCommand({
-		id: "show-recent-events",
-		name: "Show recent sync events",
-		callback: () => {
-			const text = host.getDiagnosticsService()?.buildRecentEventsText(80) ?? "No events recorded yet.";
-			new Notice("Recent sync events printed to console.", 5000);
-			console.debug("[yaos] Recent sync events:\n" + text);
-		},
-	});
-
-	registrar.addCommand({
-		id: "show-files-needing-attention",
-		name: "Show files needing attention",
-		callback: () => {
-			const text = host.getFilesNeedingAttentionText();
-			new Notice("Files needing attention printed to console.", 7000);
-			console.debug("[yaos] Files needing attention:\n" + text);
-		},
-	});
-
-	registrar.addCommand({
-		id: "export-diagnostics",
-		name: "Export sync diagnostics (safe)",
-		callback: () => {
-			void host.getDiagnosticsService()?.exportDiagnostics();
-		},
-	});
-
-	registrar.addCommand({
-		id: "export-diagnostics-with-filenames",
-		name: "Export sync diagnostics with filenames",
-		callback: () => {
-			void host.getDiagnosticsService()?.exportDiagnosticsWithFilenames();
 		},
 	});
 

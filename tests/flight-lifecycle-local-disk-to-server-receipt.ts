@@ -200,9 +200,7 @@ const mockApp = {
 const mockSettings = {
 	vaultId: "test-vault-id",
 	host: "https://test.example.com",
-	qaTraceEnabled: true,
-	qaTraceMode: "safe" as const,
-	qaTraceSecret: null,
+	debug: true,
 };
 
 const cleanupFns: (() => void)[] = [];
@@ -214,6 +212,9 @@ const deps: FlightTraceDeps = {
 	getDocSchemaVersion: () => 2,
 	buildCheckpoint: async () => ({}),
 	registerCleanup: (fn) => { cleanupFns.push(fn); },
+	// The test never exports, so the header input is never inspected; the stub
+	// exists only to satisfy FlightTraceDeps.
+	collectTraceHeaderInput: async () => ({}) as never,
 	log: () => {},
 };
 
@@ -227,8 +228,8 @@ const TEST_OP_ID = "op-lifecycle-test-001";
 async function runLifecycleTest(): Promise<void> {
 	const controller = new FlightTraceController(deps);
 
-	// Start trace in safe mode
-	await controller.start("safe", null, { manualStart: true });
+	// Start the recorder. Redaction is chosen per export, not at start.
+	await controller.start();
 
 	const recorder = controller.currentRecorder!;
 	assert(recorder !== null && recorder !== undefined, "Recorder is active after start");

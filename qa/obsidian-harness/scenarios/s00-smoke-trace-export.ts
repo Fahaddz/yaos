@@ -19,9 +19,10 @@
  *   - No server state required or assumed.
  *   - No CRDT convergence assertions.
  *
- * Trace lifecycle is managed by the harness runner:
- *   startTrace → setup → run → assert → exportTraceWithAnalyzer → cleanup
- * This scenario does NOT call startFlightTrace/exportFlightTrace/stopFlightTrace.
+ * Trace lifecycle is managed by the product: recording follows settings.debug,
+ * which the prepared QA vault sets to true. The harness runner only exports:
+ *   setup → run → assert → exportTraceWithAnalyzer → cleanup
+ * This scenario does NOT call exportFlightTrace itself.
  * The controller checks result.tracePath after qa.run() returns.
  */
 
@@ -31,7 +32,6 @@ export const s00SmokeTraceExport: QaScenario = {
 	id: "smoke-trace-export",
 	title: "Smoke: harness ready + trace machinery (required liveness gate)",
 	tags: ["smoke", "harness", "trace", "layer0", "release-gate"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx: QaContext): Promise<void> {

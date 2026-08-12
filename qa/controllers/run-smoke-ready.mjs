@@ -336,17 +336,6 @@ async function main() {
 			log(INFO, `trace file disk check skipped (set QA_VAULT_PATH to enable)`);
 		}
 
-		// ----------------------------------------------------------------
-		// 9. stopTrace (clean up — stop the harness-managed trace)
-		// ----------------------------------------------------------------
-		try {
-			await client.eval(`(async () => { await window.__YAOS_QA__?.stopTrace(); })()`, 10_000);
-			check("stopTrace()", true);
-		} catch (e) {
-			// Not fatal — trace may have already been stopped by the scenario runner
-			log(INFO, `stopTrace() warning (non-fatal): ${e.message}`);
-		}
-
 	} catch (err) {
 		log(FAIL, `Unexpected error: ${err.message}`);
 		if (err.message.includes("not available")) {

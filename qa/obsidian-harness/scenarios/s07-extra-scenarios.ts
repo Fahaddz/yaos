@@ -37,7 +37,6 @@ export const s07iFolderThenFile: QaScenario = {
 	id: "s07i-folder-then-file-later",
 	title: "S07i: Create folder then create files inside it (empty-folder semantics)",
 	tags: ["s07i", "plugin-writes", "folder", "templater-class", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -120,7 +119,6 @@ export const s07jAttachmentRefBeforeBlob: QaScenario = {
 	id: "s07j-attachment-ref-before-blob",
 	title: "S07j: Markdown references attachment before blob exists (text sync independent)",
 	tags: ["s07j", "plugin-writes", "attachment", "blob", "templater-class", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -195,7 +193,6 @@ export const s07hLargeBurst: QaScenario = {
 	id: "s07h-large-burst",
 	title: `S07h-large: ${LARGE_BURST_COUNT}-file concurrent burst (watcher/coalescing stress)`,
 	tags: ["s07h", "plugin-writes", "burst", "bulk", "stress", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -280,7 +277,6 @@ export const s07kBlobArrivesAfterReference: QaScenario = {
 	id: "s07k-blob-arrives-after-reference",
 	title: "S07k: Blob arrives after markdown reference — markdown CRDT must remain stable",
 	tags: ["s07k", "plugin-writes", "attachment", "blob", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {

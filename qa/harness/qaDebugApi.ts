@@ -158,9 +158,9 @@ export interface YaosQaDebugApi {
 	getServerReceiptState(): "confirmed" | "pending" | "unknown" | "no-candidate";
 	getConnectionState(): string;
 
-	// Flight trace
-	startFlightTrace(mode: string, secret?: string): Promise<void>;
-	stopFlightTrace(): Promise<void>;
+	// Flight trace. Recording is a pure function of the product's settings.debug,
+	// which qa/scripts/prepare-vault-lib.ts sets to true — there is deliberately
+	// no start/stop here, so a scenario cannot desynchronise from the recorder.
 	exportFlightTrace(privacy: "safe" | "full"): Promise<string>;
 
 	// Force operations
@@ -199,16 +199,15 @@ export interface YaosQaDebugApi {
 	/**
 	 * Phase 2+3: Get active trace identity for cross-device trace verification.
 	 * Returns null if no trace is active.
-	 * qaTraceSecretHash is SHA-256("yaos-qa-trace-secret:" + qaTraceSecret).
-	 * hasQaTraceSecret is false when no qaTraceSecret is set.
+	 *
+	 * pathSaltFingerprint is `sha256:<hex>` over the path-pseudonymisation salt,
+	 * which is derived from settings.vaultId. Two devices in the same vault
+	 * therefore report the same fingerprint and their pathIds correlate.
 	 */
 	getActiveTraceInfo(): {
 		localTraceId: string;
-		/** @deprecated use localTraceId */
-		traceId: string;
-		qaTraceSecretHash: string;
+		pathSaltFingerprint: string;
 		deviceId: string;
-		hasQaTraceSecret: boolean;
 	} | null;
 
 	/**
@@ -262,14 +261,12 @@ interface PluginHandle {
 	getEditorBindings(): EditorBindingManager | null;
 	getDiagnosticsDir(): Promise<string | undefined> | undefined;
 	sha256Hex(text: string): Promise<string>;
-	startQaFlightTrace(mode?: string): Promise<void>;
-	stopQaFlightTrace(): Promise<void>;
 	exportFlightTrace(privacy: "safe" | "full"): Promise<string | null>;
 	runReconciliation(): Promise<void>;
 	disconnectProvider(reason?: string): void;
 	connectProvider(reason?: string): void;
-	/** SHA-256 hash of the active qaTraceSecret, computed at trace start. */
-	getQaTraceSecretHash?(): string | null;
+	/** Fingerprint of the derived path salt, `sha256:<hex>`, or null when idle. */
+	getPathSaltFingerprint(): string | null;
 	/** Engine control port — present when Puppeteer harness is active. */
 	getEngineControlPort(): import("../../src/runtime/engineControlPort").EngineControlPort;
 }
@@ -611,22 +608,8 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 		},
 
 		// -- Flight trace -------------------------------------------------------
-
-		async startFlightTrace(mode, secret): Promise<void> {
-			// If a secret is provided, update settings before starting the trace
-			if (secret) {
-				const p = plugin as unknown as { settings?: { qaTraceSecret?: string }; saveData?: (d: unknown) => Promise<void> };
-				if (p.settings) {
-					p.settings.qaTraceSecret = secret;
-					await p.saveData?.(p.settings);
-				}
-			}
-			await plugin.startQaFlightTrace(mode);
-		},
-
-		async stopFlightTrace(): Promise<void> {
-			await plugin.stopQaFlightTrace();
-		},
+		//
+		// No startFlightTrace/stopFlightTrace: the recorder follows settings.debug.
 
 		async exportFlightTrace(privacy): Promise<string> {
 			const path = await plugin.exportFlightTrace(privacy);
@@ -681,15 +664,10 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 			const ftc = plugin.getFlightTraceController();
 			const ctx = ftc?.context;
 			if (!ctx) return null;
-			const qaTraceSecretHash = plugin.getQaTraceSecretHash?.();
-			const hash = qaTraceSecretHash ?? "";
-			const hasQaTraceSecret = hash.startsWith("sha256:");
 			return {
 				localTraceId: ctx.traceId,
-				traceId: ctx.traceId, // backward compat
-				qaTraceSecretHash: hash,
+				pathSaltFingerprint: plugin.getPathSaltFingerprint() ?? "",
 				deviceId: ctx.deviceId,
-				hasQaTraceSecret,
 			};
 		},
 

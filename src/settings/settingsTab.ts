@@ -6,7 +6,6 @@ import {
 	type ExternalEditPolicy,
 	type VaultSyncSettings,
 } from "./settingsStore";
-import { randomBase64Url } from "../utils/base64url";
 
 type SettingsAuthMode = "env" | "claim" | "unclaimed" | "unknown";
 type SettingsStatusState = "disconnected" | "loading" | "syncing" | "connected" | "offline" | "error" | "unauthorized";
@@ -544,8 +543,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(advancedBody)
-			.setName("Debug logging")
-			.setDesc("Enable verbose console logs for troubleshooting.")
+			.setName("Debug mode")
+			.setDesc(
+				"Turn this on, reproduce the bug, then run the \"Export debug trace\" command to save a trace file you can send to the maintainer. " +
+					"That export redacts filenames; use \"Export debug trace with filenames\" only if you are asked for it. " +
+					"Debug mode also enables verbose console logging, and recording every sync event costs time and disk, so leave it off for everyday use.",
+			)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.host.settings.debug)
@@ -553,92 +556,6 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 						await this.host.updateSettings((settings) => {
 							settings.debug = value;
 						}, "settings:debug");
-					}),
-			);
-
-		new Setting(advancedBody)
-			.setName("Diagnostics flight recorder")
-			.setDesc("Record structured sync traces for QA. Safe mode redacts filenames by default.")
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.host.settings.qaTraceEnabled)
-					.onChange(async (value) => {
-						await this.host.updateSettings((settings) => {
-							settings.qaTraceEnabled = value;
-						}, "settings:qa-trace-enabled");
-					}),
-			);
-
-		new Setting(advancedBody)
-			.setName("QA flight recorder mode")
-			.setDesc("Safe is recommended. QA-safe uses a shared secret for multi-device runs. Local-private traces cannot be exported.")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption("safe", "Safe (redacted)")
-					.addOption("qa-safe", "QA-safe (shared secret)")
-					.addOption("full", "Full (filenames)")
-					.addOption("local-private", "Local-private (no export)")
-					.setValue(this.host.settings.qaTraceMode)
-					.onChange(async (value) => {
-						await this.host.updateSettings((settings) => {
-							settings.qaTraceMode = value as VaultSyncSettings["qaTraceMode"];
-						}, "settings:qa-trace-mode");
-					}),
-			);
-
-		new Setting(advancedBody)
-			.setName("QA trace shared secret")
-			.setDesc("Optional secret for QA-safe multi-device correlation. Never shared in exports.")
-			.addText((text) => {
-				text
-					.setPlaceholder("(hidden)")
-					.setValue(this.host.settings.qaTraceSecret ?? "")
-					.onChange(async (value) => {
-						await this.host.updateSettings((settings) => {
-							settings.qaTraceSecret = value.trim();
-						}, "settings:qa-trace-secret");
-					});
-				// Hide the secret field like a password input.
-				text.inputEl.type = "password";
-				text.inputEl.autocomplete = "off";
-			})
-			.addButton((btn) =>
-				btn
-					.setButtonText("Generate")
-					.setTooltip("Generate a new random secret")
-					.onClick(async () => {
-						const secret = randomBase64Url(24);
-						await this.host.updateSettings((settings) => {
-							settings.qaTraceSecret = secret;
-						}, "settings:qa-trace-secret-generate");
-						new Notice("QA trace secret generated.", 3000);
-					}),
-			)
-			.addButton((btn) =>
-				btn
-					.setButtonText("Copy")
-					.setTooltip("Copy secret to clipboard")
-					.onClick(() => {
-						const secret = this.host.settings.qaTraceSecret ?? "";
-						if (!secret) {
-							new Notice("No secret to copy.", 3000);
-							return;
-						}
-						navigator.clipboard.writeText(secret).then(
-							() => new Notice("QA trace secret copied.", 3000),
-							() => new Notice("Failed to copy to clipboard.", 4000),
-						);
-					}),
-			)
-			.addButton((btn) =>
-				btn
-					.setButtonText("Clear")
-					.setTooltip("Clear the secret")
-					.onClick(async () => {
-						await this.host.updateSettings((settings) => {
-							settings.qaTraceSecret = "";
-						}, "settings:qa-trace-secret-clear");
-						new Notice("QA trace secret cleared.", 3000);
 					}),
 			);
 

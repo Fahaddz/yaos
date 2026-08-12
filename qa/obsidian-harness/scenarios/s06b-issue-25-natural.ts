@@ -40,7 +40,6 @@ export const s06bIssue25Natural: QaScenario = {
 	id: "issue-25-editor-bound-loop-natural",
 	title: "Issue #25: natural event-pipeline no-loop soak (3 min)",
 	tags: ["issue-25", "editor-bound", "recovery", "single-device", "regression", "natural", "soak"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {

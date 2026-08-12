@@ -1,10 +1,9 @@
 // Regression test for INV-SEC-02 / Phase 1.3.
 //
-// The default diagnostics export (safe-summary mode) must not contain
-// vault filenames or path-shaped strings anywhere in the output. This test
-// drives the path redactor against a fixture shaped like the real
-// diagnostics bundle, then walks the output recursively to assert no
-// raw path remains. The fixture exercises:
+// The redacted trace header must not contain vault filenames or path-shaped
+// strings anywhere in the output. This test drives the path redactor against a
+// fixture shaped like the real header state, then walks the output recursively
+// to assert no raw path remains. The fixture exercises:
 //
 //   - structural path fields (path, oldPath, newPath, etc.)
 //   - path-list fields (missingOnDisk, missingInCrdt)
@@ -25,6 +24,10 @@ if (typeof globalThis.crypto === "undefined") {
 const redactorModule = await import("../src/telemetry/diagnostics/pathRedactor.ts");
 const redactorExports = redactorModule.default ?? redactorModule;
 const { createPathRedactor, createPassthroughRedactor, generateBundleSalt } = redactorExports;
+// Loaded the same way for the same reason: this is a .mjs driving .ts modules
+// through JITI, so a static import specifier would not resolve.
+const identityModule = await import("../src/telemetry/debug/pathIdentity.ts");
+const { PathIdentityResolver } = identityModule.default ?? identityModule;
 
 let passed = 0;
 let failed = 0;
@@ -174,10 +177,17 @@ console.log("\n--- Test 3: redaction is stable within one bundle (in-bundle corr
 	const redactor = await createPathRedactor(salt, sha256Hex, { knownPaths: KNOWN_PATHS });
 	const tag1 = redactor.redactPath("Inbox/note.md");
 	const tag2 = redactor.redactPath("Inbox/note.md");
-	const tag3 = redactor.redactInText('scheduled write for "Inbox/note.md"').match(/path:[a-f0-9]+/)?.[0];
+	const tag3 = redactor.redactInText('scheduled write for "Inbox/note.md"').match(/p:[a-f0-9]{32}/)?.[0];
 	assert(tag1 === tag2, "redactPath is stable for the same path");
 	assert(tag1 === tag3, "redactPath and redactInText agree on the same path");
-	assert(tag1.startsWith("path:"), "redacted tag has the documented prefix");
+	assert(tag1.startsWith("p:"), "redacted tag has the documented prefix");
+
+	// The header and the event lines have to share one pathId namespace, or an
+	// exported trace cannot be read: the header's file lists would name paths
+	// the events never mention. Same salt, same path, same tag — byte for byte.
+	const resolver = new PathIdentityResolver(sha256Hex, { salt });
+	const { pathId } = await resolver.getPathIdentity("Inbox/note.md");
+	assert(tag1 === pathId, "redactor tag is byte-identical to the recorder's pathId for the same salt");
 }
 
 console.log("\n--- Test 4: redaction differs across bundles (no cross-bundle linkage) ---");
@@ -206,7 +216,7 @@ console.log("\n--- Test 6: structural fields are redacted even without an extens
 		knownPaths: ["No Extension Folder/file"],
 	});
 	const out = redactor.redactDeep({ path: "No Extension Folder/file" });
-	assert(out.path.startsWith("path:"), "structural path field is redacted via known-key path");
+	assert(out.path.startsWith("p:"), "structural path field is redacted via known-key path");
 	assert(out.path !== "No Extension Folder/file", "raw value does not survive");
 }
 
@@ -224,7 +234,7 @@ console.log("\n--- Test 7: server-trace and free-form strings get scanned ---");
 		"path embedded in server-trace free-form string is redacted",
 	);
 	assert(
-		/path:[a-f0-9]+/.test(out.serverTrace[0].diagnostic),
+		/p:[a-f0-9]{32}/.test(out.serverTrace[0].diagnostic),
 		"server-trace diagnostic now contains a redacted tag",
 	);
 }
@@ -275,7 +285,7 @@ console.log("\n--- Test 10: prose without quoted paths is not falsely redacted -
 	for (const sample of samples) {
 		const out = redactor.redactInText(sample);
 		assert(
-			!/path:[a-f0-9]+/.test(out),
+			!/p:[a-f0-9]{32}/.test(out),
 			`prose without quoted path is left alone: "${sample}"`,
 		);
 	}
@@ -297,7 +307,7 @@ console.log("\n--- Test 11: known paths are replaced even when unquoted (exact-r
 		"seeded path in unquoted position is replaced by exact-replacement pass",
 	);
 	assert(
-		/path:[a-f0-9]+/.test(out),
+		/p:[a-f0-9]{32}/.test(out),
 		"exact-replacement inserts a redacted tag",
 	);
 }

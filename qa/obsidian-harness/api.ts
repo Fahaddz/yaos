@@ -131,8 +131,6 @@ export function buildQaConsoleApi(app: App, scenarioRegistry: Map<string, QaScen
 				"assertNoConflictCopies(dir?)         — throws if conflict copies found",
 				"manifest()                           — snapshot current vault",
 				"compareManifest(expected)            — diff two manifests",
-				"startTrace(recordingMode?, secret?)  — start QA flight trace",
-				"stopTrace()                          — stop flight trace",
 				"exportTrace(exportPrivacy?)          — export flight trace (returns path)",
 				"analyzeTrace(tracePath, scenarioId?) — run analyzer on a trace file",
 				"exportTraceWithAnalyzer(privacy?)    — export + analyze in one call",
@@ -166,26 +164,16 @@ export function buildQaConsoleApi(app: App, scenarioRegistry: Map<string, QaScen
 			const warnings: string[] = [];
 			const start = Date.now();
 
-			// Recording mode and export privacy are separate concepts.
-			const recordingMode = scenario.traceRecordingMode ?? "qa-safe";
+			// Recording has no mode; only the export has a privacy level.
 			const exportPrivacy: "safe" | "full" = scenario.traceExportPrivacy ?? "safe";
 
 			let tracePath: string | null = null;
 			let analyzerReport: unknown = null;
 			let analyzerPassed = true; // assume pass unless analyzer explicitly fails
 
-			// Phase: start trace BEFORE setup so all events are captured.
-			// Stop any previously running trace first to prevent event bleed.
-			try {
-				await api.stopTrace();
-			} catch {
-				// ignore — no trace was running
-			}
-			try {
-				await api.startTrace(recordingMode);
-			} catch (traceStartErr) {
-				warnings.push(`trace start failed: ${String(traceStartErr)}`);
-			}
+			// No trace start here: recording follows the product's settings.debug,
+			// which qa/scripts/prepare-vault-lib.ts sets to true, so events from
+			// before setup are already being captured.
 
 			// Phase: setup
 			await ctx.phase("setup");
@@ -312,12 +300,6 @@ export function buildQaConsoleApi(app: App, scenarioRegistry: Map<string, QaScen
 		},
 
 		// Flight trace
-		async startTrace(recordingMode = "qa-safe", secret?: string): Promise<void> {
-			await getYaos().startFlightTrace(recordingMode, secret);
-		},
-		async stopTrace(): Promise<void> {
-			await getYaos().stopFlightTrace();
-		},
 		async exportTrace(exportPrivacy: "safe" | "full" = "safe"): Promise<string> {
 			return getYaos().exportFlightTrace(exportPrivacy);
 		},

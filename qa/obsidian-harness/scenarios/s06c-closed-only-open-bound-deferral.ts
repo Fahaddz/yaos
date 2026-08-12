@@ -20,7 +20,6 @@ export const s06cClosedOnlyOpenBoundDeferral: QaScenario = {
 	id: "open-bound-closed-only-deferral",
 	title: "Open/bound reconcile defers, then converges after close",
 	tags: ["reconcile", "closed-only", "editor-bound", "autophagy", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {

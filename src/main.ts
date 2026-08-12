@@ -89,7 +89,8 @@ import { randomBase64Url } from "./utils/base64url";
 import { ConfirmModal } from "./ui/ConfirmModal";
 import { runSchemaMigrationToV2 } from "./migrations/schemaV2";
 import { isLocalOrigin } from "./sync/origins";
-import type { TelemetryRuntimeHandle } from "./telemetry/installTelemetryRuntime";
+import { installTelemetryRuntime, type TelemetryRuntimeHandle } from "./telemetry/installTelemetryRuntime";
+import type { SyncReadPort, TelemetryRuntimeHost } from "./telemetry/telemetryRuntimeHost";
 import type { EngineControlPort, DiskIngestPort } from "./runtime/engineControlPort";
 import type { BindingPropagationGate } from "./sync/editorBinding";
 
@@ -138,7 +139,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private reconciliationController!: ReconciliationController;
 	private setupLinkController: SetupLinkController | null = null;
 	private traceRuntime: TraceRuntimeController | null = null;
-	/** Telemetry runtime handle — null until dynamically loaded. */
+	/** Debug runtime handle — null unless debug mode installed it at startup. */
 	private lab: TelemetryRuntimeHandle | null = null;
 
 	// ---------------------------------------------------------------------------
@@ -163,7 +164,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		/** QA offline hold: when true, all reconnect paths are blocked. */
 		offlineHold: boolean;
 	} | null = null;
-	/** Domain-level trace sink. Routes to lab when active, noop otherwise. */
+	/** Domain-level trace sink. Routes to the debug runtime when active, noop otherwise. */
 	private traceSink: TraceSink = new NoopTraceSink();
 	private statusBarEl: HTMLElement | null = null;
 	private statusInterval: ReturnType<typeof setInterval> | null = null;
@@ -436,21 +437,17 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			}, "startup-generate-device-name");
 		}
 
-		// Install telemetry runtime when debug or qaDebugMode is enabled.
-		// Dynamic load keeps telemetry code out of the product bundle on normal startup.
+		// Install the debug/Observer runtime when debug or qaDebugMode is enabled.
 		//
-		// Mobile guard: require("fs") is Node.js only and does not exist in Obsidian's
-		// mobile WebView renderer. Debug mode on mobile is silently ignored — diagnostics
-		// are unavailable but sync continues normally.
+		// Mobile: the runtime has no Node dependency — it reads and writes through
+		// app.vault.adapter, which exists on mobile too. The gate below is therefore
+		// a deliberate policy choice (flight recording is desktop-only) rather than a
+		// capability limit. Debug mode on mobile is silently inert; sync is unaffected.
 		if ((this.settings.debug || this.settings.qaDebugMode) && !Platform.isMobile) {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const pluginDir = `${(this.app.vault.adapter as any).basePath}/${this.manifest.dir}`;
-			// eslint-disable-next-line @typescript-eslint/no-require-imports
-			const pluginRequire = require;
-			const host: import("./telemetry/telemetryRuntimeHost").TelemetryRuntimeHost = {
+			const host: TelemetryRuntimeHost = {
 					app: this.app,
 					getSettings: () => this.settings,
-					getSyncState: (): import("./telemetry/telemetryRuntimeHost").SyncReadPort | null => {
+					getSyncState: (): SyncReadPort | null => {
 						const vs = this.vaultSync;
 						if (!vs) return null;
 						return {
@@ -525,24 +522,18 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					collectOpenFileTraceState: () => this.collectOpenFileTraceState(),
 					sha256Hex: (text) => this.sha256Hex(text),
 					getPluginVersion: () => this.manifest.version,
+					getServerVersion: () => this.getUpdateState().serverVersion,
 					isMarkdownPathSyncable: (path) => this.isMarkdownPathSyncable(path),
 					registerCleanup: (cleanup) => this.register(cleanup),
 					log: (msg) => this.log(msg),
 			};
-			const { loadTelemetryBundle } = await import("./telemetry/telemetryLoader");
-			const result = await loadTelemetryBundle({ pluginDir, pluginRequire, host });
-			if (result.kind === "loaded") {
-				this.lab = result.runtime;
+			try {
+				this.lab = await installTelemetryRuntime(host);
 				this.traceSink = this.lab.traceSink;
-			} else {
-				// Telemetry failed to load — sync continues with NoopTraceSink.
-				// this.lab remains null; all this.lab?.method() calls use optional chaining.
-				console.error(`[yaos] Telemetry load failed (${result.reason}): ${result.error}`);
-				new Notice(
-					"YAOS: telemetry runtime failed to load. Sync will continue without diagnostics. " +
-					"Check the developer console for details.",
-					10_000,
-				);
+			} catch (err) {
+				// Construction threw — sync continues with NoopTraceSink. this.lab stays
+				// null and every this.lab?.method() call is already optional-chained.
+				console.error("[yaos] Debug runtime failed to start:", err);
 			}
 		}
 
@@ -918,9 +909,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				registerCommands(this, {
 					getVaultSync: () => this.vaultSync,
 					getConnectionController: () => this.connectionController,
-					getDiagnosticsService: () => this.lab?.diagnosticsService as import("./telemetry/diagnostics/diagnosticsService").DiagnosticsService ?? null,
 					getSnapshotService: () => this.snapshotService,
-					getFilesNeedingAttentionText: () => this.buildFilesNeedingAttentionText(),
 					getUntrackedFileCount: () => this.reconciliationController.untrackedFileCount,
 					runReconciliation: (mode) => this.runReconciliation(mode),
 					runSchemaMigrationToV2: () => this.runSchemaMigrationToV2(),
@@ -929,7 +918,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					resetLocalCache: () => this.resetLocalCache(),
 					nuclearReset: () => this.nuclearReset(),
 				});
-				// Lab/QA commands are registered separately by the lab runtime.
+				// Debug-runtime commands are registered separately by the debug runtime.
 				this.lab?.registerCommands(this);
 				this.commandsRegistered = true;
 			}
@@ -1809,20 +1798,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		new Notice(notice, degraded ? 15000 : 6000);
 	}
 
-	private buildFilesNeedingAttentionText(): string {
-		const entries = this.collectPreservedUnresolvedEntries()
-			.sort((a, b) => b.lastSeenAt - a.lastSeenAt);
-		if (entries.length === 0) return "No files currently need attention.";
-		return entries.map((entry) => [
-			entry.path,
-			`  kind: ${entry.kind}`,
-			`  reason: ${entry.reason}`,
-			`  first seen: ${new Date(entry.firstSeenAt).toLocaleString()}`,
-			`  last seen: ${new Date(entry.lastSeenAt).toLocaleString()}`,
-			"  suggested action: inspect the local file and conflict artifacts, then edit/save to keep local content or delete it to accept the remote delete.",
-		].join("\n")).join("\n\n");
-	}
-
 	private setupTraceRuntime(): void {
 		this.traceRuntime = new TraceRuntimeController({
 			app: this.app,
@@ -2376,7 +2351,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			app: this.app,
 			vaultSync: this.vaultSync,
 			settings: this.settings,
-			diagnosticsService: this.lab?.diagnosticsService as import("./telemetry/diagnostics/diagnosticsService").DiagnosticsService ?? null,
 			log: (msg) => this.log(msg),
 			runReconciliation: async () => {
 				const mode = this.vaultSync?.getSafeReconcileMode();
@@ -2393,7 +2367,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private mountQaDebugApi(): void {
 		if (!this.settings.qaDebugMode) return;
 		// window.__YAOS_DEBUG__ is the Puppeteer harness API.
-		// It is NOT part of the production telemetry runtime (telemetry.js).
+		// It is NOT part of the product debug runtime shipped in main.js.
 		// The QA harness plugin (qa/obsidian-harness/main.ts) mounts it when
 		// installed alongside this plugin for QA scenarios.
 		// In this product build, no mutation API is available — log explicitly

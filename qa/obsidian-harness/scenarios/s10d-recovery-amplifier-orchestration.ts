@@ -45,7 +45,6 @@ export const s10dRecoveryAmplifierOrchestration: QaScenario = {
 	id: "issue-22-recovery-amplifier-orchestration",
 	title: "Issue #22: recovery origin does not trigger diskMirror amplification",
 	tags: ["issue-22", "recovery", "amplifier", "origin", "single-device", "regression", "P0"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx: QaContext): Promise<void> {

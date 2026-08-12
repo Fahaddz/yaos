@@ -46,7 +46,6 @@ export const s06aIssue25ForcedRecoveryCrdtOnly: QaScenario = {
 	id: "issue-25-editor-bound-loop-forced-recovery-crdt-only",
 	title: "Issue #25: forced-recovery convergence (crdtOnly path)",
 	tags: ["issue-25", "editor-bound", "recovery", "single-device", "regression", "crdt-only"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -163,7 +162,6 @@ export const s06aIssue25ForcedRecoveryLocalOnly: QaScenario = {
 	id: "issue-25-editor-bound-loop-forced-recovery-local-only",
 	title: "Issue #25: forced-recovery convergence (localOnly path)",
 	tags: ["issue-25", "editor-bound", "recovery", "single-device", "regression", "local-only"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {

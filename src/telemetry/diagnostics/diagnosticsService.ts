@@ -1,19 +1,13 @@
-import { App, Notice, normalizePath } from "obsidian";
+import { App, Platform, apiVersion, normalizePath } from "obsidian";
 import { deriveSyncFacts } from "../../runtime/connectionFacts";
-import { formatUnknown } from "../../utils/format";
 import type { BlobSyncSnapshot, DiskMirrorSnapshot, SyncReadPort } from "../telemetryRuntimeHost";
 import type { TraceHttpContext } from "../debug/trace";
 import type { VaultSyncSettings } from "../../settings";
-import {
-	buildFrontmatterQuarantineDebugLines,
-	type FrontmatterQuarantineEntry,
-} from "../../sync/frontmatterQuarantine";
-import { ConfirmModal } from "../../ui/ConfirmModal";
-import { buildDiagnosticsBundle } from "./diagnosticsBundle";
-import type { DiagnosticsBundleInput } from "./diagnosticsBundle";
+import type { FrontmatterQuarantineEntry } from "../../sync/frontmatterQuarantine";
+import type { TraceHeaderPlatform, TraceHeaderStateInput } from "./diagnosticsBundle";
 import type { ReconcileMode } from "../../sync/vaultSync";
 
-type EventEntry = { ts: string; msg: string };
+type LogLine = { ts: string; msg: string };
 
 type LastReconcileStats = {
 	at: string;
@@ -26,29 +20,15 @@ type LastReconcileStats = {
 	safetyBrakeReason: string | null;
 };
 
-function describeServerReceiptStartupValidation(state: string | null): string {
-	switch (state) {
-		case "validated":
-			return "validated";
-		case "skipped_local_yjs_timeout":
-			return "skipped: local Yjs cache did not finish loading; persisted receipt candidate was not trusted this session";
-		case "unavailable":
-			return "unavailable";
-		case "not_started":
-			return "not started";
-		default:
-			return state ?? "unknown";
-	}
-}
-
 interface DiagnosticsServiceDeps {
 	app: App;
 	getSettings(): VaultSyncSettings;
+	getServerVersion(): string | null;
 	getTraceHttpContext(): TraceHttpContext | undefined;
 	getSyncState(): SyncReadPort | null;
 	getDiskMirrorSnapshot(): DiskMirrorSnapshot | null;
 	getBlobSyncSnapshot(): BlobSyncSnapshot | null;
-	getEventRing(): EventEntry[];
+	getEventRing(): LogLine[];
 	getRecentServerTrace(): unknown[];
 	getFrontmatterQuarantineEntries(): FrontmatterQuarantineEntry[];
 	getState(): {
@@ -67,187 +47,49 @@ interface DiagnosticsServiceDeps {
 	log(message: string): void;
 }
 
+function describePlatform(): TraceHeaderPlatform {
+	let operatingSystem = "unknown";
+	if (Platform.isIosApp) operatingSystem = "ios";
+	else if (Platform.isAndroidApp) operatingSystem = "android";
+	else if (Platform.isMacOS) operatingSystem = "macos";
+	else if (Platform.isWin) operatingSystem = "windows";
+	else if (Platform.isLinux) operatingSystem = "linux";
+	return {
+		obsidianApiVersion: apiVersion ?? null,
+		operatingSystem,
+		isMobile: Platform.isMobile,
+		isDesktopApp: Platform.isDesktopApp,
+	};
+}
+
+/**
+ * Gathers the point-in-time state that becomes the header of an exported
+ * debug trace. Nothing here writes a file or shows a Notice: the trace export
+ * owns the artifact, this owns the facts that go at the top of it.
+ */
 export class DiagnosticsService {
 	constructor(private readonly deps: DiagnosticsServiceDeps) {}
 
-	buildDebugInfo(): string {
-		const vaultSync = this.deps.getSyncState();
-		if (!vaultSync) return "Sync not initialized";
-		const settings = this.deps.getSettings();
-		const state = this.deps.getState();
-		const blobSyncSnapshot = this.deps.getBlobSyncSnapshot();
-		const trace = this.deps.getTraceHttpContext();
-
-		const facts = deriveSyncFacts(
-			{
-				connected: vaultSync.connected,
-				fatalAuthError: vaultSync.fatalAuthError,
-				fatalAuthCode: vaultSync.fatalAuthCode,
-				lastLocalUpdateAt: vaultSync.lastLocalUpdateAt,
-				lastLocalUpdateWhileConnectedAt: vaultSync.lastLocalUpdateWhileConnectedAt,
-				lastRemoteUpdateAt: vaultSync.lastRemoteUpdateAt,
-				pendingBlobUploads: blobSyncSnapshot?.pendingUploads ?? 0,
-				serverAppliedLocalState: vaultSync.serverAppliedLocalState,
-				lastServerReceiptEchoAt: vaultSync.lastServerReceiptEchoAt,
-				lastKnownServerReceiptEchoAt: vaultSync.lastKnownServerReceiptEchoAt,
-				candidatePersistenceHealthy: vaultSync.candidatePersistenceHealthy,
-				candidatePersistenceFailureCount: vaultSync.candidatePersistenceFailureCount,
-				hasUnconfirmedServerReceiptCandidate: vaultSync.hasUnconfirmedServerReceiptCandidate,
-				serverReceiptCandidateCapturedAt: vaultSync.serverReceiptCandidateCapturedAt,
-			},
-			vaultSync.connected
-				? (state.reconciled ? "online" : "connecting")
-				: (vaultSync.fatalAuthError ? "auth_failed" : "offline"),
-		);
-
-		function fmtTs(ms: number | null): string {
-			if (ms === null) return "(none)";
-			return new Date(ms).toISOString();
-		}
-
-		// NOTE: buildDebugInfo() is local/sensitive — it includes the server URL,
-		// vault ID, and device name. It is NOT safe for sharing. Use
-		// exportDiagnostics() (safe mode) for shareable output.
-		return [
-			`[local debug — includes server URL and vault ID]`,
-			`Host: ${settings.host || "(not set)"}`,
-			`Vault ID: ${settings.vaultId || "(not set)"}`,
-			`Device: ${settings.deviceName || "(unnamed)"}`,
-			`Trace ID: ${trace?.traceId ?? "(disabled)"}`,
-			`Boot ID: ${trace?.bootId ?? "(disabled)"}`,
-			// Connection facts (INV-AUTH-01, INV-ACK-01)
-			`Headline: ${facts.headlineState}`,
-			`Server reachable: ${facts.serverReachable ?? "unknown"}`,
-			`Auth accepted: ${facts.authAccepted ?? "unknown"}`,
-			`WebSocket open: ${facts.websocketOpen}`,
-			`Auth reject code: ${facts.lastAuthRejectCode ?? "(none)"}`,
-			`Last local CRDT update: ${fmtTs(facts.lastLocalUpdateAt)}`,
-			`Last local update while connected: ${fmtTs(facts.lastLocalUpdateWhileConnectedAt)}`,
-			`Last remote update observed: ${fmtTs(facts.lastRemoteUpdateAt)}`,
-			`Server receipt wire: active (Level 3 server Y.Doc receipt; not durable)`,
-			`Server receipt active state: ${facts.serverAppliedLocalState ?? "unknown"}`,
-			`Last server receipt echo observed: ${fmtTs(facts.lastServerReceiptEchoAt)}`,
-			`Last known server receipt: ${fmtTs(facts.lastKnownServerReceiptEchoAt)}`,
-			`Server receipt candidate captured: ${fmtTs(facts.serverReceiptCandidateCapturedAt)}`,
-			`Server receipt candidate present: ${facts.hasUnconfirmedServerReceiptCandidate}`,
-			`Server receipt persistence healthy: ${facts.candidatePersistenceHealthy ?? "unknown"}`,
-			`Server receipt persistence failures: ${facts.candidatePersistenceFailureCount ?? "unknown"}`,
-			`Server receipt startup validation: ${describeServerReceiptStartupValidation(vaultSync.serverReceiptStartupValidation)}`,
-			`Custom messages seen: ${vaultSync.svEchoCounters.customMessageSeenCount}`,
-			`Server receipt echo seen: ${vaultSync.svEchoCounters.svEchoSeenCount}`,
-			`Server receipt echo accepted: ${vaultSync.svEchoCounters.acceptedCount}`,
-			`Server receipt echo rejected: ${vaultSync.svEchoCounters.rejectedCount}`,
-			`Server receipt echo rejected oversize: ${vaultSync.svEchoCounters.rejectedOversizeCount}`,
-			`Server receipt echo rejected invalid: ${vaultSync.svEchoCounters.rejectedInvalidCount}`,
-			`Server receipt echo max bytes: ${vaultSync.svEchoCounters.bytesMax}`,
-			`Pending local updates: unknown (latest-state receipt, no queue count)`,
-			`Pending blob uploads: ${facts.pendingBlobUploads}`,
-			// Detailed internal state
-			`Local ready: ${vaultSync.localReady}`,
-			`Provider synced: ${vaultSync.providerSynced}`,
-			`Initialized (sentinel): ${vaultSync.isInitialized}`,
-			`Reconcile mode: ${vaultSync.getSafeReconcileMode()}`,
-			`Reconciled: ${state.reconciled}`,
-			`Connection generation: ${vaultSync.connectionGeneration}`,
-			`Last reconciled gen: ${state.lastReconciledGeneration}`,
-			`IndexedDB error: ${vaultSync.idbError}`,
-			`IndexedDB error kind: ${vaultSync.idbErrorDetails?.kind ?? "(none)"}`,
-			`IndexedDB error phase: ${vaultSync.idbErrorDetails?.phase ?? "(none)"}`,
-			`IndexedDB error name: ${vaultSync.idbErrorDetails?.name ?? "(none)"}`,
-			`IndexedDB error message: ${vaultSync.idbErrorDetails?.message ?? "(none)"}`,
-			`Schema supported/local: ${vaultSync.supportedSchemaVersion}/${vaultSync.storedSchemaVersion ?? "(unset)"}`,
-			`CRDT paths: ${vaultSync.getActiveMarkdownPaths().length}`,
-			`Blob paths: ${vaultSync.blobPathCount}`,
-			`Untracked files: ${state.untrackedFileCount}`,
-			`Active disk observers: ${this.deps.getDiskMirrorSnapshot()?.activeObserverCount ?? 0}`,
-			`External edit policy: ${settings.externalEditPolicy}`,
-			`Attachment sync: ${settings.enableAttachmentSync ? "enabled" : "disabled"}`,
-			...(blobSyncSnapshot ? [
-				`Pending downloads: ${blobSyncSnapshot.pendingDownloads}`,
-			] : []),
-			`Open files: ${state.openFileCount}`,
-			`Server trace events: ${this.deps.getRecentServerTrace().length}`,
-			`Remote cursors: ${settings.showRemoteCursors ? "shown" : "hidden"}`,
-			...buildFrontmatterQuarantineDebugLines(this.deps.getFrontmatterQuarantineEntries()),
-		].join("\n");
-	}
-
-	buildRecentEventsText(limit = 80): string {
-		const mainEvents = this.deps.getEventRing().slice(-limit).map((e) => `[plugin] ${e.ts} ${e.msg}`);
-		const syncEvents = this.deps.getSyncState()?.getRecentEvents(limit).map((e) => `[sync]   ${e.ts} ${e.msg}`) ?? [];
-		const serverEvents = this.deps.getRecentServerTrace()
-			.slice(-limit)
-			.map((e) => {
-				const entry = e as { ts?: string; event?: string; deviceName?: string; traceId?: string };
-				return `[server] ${entry.ts ?? ""} ${entry.event ?? "event"}${entry.deviceName ? ` device=${entry.deviceName}` : ""}${entry.traceId ? ` trace=${entry.traceId}` : ""}`;
-			});
-		const merged = [...mainEvents, ...syncEvents, ...serverEvents].sort();
-		if (merged.length === 0) return "No events recorded yet.";
-		return merged.slice(-limit).join("\n");
-	}
-
 	/**
-	 * Default diagnostics export. Vault paths are redacted to stable
-	 * per-bundle salted hashes; no filenames or vault content appear in
-	 * the output (INV-SEC-02).
+	 * Read the world: settings, sync state, connection facts, and a content
+	 * hash of every syncable markdown file on disk and in the CRDT so the header
+	 * can state where the two disagree. Returns plain values only — the pure
+	 * builder in diagnosticsBundle.ts decides what is safe to emit.
+	 *
+	 * Returns null when sync is not initialised; a header cannot describe a
+	 * world that does not exist yet.
 	 */
-	async exportDiagnostics(): Promise<void> {
-		await this.runExport({ includeFilenames: false });
-	}
-
-	/**
-	 * Filename-inclusive diagnostics export. Requires explicit confirmation
-	 * before writing. Output contains raw vault paths and is intended for
-	 * direct sharing with the maintainer when path structure is needed to
-	 * reproduce a bug.
-	 */
-	async exportDiagnosticsWithFilenames(): Promise<void> {
-		await new Promise<void>((resolve) => {
-			new ConfirmModal(
-				this.deps.app,
-				"Export diagnostics with filenames?",
-				"This export includes raw vault file names and your server URL. Do not share publicly without reviewing the file first.",
-				async () => {
-					try {
-						await this.runExport({ includeFilenames: true });
-					} catch (err) {
-						this.deps.log(`diagnostics export failed: ${formatUnknown(err)}`);
-						new Notice("Diagnostics export failed. Check console.", 10000);
-					} finally {
-						resolve();
-					}
-				},
-				"Export with filenames",
-				"Cancel",
-				() => resolve(),
-			).open();
-		});
-	}
-
-	private async runExport(options: { includeFilenames: boolean }): Promise<void> {
+	async collectTraceHeaderInput(): Promise<TraceHeaderStateInput | null> {
 		const vaultSync = this.deps.getSyncState();
-		if (!vaultSync) {
-			new Notice("Sync not initialized");
-			return;
-		}
+		if (!vaultSync) return null;
 
-		new Notice(
-			options.includeFilenames
-				? "Exporting full sync diagnostics (with filenames)..."
-				: "Exporting safe sync diagnostics...",
-		);
 		const startedAt = Date.now();
 		const settings = this.deps.getSettings();
 		const state = this.deps.getState();
 
-		const diskFiles = this.deps.app.vault.getMarkdownFiles()
+		const diskFiles = this.deps.app.vault
+			.getMarkdownFiles()
 			.filter((f) => this.deps.isMarkdownPathSyncable(f.path));
-
-		const crdtPaths = new Set<string>(
-			vaultSync.getActiveMarkdownPaths().filter((path) =>
-				this.deps.isMarkdownPathSyncable(path),
-			),
-		);
 
 		const diskHashes = new Map<string, { hash: string; length: number }>();
 		for (const file of diskFiles) {
@@ -258,12 +100,14 @@ export class DiagnosticsService {
 					length: content.length,
 				});
 			} catch (err) {
-				this.deps.log(`diagnostics: failed to read disk file "${file.path}": ${String(err)}`);
+				this.deps.log(`trace header: failed to read disk file "${file.path}": ${String(err)}`);
 			}
 		}
 
+		const activePaths = vaultSync.getActiveMarkdownPaths();
 		const crdtHashes = new Map<string, { hash: string; length: number }>();
-		for (const path of crdtPaths) {
+		for (const path of activePaths) {
+			if (!this.deps.isMarkdownPathSyncable(path)) continue;
 			const content = vaultSync.getPathContent(path);
 			if (content === null) continue;
 			crdtHashes.set(path, {
@@ -295,9 +139,11 @@ export class DiagnosticsService {
 				: (vaultSync.fatalAuthError ? "auth_failed" : "offline"),
 		);
 
-		const input: DiagnosticsBundleInput = {
+		return {
 			generatedAt: new Date().toISOString(),
-			generationMs: Date.now() - startedAt,
+			generationDurationMs: Date.now() - startedAt,
+			platform: describePlatform(),
+			serverVersion: this.deps.getServerVersion(),
 			settings: {
 				host: settings.host,
 				token: settings.token,
@@ -307,85 +153,44 @@ export class DiagnosticsService {
 				enableAttachmentSync: settings.enableAttachmentSync,
 				externalEditPolicy: settings.externalEditPolicy,
 			},
-			stateSnapshot: {
-				reconciled: state.reconciled,
+			syncState: {
+				reconcileCompleted: state.reconciled,
 				reconcileInFlight: state.reconcileInFlight,
 				reconcilePending: state.reconcilePending,
 				lastReconcileStats: state.lastReconcileStats,
 				awaitingFirstProviderSyncAfterStartup: state.awaitingFirstProviderSyncAfterStartup,
 				lastReconciledGeneration: state.lastReconciledGeneration,
-				connected: vaultSync.connected,
+				connectedToServer: vaultSync.connected,
 				providerSynced: vaultSync.providerSynced,
-				localReady: vaultSync.localReady,
+				localCacheReady: vaultSync.localReady,
 				connectionGeneration: vaultSync.connectionGeneration,
 				fatalAuthError: vaultSync.fatalAuthError,
 				fatalAuthCode: vaultSync.fatalAuthCode,
 				fatalAuthDetails: vaultSync.fatalAuthDetails,
-				idbError: vaultSync.idbError,
-				idbErrorDetails: vaultSync.idbErrorDetails,
+				indexedDbError: vaultSync.idbError,
+				indexedDbErrorDetails: vaultSync.idbErrorDetails,
 				serverReceiptStartupValidation: vaultSync.serverReceiptStartupValidation,
-				svEcho: vaultSync.svEchoCounters,
-				pathToIdCount: vaultSync.getActiveMarkdownPaths().length,
-				activePathCount: vaultSync.getActiveMarkdownPaths().length,
+				serverReceiptEchoCounters: vaultSync.svEchoCounters,
+				activeCrdtPathCount: activePaths.length,
 				blobPathCount: vaultSync.blobPathCount,
-				diskFileCount: diskFiles.length,
+				syncableMarkdownFileCountOnDisk: diskFiles.length,
 				openFileCount: state.openFileCount,
-				schema: {
-					supportedByClient: vaultSync.supportedSchemaVersion,
-					storedInDoc: vaultSync.storedSchemaVersion,
-				},
+				documentSchemaVersionSupportedByClient: vaultSync.supportedSchemaVersion,
+				documentSchemaVersionStoredInDocument: vaultSync.storedSchemaVersion,
 			},
 			syncFacts,
-			trace: this.deps.getTraceHttpContext(),
+			httpTraceContext: this.deps.getTraceHttpContext(),
 			diskHashes,
 			crdtHashes,
-			eventRing: this.deps.getEventRing() as Array<{ ts: string; msg: string }>,
-			syncEvents: vaultSync.getRecentEvents(240) as Array<{ ts: string; msg: string }>,
-			serverTrace: this.deps.getRecentServerTrace(),
+			pluginLogLines: this.deps.getEventRing(),
+			syncLogLines: vaultSync.getRecentEvents(240) as LogLine[],
+			serverTraceEvents: this.deps.getRecentServerTrace(),
 			openFiles: await this.deps.collectOpenFileTraceState(),
 			diskMirrorSnapshot: this.deps.getDiskMirrorSnapshot(),
-			blobSyncSnapshot: blobSyncSnapshot,
+			blobSyncSnapshot,
 			frontmatterQuarantine: this.deps.getFrontmatterQuarantineEntries(),
 			sha256Hex: this.deps.sha256Hex.bind(this.deps),
 		};
-
-		const { bundle: diagnostics, leakDetected, missingOnDiskCount, missingInCrdtCount, hashMismatchCount } = await buildDiagnosticsBundle(input, options);
-
-		if (leakDetected) {
-			this.deps.log(`diagnostics: redaction leak detected, aborting safe export`);
-			new Notice(
-				"Safe diagnostics export failed: a vault path survived redaction. Check the console.",
-				10000,
-			);
-			return;
-		}
-
-		const diagDir = await this.ensureDiagnosticsDir();
-
-		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-		const variant = options.includeFilenames ? "with-filenames" : "safe";
-		// Device name is excluded from the safe filename to avoid leaking it
-		// in filesystem metadata. Full mode retains it for easier file sorting.
-		const fileName = options.includeFilenames
-			? `sync-diagnostics-with-filenames-${stamp}-${settings.deviceName || "device"}.json`
-			: `sync-diagnostics-safe-${stamp}.json`;
-		const outPath = normalizePath(`${diagDir}/${fileName}`);
-		await this.deps.app.vault.adapter.write(outPath, JSON.stringify(diagnostics, null, 2));
-
-		// Do not log outPath in safe mode: the path is a vault path and would
-		// itself constitute a leak if plugin logs are later included in a
-		// diagnostics bundle.
-		this.deps.log(
-			options.includeFilenames
-				? `Diagnostics exported (${variant}): ${outPath} (missingOnDisk=${missingOnDiskCount}, missingInCrdt=${missingInCrdtCount}, mismatches=${hashMismatchCount})`
-				: `Diagnostics exported (${variant}): missingOnDisk=${missingOnDiskCount}, missingInCrdt=${missingInCrdtCount}, mismatches=${hashMismatchCount}`,
-		);
-		new Notice(
-			options.includeFilenames
-				? `Full sync diagnostics (with filenames) exported to ${outPath}`
-				: `Safe sync diagnostics exported. File saved in plugin diagnostics folder.`,
-			10000,
-		);
 	}
 
 	async ensureDiagnosticsDir(): Promise<string> {

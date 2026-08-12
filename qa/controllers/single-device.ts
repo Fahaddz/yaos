@@ -4,7 +4,7 @@
  *
  * Usage:
  *   bun run qa:obsidian --scenario single-device-basic-edit --port 9222 \
- *     --vault /path/to/vault [--trace qa-safe] [--out-dir qa-runs/]
+ *     --vault /path/to/vault [--out-dir qa-runs/]
  *
  * Requires Obsidian launched with:
  *   /path/to/Obsidian --remote-debugging-port=9222
@@ -37,14 +37,13 @@ async function main(): Promise<void> {
 	const scenario = args.scenario;
 	const port = Number(args.port ?? 9222);
 	const vaultPath = args.vault ? resolve(args.vault) : null;
-	const traceMode = args.trace ?? "qa-safe";
 	const outDir = resolve(args["out-dir"] ?? "qa-runs");
 	const device = args.device ?? "A";
 
 	if (!scenario) {
 		console.error(
 			"Usage: bun run qa:obsidian --scenario <id> [--port 9222] [--vault /path] " +
-			"[--trace qa-safe] [--out-dir qa-runs/] [--device A]",
+			"[--out-dir qa-runs/] [--device A]",
 		);
 		process.exit(1);
 	}
@@ -79,9 +78,7 @@ async function main(): Promise<void> {
 		await collector.saveManifest(preMani, "manifest-pre");
 		log("Pre-run manifest saved.");
 
-		// Start flight trace
-		log(`Starting flight trace (mode=${traceMode})…`);
-		await client.startTrace(traceMode);
+		// Flight trace is already recording: the prepared vault sets debug:true.
 
 		// Run the scenario
 		log(`Running scenario: ${scenario}…`);
@@ -94,9 +91,9 @@ async function main(): Promise<void> {
 			for (const w of result.warnings) log(`  WARN: ${w}`);
 		}
 
-		// Stop trace and collect
-		log("Stopping flight trace…");
-		const tracePath = await client.stopAndExportTrace("safe");
+		// Export trace and collect
+		log("Exporting flight trace…");
+		const tracePath = await client.exportTrace("safe");
 		log(`Trace exported: ${tracePath}`);
 		if (tracePath && vaultPath) {
 			const fullTracePath = tracePath.startsWith("/")

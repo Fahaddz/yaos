@@ -317,7 +317,9 @@ function createYaosSettings(vaultId: string): Record<string, unknown> {
 		token: "",
 		vaultId,
 		deviceName: "qa-device-a",
-		debug: false,
+		// debug:true is what starts the flight recorder. There is no separate
+		// trace switch any more — QA scenarios depend on this being on.
+		debug: true,
 		frontmatterGuardEnabled: true,
 		excludePatterns: "",
 		maxFileSizeKB: 2048,
@@ -327,9 +329,6 @@ function createYaosSettings(vaultId: string): Record<string, unknown> {
 		maxAttachmentSizeKB: 10240,
 		attachmentConcurrency: 1,
 		showRemoteCursors: true,
-		qaTraceEnabled: false,
-		qaTraceMode: "qa-safe",
-		qaTraceSecret: "",
 		updateRepoUrl: "",
 		updateRepoBranch: "main",
 		qaDebugMode: true,

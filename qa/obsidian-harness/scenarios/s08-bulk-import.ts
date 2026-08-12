@@ -36,7 +36,6 @@ export const s08aBulk500: QaScenario = {
 	id: "s08a-bulk-500",
 	title: `S08a: ${S08A_COUNT}-file concurrent markdown import (admission + coalescing stress)`,
 	tags: ["s08a", "bulk", "import", "stress", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -148,7 +147,6 @@ export const s08bBulkUnicode: QaScenario = {
 	id: "s08b-bulk-unicode",
 	title: `S08b: Unicode filenames — ${UNICODE_FILENAMES.length} files with special character paths`,
 	tags: ["s08b", "bulk", "unicode", "import", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -218,7 +216,6 @@ export const s08cBulkNested: QaScenario = {
 	id: "s08c-bulk-nested",
 	title: `S08c: ${S08C_DEPTH * S08C_FILES_PER_LEVEL} files across ${S08C_DEPTH} nested folder levels`,
 	tags: ["s08c", "bulk", "nested", "import", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -321,7 +318,6 @@ export const s08dBulkMixed: QaScenario = {
 	id: "s08d-bulk-mixed",
 	title: `S08d: Mixed types — ${S08D_MD_COUNT} .md + ${S08D_CANVAS_COUNT} .canvas + ${S08D_BLOB_COUNT} attachments`,
 	tags: ["s08d", "bulk", "mixed-types", "import", "canvas", "blob", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {

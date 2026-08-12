@@ -12,8 +12,6 @@ import { execFileSync } from "node:child_process";
 
 const BLOCKED_PATHS = [
 	"main.js",
-	"telemetry.js",
-	"lab.js",
 	"dist",
 	"qa-runs",
 	"*.map",

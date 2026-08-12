@@ -92,8 +92,14 @@ export interface PathRedactor {
 	redactDeep<T>(value: T): T;
 }
 
-const REDACTION_PREFIX = "path:";
-const HASH_PREFIX_LENGTH = 16;
+// Same namespace as PathIdentityResolver in ../debug/pathIdentity: given the
+// same vault-scoped salt, a path redacted here and the same path pseudonymised
+// by the recorder produce the identical token, so the trace header's file lists
+// join against the event lines. Keep the prefix, length and separator in step
+// with that module.
+const REDACTION_PREFIX = "p:";
+const DEGRADED_PREFIX = "pd:";
+const HASH_PREFIX_LENGTH = 32;
 const HASH_SEPARATOR = "\u0000";
 
 interface CreateOptions {
@@ -141,16 +147,16 @@ export async function createPathRedactor(
 		// compute() is the security boundary; this fallback exists only
 		// to keep redactDeep synchronous. Two strings that hash
 		// identically here would be very unusual collisions inside one
-		// bundle. Cross-bundle linkage via this fallback is prevented by
-		// folding the salt into the seed.
+		// bundle. It carries the pd: prefix rather than p: because it is
+		// NOT in the recorder's pseudonym namespace: such a path was never
+		// seen by the trace, so no event line can be joined to it.
 		let h = 0x811c9dc5;
 		const seed = `${salt}${HASH_SEPARATOR}${path}`;
 		for (let i = 0; i < seed.length; i++) {
 			h ^= seed.charCodeAt(i);
 			h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
 		}
-		const hex = h.toString(16).padStart(8, "0");
-		return `${REDACTION_PREFIX}${hex}`;
+		return `${DEGRADED_PREFIX}${h.toString(16).padStart(8, "0")}`;
 	}
 
 	function redactPath(path: string): string {

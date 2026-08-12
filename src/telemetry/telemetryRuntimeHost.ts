@@ -1,20 +1,30 @@
 /**
- * TelemetryRuntimeHost — minimal interface that main.ts exposes to the
- * telemetry runtime.
+ * TelemetryRuntimeHost — the only channel through which debug/Observer code
+ * (src/telemetry/) reaches product state.
  *
- * Telemetry code accesses product state exclusively through this interface.
- * Product code never imports telemetry modules directly.
+ * The debug runtime ships inside main.js and runs in the same realm as the
+ * sync engine. There is no bundle boundary, no loader, and no ABI check
+ * standing between them — and there never really was: both halves always
+ * shared one V8 realm.
  *
- * This interface exposes only read-only / passive capabilities:
+ * THIS INTERFACE IS THE ONLY THING BETWEEN DEBUG CODE AND THE CRDT.
+ *
+ * It is a type-level guarantee, and it is load-bearing precisely because no
+ * runtime isolation backs it up. `getSyncState()` returns a `SyncReadPort` —
+ * read-only scalars and read-only methods — never `VaultSync`, never a
+ * `Y.Text`/`Y.Map`, never anything with a mutating method. Widen this
+ * interface and you have handed the debug runtime the document.
+ *
+ * What may appear here:
  *   - settings access
- *   - read-only product state snapshots
+ *   - read-only product state snapshots (plain scalars, defensive copies)
  *   - identity / hashing helpers
  *   - lifecycle hooks (cleanup, logging)
  *
  * FORBIDDEN in this interface:
  *   forceCrdtContent, forceSyncFileFromDisk, setQaNetworkHold,
  *   pauseEditorBindingPropagation, runVfsTortureTest, anything Unsafe,
- *   anything __qaOnly
+ *   anything __qaOnly — and, above all, any live VaultSync or Yjs handle.
  */
 
 import type { App } from "obsidian";
@@ -48,14 +58,16 @@ export interface RuntimeDiagnosticsState {
 }
 
 /**
- * SyncReadPort — strictly read-only view of VaultSync state for Observer use.
+ * SyncReadPort — strictly read-only view of VaultSync state for debug use.
  *
  * This replaces the broad `VaultSync` handle that was previously passed to
  * telemetry. All mutating methods (queueRename, handleDelete, ensureFile,
  * forceReplaceYText, etc.) and mutable Yjs objects (Y.Text, Y.Map) are absent.
  *
- * Enforcement: Observer code never gets a VaultSync reference; it gets this
- * interface. The type system prevents calling any method not listed here.
+ * Enforcement is entirely nominal: debug code never receives a VaultSync
+ * reference, it receives this interface, and the type system refuses every
+ * method not listed here. main.ts builds the adapter inline so the narrowing
+ * is visible at the one place it happens.
  */
 export interface SyncReadPort {
 	// ------------------------------------------------------------------
@@ -182,6 +194,8 @@ export interface TelemetryRuntimeHost {
 
 	sha256Hex(text: string): Promise<string>;
 	getPluginVersion(): string;
+	/** Server semver from the last capability fetch, or null if never fetched. */
+	getServerVersion(): string | null;
 	isMarkdownPathSyncable(path: string): boolean;
 	/** Register a cleanup to run on plugin unload. */
 	registerCleanup(cleanup: () => void): void;

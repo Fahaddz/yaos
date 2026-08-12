@@ -1,14 +1,12 @@
 import { Notice, type App, TFile } from "obsidian";
 import type { VaultSyncSettings } from "../settings";
 import type { VaultSync } from "../sync/vaultSync";
-import type { DiagnosticsService } from "../telemetry/diagnostics/diagnosticsService";
 import { ConfirmModal } from "../ui/ConfirmModal";
 
 export interface SchemaV2MigrationContext {
 	app: App;
 	vaultSync: VaultSync;
 	settings: VaultSyncSettings;
-	diagnosticsService: DiagnosticsService | null;
 	log: (msg: string) => void;
 	runReconciliation: () => Promise<void>;
 }
@@ -50,17 +48,10 @@ export const runSchemaMigrationToV2 = (context: SchemaV2MigrationContext): void 
 		context.app,
 		"Migrate sync schema to v2",
 		"This will switch this vault to schema v2 and block older YAOS clients from syncing " +
-			"until they are upgraded. YAOS will export diagnostics before and after migration. Continue?",
+			"until they are upgraded. Continue?",
 		async () => {
 			const activeVaultSync = context.vaultSync as VaultSync | null;
 			if (!activeVaultSync) return;
-
-			try {
-				new Notice("Exporting pre-migration diagnostics...", 7000);
-				await context.diagnosticsService?.exportDiagnostics();
-			} catch (err) {
-				context.log(`schema migration: preflight diagnostics export failed: ${String(err)}`);
-			}
 
 			const result = activeVaultSync.migrateSchemaToV2(context.settings.deviceName);
 			context.log(
@@ -76,13 +67,6 @@ export const runSchemaMigrationToV2 = (context: SchemaV2MigrationContext): void 
 			}
 
 			await context.runReconciliation();
-
-			try {
-				new Notice("Exporting post-migration diagnostics...", 7000);
-				await context.diagnosticsService?.exportDiagnostics();
-			} catch (err) {
-				context.log(`schema migration: postflight diagnostics export failed: ${String(err)}`);
-			}
 
 			new Notice(
 				`YAOS: schema v2 migration complete` +

@@ -69,7 +69,6 @@ export const s09aRenameIntoExcluded: QaScenario = {
 	id: "s09a-rename-into-excluded",
 	title: "S09a: modify syncable → rename into .trash/ (excluded path, no ghost CRDT)",
 	tags: ["s09", "rename", "excluded-path", "safety", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -160,7 +159,6 @@ export const s09bRenameFromExcluded: QaScenario = {
 	id: "s09b-rename-from-excluded",
 	title: "S09b: create in .trash/ → rename into syncable path (clean admission)",
 	tags: ["s09", "rename", "excluded-path", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -271,7 +269,6 @@ export const s09cRenameToVacatedPath: QaScenario = {
 	id: "s09c-rename-to-vacated-path",
 	title: "S09c: dirty rename into vacated path (A dirty → delete B → rename A onto B)",
 	tags: ["s09", "rename", "vacated-path", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {

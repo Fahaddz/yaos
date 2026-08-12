@@ -6,7 +6,7 @@
  *   bun run qa:two-device --scenario offline-handoff-create \
  *     --port-a 9222 --port-b 9223 \
  *     --vault-a /path/to/vault-a --vault-b /path/to/vault-b \
- *     [--trace qa-safe] [--out-dir qa-runs/] [--driver raw-cdp|playwright]
+ *     [--out-dir qa-runs/] [--driver raw-cdp|playwright]
  *
  * Both Obsidian instances must be started with:
  *   /path/to/Obsidian --remote-debugging-port=922X --user-data-dir=/tmp/obs-X
@@ -2148,22 +2148,20 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		const INITIAL = "# S13 Editor Open Remote Edit\n\nBASELINE\n";
 		const RUN_ID = `s13-${Date.now()}`;
 
-		// Stop any existing trace and start fresh to ensure clean trace state
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-			await client.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe")`);
-			log(`s13: fresh trace started on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
+		// Recording is already on for both devices: the prepared vaults set
+		// debug:true, which is the whole recorder lifecycle.
 
 		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
 		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
-		const traceInfoA = await a.evalRaw<{ localTraceId: string; qaTraceSecretHash: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
-		const traceInfoB = await b.evalRaw<{ localTraceId: string; qaTraceSecretHash: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
+		const traceInfoA = await a.evalRaw<{ localTraceId: string; pathSaltFingerprint: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
+		const traceInfoB = await b.evalRaw<{ localTraceId: string; pathSaltFingerprint: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
 		log(`s13: deviceA=${deviceIdA}, deviceB=${deviceIdB}`);
 
-		if (traceInfoA?.qaTraceSecretHash !== traceInfoB?.qaTraceSecretHash) {
-			errors.push(`s13: qaTraceSecretHash mismatch`);
+		// Both vaults share settings.vaultId, so the derived path salt — and
+		// therefore every pathId — must be identical. If it is not, the two
+		// traces cannot be correlated and the whole scenario is unreadable.
+		if (traceInfoA?.pathSaltFingerprint !== traceInfoB?.pathSaltFingerprint) {
+			errors.push(`s13: pathSaltFingerprint mismatch (A=${traceInfoA?.pathSaltFingerprint} B=${traceInfoB?.pathSaltFingerprint})`);
 		}
 
 		// Create file on A, wait for B to receive it
@@ -2269,8 +2267,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 
 		// Cleanup
 		await a.evalRaw(`window.__YAOS_QA__?.deleteFile(${JSON.stringify(scratch)})`).catch(() => {});
-		await a.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-		await b.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
 
 		return { passedA: errors.length === 0, passedB: errors.length === 0, errors };
 	},
@@ -2286,19 +2282,12 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		const scratch = "QA-scratch/s12a-edit.md";
 		const INITIAL = "# S12a Edit\n\nBASELINE\n";
 		const RUN_ID = `s12a-edit-${Date.now()}`;
-		const QA_SECRET = `s12a-${Date.now()}`;
-
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-			await client.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe", ${JSON.stringify(QA_SECRET)})`);
-			log(`s12a-edit: trace started on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
+		// Recording is already on for both devices (prepared vaults set debug:true).
 
 		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
 		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
-		const traceInfoA = await a.evalRaw<{ localTraceId: string; qaTraceSecretHash: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
-		log(`s12a-edit: A=${deviceIdA} B=${deviceIdB} hash=${traceInfoA?.qaTraceSecretHash?.slice(0, 20)}...`);
+		const traceInfoA = await a.evalRaw<{ localTraceId: string; pathSaltFingerprint: string } | null>(`window.__YAOS_DEBUG__?.getActiveTraceInfo() ?? null`);
+		log(`s12a-edit: A=${deviceIdA} B=${deviceIdB} salt=${traceInfoA?.pathSaltFingerprint?.slice(0, 20)}...`);
 
 		await a.evalRaw(`window.__YAOS_QA__?.createFile(${JSON.stringify(scratch)}, ${JSON.stringify(INITIAL)})`);
 		await a.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(15000)`);
@@ -2351,8 +2340,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		log(`s12a-edit: artifacts written to ${outDir}/`);
 
 		await a.evalRaw(`window.__YAOS_QA__?.deleteFile(${JSON.stringify(scratch)})`).catch(() => {});
-		await a.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-		await b.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
 
 		return { passedA: errors.length === 0, passedB: errors.length === 0, errors };
 	},
@@ -2371,14 +2358,7 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		const REMOTE_FROM_A = "# S12c Conflict\n\nBASELINE\nREMOTE_FROM_A\n";
 		const LOCAL_ON_B = "# S12c Conflict\n\nBASELINE\nLOCAL_ON_B\n";
 		const RUN_ID = `s12c-conflict-${Date.now()}`;
-		const QA_SECRET = `s12c-${Date.now()}`;
-
-		for (const [client, label] of [[a, "A"], [b, "B"]] as const) {
-			await client.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-			await client.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe", ${JSON.stringify(QA_SECRET)})`);
-			log(`s12c: trace started on ${label}`);
-		}
-		await new Promise((r) => setTimeout(r, 1000));
+		// Recording is already on for both devices (prepared vaults set debug:true).
 
 		const deviceIdA = await a.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-a"`);
 		const deviceIdB = await b.evalRaw<string>(`window.__YAOS_DEBUG__?.getDeviceId() ?? "device-b"`);
@@ -2447,8 +2427,8 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		if (artifactOnA) errors.push(`s12c: Conflict artifact(s) exist on A (should be local-only on B): ${JSON.stringify(artifactsOnA)}`);
 		log(`s12c: artifact on A: ${artifactOnA} (expected: false)`);
 
-		// B's trace died with the plugin disable — restart it so the run collects one.
-		await b.evalRaw(`window.__YAOS_DEBUG__?.startFlightTrace("qa-safe", ${JSON.stringify(QA_SECRET)})`).catch(() => {});
+		// B's recorder restarted with the plugin: settings.debug is still true, so
+		// the reload brought a fresh trace up on its own. Give it a moment to arm.
 		await new Promise((r) => setTimeout(r, 1000));
 
 		const { mkdirSync, writeFileSync } = await import("node:fs");
@@ -2461,8 +2441,6 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 
 		await a.evalRaw(`window.__YAOS_QA__?.deleteFile(${JSON.stringify(scratch)})`).catch(() => {});
 		if (artifactPath) await b.evalRaw(`window.__YAOS_QA__?.deleteFile(${JSON.stringify(artifactPath)})`).catch(() => {});
-		await a.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
-		await b.evalRaw(`window.__YAOS_DEBUG__?.stopFlightTrace()`).catch(() => {});
 
 		return { passedA: errors.length === 0, passedB: errors.length === 0, errors };
 	},
@@ -2707,7 +2685,7 @@ async function collectAndAnalyze(
 ): Promise<boolean> {
 	let analyzerPassed = true;
 	try {
-		const tracePath = await client.stopAndExportTrace("safe");
+		const tracePath = await client.exportTrace("safe");
 		log(`Device ${device} trace export path: ${tracePath}`);
 
 		if (tracePath && vaultPath) {
@@ -2746,14 +2724,13 @@ async function main(): Promise<void> {
 	const portB = Number(args["port-b"] ?? 9223);
 	const vaultA = args["vault-a"] ? resolve(args["vault-a"]) : null;
 	const vaultB = args["vault-b"] ? resolve(args["vault-b"]) : null;
-	const traceMode = args.trace ?? "qa-safe";
 	const outDir = resolve(args["out-dir"] ?? "qa-runs");
 	const driver = args.driver ?? "raw-cdp";
 
 	if (!scenario) {
 		console.error(
 			"Usage: bun run qa:two-device --scenario <id> --port-a 9222 --port-b 9223 " +
-			"[--vault-a /path] [--vault-b /path] [--trace qa-safe] [--out-dir qa-runs/] " +
+			"[--vault-a /path] [--vault-b /path] [--out-dir qa-runs/] " +
 			"[--driver raw-cdp|playwright]",
 		);
 		console.error("Available scenarios:", Object.keys(TWO_DEVICE_SCENARIOS).join(", "));
@@ -2820,10 +2797,8 @@ async function main(): Promise<void> {
 		if (maniB) await collectorB.saveManifest(maniB, "manifest-pre");
 		log("Pre-run manifests saved.");
 
-		// Start traces
-		await clientA.startTrace(traceMode);
-		await clientB.startTrace(traceMode);
-		log(`Flight traces started (mode=${traceMode}) on both devices.`);
+		// No trace start: recording follows each vault's settings.debug, which
+		// qa/scripts/prepare-vault-lib.ts sets to true.
 
 		// Run the two-device scenario
 		log(`Running two-device scenario: ${scenario}...`);

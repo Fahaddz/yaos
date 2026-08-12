@@ -42,7 +42,6 @@ export const s10cDisableReenablePreservesEdits: QaScenario = {
 	id: "issue-22-disable-reenable-preserves-edits",
 	title: "Issue #22: offline edits survive reconnect (disk authority)",
 	tags: ["issue-22", "offline", "reconnect", "data-loss", "single-device", "regression", "P0"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx: QaContext): Promise<void> {

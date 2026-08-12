@@ -3,14 +3,14 @@
  *
  * Verifies:
  *   1. Safe envelope never contains raw host, vaultId, deviceName
- *   2. pathId never leaks raw path in safe mode
- *   3. full vs safe mode path exposure
+ *   2. pathId never leaks the raw path
+ *   3. The raw path is reachable only through resolver.directory()
  *   4. Token and host never appear in safe event data
  *   5. Nested error messages do not smuggle raw paths
- *   6. Multi-device pathId correlation via qaTraceSecret
- *   7. Different QA run secrets are uncorrelated
- *   8. Safe export is refused for full-mode recorder
- *   9. Safe export is refused for local-private recorder
+ *   6. Multi-device pathId correlation via the vault-derived salt
+ *   7. Different vaults are uncorrelated
+ *   8. Safe export is refused for a full-mode recorder
+ *   9. Safe export is refused for a local-private recorder
  *   10. CRDT event in safe mode: no raw path in serialized JSON
  *   11. PathIdentityResolver uses crypto hash (hasDegraded stays false)
  */
@@ -29,7 +29,8 @@ function assert(condition: boolean, msg: string): void {
 }
 
 import { FLIGHT_EVENT_SCHEMA_VERSION, FLIGHT_TAXONOMY_VERSION, FLIGHT_KIND } from "../src/telemetry/debug/flightEvents";
-import { PathIdentityResolver } from "../src/telemetry/debug/pathIdentity";
+import { PathIdentityResolver, deriveVaultPathSalt } from "../src/telemetry/debug/pathIdentity";
+import { FlightRecorder } from "../src/telemetry/debug/flightRecorder";
 import { createHash } from "node:crypto";
 
 async function sha256Hex(input: string): Promise<string> {
@@ -99,15 +100,13 @@ console.log("\n--- Test 1: Envelope fields are hashed, not raw ---");
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: pathId never leaks raw path in safe mode
+// Test 2: pathId never leaks the raw path
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 2: pathId never leaks raw path ---");
 {
-	const resolver = new PathIdentityResolver(sha256Hex, {
-		mode: "safe",
-		pathSecret: "session-salt-xyz",
-	});
+	const resolver = new PathIdentityResolver(sha256Hex, { salt: "session-salt-xyz" });
 	const { pathId, path } = await resolver.getPathIdentity(RAW_PATH);
+	assert(path === undefined, "Resolver returns no raw path");
 
 	const eventWithPath = buildEnvelope({
 		kind: FLIGHT_KIND.diskCreateObserved,
@@ -117,30 +116,31 @@ console.log("\n--- Test 2: pathId never leaks raw path ---");
 		layer: "disk",
 		priority: "important",
 		pathId,
-		path, // undefined in safe mode
+		path,
 	});
 
 	const line = serialize(eventWithPath);
-	assert(!line.includes(RAW_PATH), "pathId event does not include raw path in safe mode");
+	assert(!line.includes(RAW_PATH), "pathId event does not include raw path");
 	assert(line.includes(pathId), "pathId is present in output");
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: full mode includes raw path, safe mode does not
+// Test 3: the raw path is reachable only through resolver.directory()
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 3: full vs safe mode path exposure ---");
+console.log("\n--- Test 3: raw paths live only in the resolver directory ---");
 {
-	const safeResolver = new PathIdentityResolver(sha256Hex, { mode: "safe", pathSecret: "s1" });
-	const fullResolver = new PathIdentityResolver(sha256Hex, { mode: "full", pathSecret: "s1" });
+	const resolver = new PathIdentityResolver(sha256Hex, { salt: "s1" });
+	const identity = await resolver.getPathIdentity(RAW_PATH);
 
-	const safeIdentity = await safeResolver.getPathIdentity(RAW_PATH);
-	const fullIdentity = await fullResolver.getPathIdentity(RAW_PATH);
+	const eventLine = serialize(buildEnvelope({ pathId: identity.pathId, path: identity.path }));
+	assert(!eventLine.includes(RAW_PATH), "Recorded event lines never carry the raw path");
 
-	const safeLine = serialize(buildEnvelope({ pathId: safeIdentity.pathId, path: safeIdentity.path }));
-	const fullLine = serialize(buildEnvelope({ pathId: fullIdentity.pathId, path: fullIdentity.path }));
-
-	assert(!safeLine.includes(RAW_PATH), "safe mode: raw path absent");
-	assert(fullLine.includes(RAW_PATH), "full mode: raw path present");
+	// The with-filenames export re-attaches names from the directory; that is
+	// the single seam where raw paths are allowed out, and it is opt-in.
+	const directory = resolver.directory();
+	const entry = directory.find((e) => e.pathId === identity.pathId);
+	assert(entry?.path === RAW_PATH, "directory() can re-attach the raw path for an unredacted export");
+	assert(JSON.stringify(directory).includes(RAW_PATH), "directory() is the only structure carrying raw paths");
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ console.log("\n--- Test 4: Token and host never appear as data values ---");
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 5: Error messages do not smuggle raw path ---");
 {
-	const resolver = new PathIdentityResolver(sha256Hex, { mode: "safe", pathSecret: "err-salt" });
+	const resolver = new PathIdentityResolver(sha256Hex, { salt: "err-salt" });
 	const { pathId } = await resolver.getPathIdentity(RAW_PATH);
 
 	const safeErrorEvent = buildEnvelope({
@@ -190,49 +190,42 @@ console.log("\n--- Test 5: Error messages do not smuggle raw path ---");
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Multi-device correlation — same qaTraceSecret yields same pathId
+// Test 6: Multi-device correlation — one vault, one salt, one pathId
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 6: Multi-device pathId correlation ---");
 {
-	const qaSecret = "shared-qa-secret-for-device-a-b";
-	const deviceA = new PathIdentityResolver(sha256Hex, {
-		mode: "qa-safe",
-		pathSecret: "device-a-local-salt",
-		qaTraceSecret: qaSecret,
-	});
+	// Both devices derive the salt from the shared vaultId. There is no
+	// user-managed secret to keep in sync any more.
+	const sharedSalt = await deriveVaultPathSalt(sha256Hex, VAULT_ID);
+	const deviceA = new PathIdentityResolver(sha256Hex, { salt: sharedSalt });
 	const deviceB = new PathIdentityResolver(sha256Hex, {
-		mode: "qa-safe",
-		pathSecret: "device-b-local-salt",
-		qaTraceSecret: qaSecret,
+		salt: await deriveVaultPathSalt(sha256Hex, VAULT_ID),
 	});
 
 	const idA = await deviceA.getPathIdentity(RAW_PATH);
 	const idB = await deviceB.getPathIdentity(RAW_PATH);
 
-	assert(idA.pathId === idB.pathId, "Device A and B produce same pathId with shared qaTraceSecret");
-	assert(!idA.path, "Device A: path not exposed in qa-safe mode");
-	assert(!idB.path, "Device B: path not exposed in qa-safe mode");
+	assert(idA.pathId === idB.pathId, "Device A and B produce same pathId for the same vault");
+	assert(!idA.path, "Device A: path not exposed");
+	assert(!idB.path, "Device B: path not exposed");
+	assert(!idA.pathId.includes(sharedSalt), "pathId does not embed the salt");
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Different QA run secrets cannot be correlated
+// Test 7: Different vaults cannot be correlated
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 7: Different QA run secrets are uncorrelated ---");
+console.log("\n--- Test 7: Different vaults are uncorrelated ---");
 {
-	const run1 = new PathIdentityResolver(sha256Hex, {
-		mode: "qa-safe",
-		pathSecret: "run1-local",
-		qaTraceSecret: "qa-secret-run-1",
+	const vault1 = new PathIdentityResolver(sha256Hex, {
+		salt: await deriveVaultPathSalt(sha256Hex, "vault-id-one"),
 	});
-	const run2 = new PathIdentityResolver(sha256Hex, {
-		mode: "qa-safe",
-		pathSecret: "run2-local",
-		qaTraceSecret: "qa-secret-run-2",
+	const vault2 = new PathIdentityResolver(sha256Hex, {
+		salt: await deriveVaultPathSalt(sha256Hex, "vault-id-two"),
 	});
 
-	const id1 = await run1.getPathIdentity(RAW_PATH);
-	const id2 = await run2.getPathIdentity(RAW_PATH);
-	assert(id1.pathId !== id2.pathId, "Different QA run secrets produce different pathIds");
+	const id1 = await vault1.getPathIdentity(RAW_PATH);
+	const id2 = await vault2.getPathIdentity(RAW_PATH);
+	assert(id1.pathId !== id2.pathId, "Different vaults produce different pathIds");
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +233,6 @@ console.log("\n--- Test 7: Different QA run secrets are uncorrelated ---");
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 8: Safe export refused for full-mode recorder ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const recorder = new FlightRecorder({
 		vault: {
 			configDir: ".obsidian",
@@ -275,7 +267,6 @@ console.log("\n--- Test 8: Safe export refused for full-mode recorder ---");
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 9: Local-private recorder is not exportable ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const recorder = new FlightRecorder({
 		vault: {
 			configDir: ".obsidian",
@@ -308,7 +299,6 @@ console.log("\n--- Test 9: Local-private recorder is not exportable ---");
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 10: CRDT event in safe mode: no raw path in output ---");
 {
-	const { FlightRecorder } = await import("../src/telemetry/debug/flightRecorder");
 	const written: string[] = [];
 	const recorder = new FlightRecorder({
 		vault: {
@@ -335,7 +325,7 @@ console.log("\n--- Test 10: CRDT event in safe mode: no raw path in output ---")
 
 	// This simulates a properly-written CRDT event (path resolved to pathId,
 	// no raw path in data).
-	const resolver = new PathIdentityResolver(sha256Hex, { mode: "safe", pathSecret: "safe-salt" });
+	const resolver = new PathIdentityResolver(sha256Hex, { salt: "safe-salt" });
 	const { pathId } = await resolver.getPathIdentity(RAW_PATH);
 
 	recorder.record({
@@ -363,7 +353,7 @@ console.log("\n--- Test 10: CRDT event in safe mode: no raw path in output ---")
 // ---------------------------------------------------------------------------
 console.log("\n--- Test 11: hasDegraded is false when crypto works ---");
 {
-	const resolver = new PathIdentityResolver(sha256Hex, { mode: "safe", pathSecret: "test" });
+	const resolver = new PathIdentityResolver(sha256Hex, { salt: "test" });
 	await resolver.getPathIdentity("some/file.md");
 	assert(!resolver.hasDegraded, "hasDegraded is false when sha256Hex works");
 }

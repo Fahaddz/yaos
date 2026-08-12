@@ -42,7 +42,6 @@ export const s10gSuppressionDelayRace: QaScenario = {
 	id: "issue-22-suppression-delay-race",
 	title: "Issue #22: suppression TTL miss does not cause stale recovery",
 	tags: ["issue-22", "suppression", "race", "fault-injection", "single-device", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx: QaContext): Promise<void> {

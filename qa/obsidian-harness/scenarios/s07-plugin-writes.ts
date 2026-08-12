@@ -69,7 +69,6 @@ export const s07aCreateEmptyThenFill: QaScenario = {
 	id: "s07a-create-empty-then-fill",
 	title: "S07a: Create empty file then fill with content (Templater golden path)",
 	tags: ["s07a", "plugin-writes", "templater-class", "create-fill", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -139,7 +138,6 @@ export const s07bDelayedTemplateWrites: QaScenario = {
 	id: "s07b-delayed-template-writes",
 	title: "S07b: Async delayed template writes (header → delay → body → delay → footer)",
 	tags: ["s07b", "plugin-writes", "templater-class", "async-writes", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -221,7 +219,6 @@ export const s07cOpenEditorTemplateMutation: QaScenario = {
 	id: "s07c-open-editor-template-mutation",
 	title: "S07c: Template mutates open file (confirms #25 open-idle recovery coverage)",
 	tags: ["s07c", "plugin-writes", "templater-class", "editor-bound", "open-idle", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -350,7 +347,6 @@ export const s07eFrontmatterRace: QaScenario = {
 	id: "s07e-frontmatter-race",
 	title: "S07e: Frontmatter race — template + plugin writes YAML while editor is open",
 	tags: ["s07e", "plugin-writes", "templater-class", "frontmatter", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -457,7 +453,6 @@ export const s07fInvalidIntermediateValidFinal: QaScenario = {
 	id: "s07f-invalid-intermediate-valid-final",
 	title: "S07f: Malformed YAML intermediate → valid final (no permanent quarantine)",
 	tags: ["s07f", "plugin-writes", "frontmatter", "quarantine", "templater-class", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -547,7 +542,6 @@ export const s07hMultiFileBurst: QaScenario = {
 	id: "s07h-multi-file-burst",
 	title: `S07h: Multi-file burst — ${BURST_FILE_COUNT} concurrent creates + fills (watcher storm)`,
 	tags: ["s07h", "plugin-writes", "templater-class", "burst", "bulk", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {

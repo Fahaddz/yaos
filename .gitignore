@@ -12,12 +12,8 @@ bun.lock
 server/bun.lock
 
 # Don't include the compiled main.js file in the repo.
-# They should be uploaded to GitHub releases instead.
+# It should be uploaded to GitHub releases instead.
 main.js
-
-# telemetry.js is the Observer bundle, emitted by esbuild alongside main.js.
-# It is a generated release artifact — not tracked source.
-telemetry.js
 
 # Exclude sourcemaps
 *.map

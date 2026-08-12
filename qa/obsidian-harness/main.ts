@@ -18,6 +18,7 @@ import { Plugin, Notice } from "obsidian";
 import { buildQaConsoleApi } from "./api";
 import type { QaScenario } from "./types";
 import { buildQaDebugApi } from "../harness/qaDebugApi";
+import type { TelemetryRuntimeHandle } from "../../src/telemetry/installTelemetryRuntime";
 
 // Scenario imports
 import { s00SmokeTraceExport } from "./scenarios/s00-smoke-trace-export";
@@ -166,24 +167,6 @@ export default class YaosQaHarnessPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "qa-start-trace",
-			name: "Start QA flight trace (qa-safe)",
-			callback: async () => {
-				await api.startTrace("qa-safe");
-				new Notice("QA trace started (qa-safe).", 3000);
-			},
-		});
-
-		this.addCommand({
-			id: "qa-stop-trace",
-			name: "Stop QA flight trace",
-			callback: async () => {
-				await api.stopTrace();
-				new Notice("QA trace stopped.", 3000);
-			},
-		});
-
-		this.addCommand({
 			id: "qa-export-trace-safe",
 			name: "Export QA flight trace (safe)",
 			callback: async () => {
@@ -281,9 +264,12 @@ export default class YaosQaHarnessPlugin extends Plugin {
 			return;
 		}
 
-		// Guard 3: product.lab must exist (confirms qaDebugMode=true and telemetry loaded)
+		// Guard 3: product.lab must exist (confirms qaDebugMode=true and the
+		// debug runtime installed). Typed as the real handle so a member that
+		// disappears from the product is a compile error here, not a silent
+		// undefined at scenario runtime.
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const lab = (product as any).lab as Record<string, unknown> | null | undefined;
+		const lab = (product as any).lab as TelemetryRuntimeHandle | null | undefined;
 		if (!lab) {
 			console.error(
 				"[YAOS QA] FATAL: product.lab (TelemetryRuntimeHandle) is null. " +
@@ -299,26 +285,24 @@ export default class YaosQaHarnessPlugin extends Plugin {
 			getVaultSync: () => (product as any).vaultSync ?? null,
 			getReconciliationController: () => (product as any).reconciliationController,
 			getConnectionController: () => (product as any).connectionController ?? null,
-			getFlightTraceController: () => (lab as any).getFlightTraceController?.() ?? null,
+			getFlightTraceController: () => lab.getFlightTraceController?.() ?? null,
 			getEditorBindings: () => (product as any).editorBindings ?? null,
 			getDiagnosticsDir: () => undefined,
 			sha256Hex: (text: string) => (product as any).sha256Hex(text) as Promise<string>,
-			startQaFlightTrace: (mode?: string) =>
-				((lab as any).startTelemetryTrace?.(mode ?? "qa-safe") ?? Promise.resolve()) as Promise<void>,
-			stopQaFlightTrace: () =>
-				((lab as any).stopTelemetryTrace?.() ?? Promise.resolve()) as Promise<void>,
-			// exportFlightTrace must return the written file path or null.
-			// buildQaDebugApi throws if path is null/falsy, so we call the
-			// FlightTraceController directly to get the return value.
+			// No start/stop bridge: the recorder follows the product's
+			// settings.debug, which qa/scripts/prepare-vault-lib.ts sets to true.
+			//
+			// exportFlightTrace must return the written file path or null, and
+			// buildQaDebugApi throws if path is null/falsy, so we drive the
+			// FlightTraceController directly rather than the handle's
+			// exportDebugTrace (which only shows a Notice).
 			exportFlightTrace: async (privacy: "safe" | "full") => {
-				const ftc = (lab as any).getFlightTraceController?.() as
-					import("../../src/telemetry/debug/flightTraceController").FlightTraceController | null;
+				const ftc = lab.getFlightTraceController?.() ?? null;
 				if (!ftc) return null;
-				const diagService = (lab as any).diagnosticsService;
-				const diagDir = await (diagService?.ensureDiagnosticsDir?.() as Promise<string> | undefined)
-					?.catch(() => null) ?? null;
+				const diagDir = await lab.diagnosticsService.ensureDiagnosticsDir().catch(() => null);
 				if (!diagDir) return null;
-				const result = await ftc.exportTrace({ requestedPrivacy: privacy, diagDir });
+				// "full" only widens the export header; event lines are identical.
+				const result = await ftc.exportTrace({ diagDir, includeFilenames: privacy === "full" });
 				return result.ok ? result.path : null;
 			},
 			runReconciliation: async () => {
@@ -331,8 +315,7 @@ export default class YaosQaHarnessPlugin extends Plugin {
 				void (product as any).setQaNetworkHold?.("offline"),
 			connectProvider: () =>
 				void (product as any).setQaNetworkHold?.("online"),
-			getQaTraceSecretHash: () =>
-				((lab as any).getQaTraceSecretHash?.() ?? null) as string | null,
+			getPathSaltFingerprint: () => lab.getPathSaltFingerprint(),
 			getEngineControlPort: () => (product as any).getEngineControlPort(),
 		});
 

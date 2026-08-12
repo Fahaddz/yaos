@@ -70,7 +70,6 @@ export const s07gRenameAfterCreate: QaScenario = {
 	id: "s07g-rename-after-create",
 	title: "S07g-1: Plugin-style create → fill → rename (Templater golden path)",
 	tags: ["s07g", "rename", "plugin-writes", "templater-class", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -175,7 +174,6 @@ export const s07gRenameBeforeCrdtRegistration: QaScenario = {
 	id: "s07g-rename-before-crdt",
 	title: "S07g-2: Create → rename before CRDT registration (Templater race)",
 	tags: ["s07g", "rename", "plugin-writes", "templater-class", "race", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -293,7 +291,6 @@ export const s07gRenameToTombstonedPath: QaScenario = {
 	id: "s07g-rename-to-tombstoned-path",
 	title: "S07g-3: Rename to previously-deleted path (tombstone clearance)",
 	tags: ["s07g", "rename", "tombstone", "plugin-writes", "templater-class", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -382,7 +379,6 @@ export const s07gRenameChain: QaScenario = {
 	id: "s07g-rename-chain",
 	title: "S07g-4: Transitive rename chain A→B→C (Templater move-to-folder)",
 	tags: ["s07g", "rename", "rename-chain", "plugin-writes", "templater-class", "regression"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -493,7 +489,6 @@ export const s07gModifyThenRenameChain: QaScenario = {
 	id: "s07g-modify-then-rename-chain",
 	title: "S07g-6: Admitted file → pending modify → rename chain A→B→C",
 	tags: ["s07g", "rename", "rename-chain", "plugin-writes", "regression", "race-safety"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {
@@ -582,7 +577,6 @@ export const s07gModifyThenRename: QaScenario = {
 	id: "s07g-modify-then-rename",
 	title: "S07g-5: Admitted file → pending modify → rename (redirectPendingCreate must not drop modify)",
 	tags: ["s07g", "rename", "plugin-writes", "regression", "race-safety"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx): Promise<void> {

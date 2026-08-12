@@ -1,20 +1,18 @@
 import type { App } from "obsidian";
-import { randomBase64Url } from "../../utils/base64url";
 import type { VaultSyncSettings } from "../../settings";
 import { FlightRecorder, type FlightRecorderOptions } from "./flightRecorder";
 import {
 	FLIGHT_KIND,
 	FLIGHT_EVENT_SCHEMA_VERSION,
 	FLIGHT_TAXONOMY_VERSION,
-	type FlightEvent,
 	type FlightEventInput,
 	type FlightExportResult,
-	type FlightMode,
 	type FlightPathEventInput,
 	type TraceContext,
 } from "./flightEvents";
 import type { ProductFlightPathEventInput } from "../../observability/traceSink";
-import { PathIdentityResolver } from "./pathIdentity";
+import { PathIdentityResolver, deriveSaltFingerprint, deriveVaultPathSalt } from "./pathIdentity";
+import { buildTraceHeader, type TraceHeaderStateInput } from "../diagnostics/diagnosticsBundle";
 import { sha256Hex, getOrCreateLocalDeviceId } from "../../sync/indexedDbCandidateStore";
 
 /**
@@ -23,25 +21,27 @@ import { sha256Hex, getOrCreateLocalDeviceId } from "../../sync/indexedDbCandida
  */
 type AnyPathEventInput = ProductFlightPathEventInput | FlightPathEventInput;
 
-type QaTraceState = {
-	enabled: boolean;
-	mode: FlightMode;
-	qaTraceSecret: string | null;
-	/** True if the trace was started via the manual command (not from settings). */
-	manualStart: boolean;
-};
-
 export type FlightTraceDeps = {
 	app: App;
 	getSettings(): VaultSyncSettings;
 	getPluginVersion(): string;
 	getDocSchemaVersion(): number | null;
 	buildCheckpoint(): Promise<Record<string, unknown>>;
+	/** Point-in-time world state for the export header; null if sync is down. */
+	collectTraceHeaderInput(): Promise<TraceHeaderStateInput | null>;
 	registerCleanup(cleanup: () => void): void;
 	log(message: string): void;
 };
 
 const DEFAULT_CHECKPOINT_MS = 30_000;
+
+/**
+ * The recorder always runs in "safe" mode: raw vault paths, the server URL,
+ * the vault id and the device name never reach the on-disk log. Whether an
+ * *export* reveals filenames is decided per export, and only ever by adding a
+ * pathId directory to the header — never by rewriting the event lines.
+ */
+const RECORDING_MODE = "safe" as const;
 
 /**
  * Canonicalize a server host URL to its origin for stable hashing.
@@ -55,23 +55,13 @@ function canonicalizeHost(host: string): string {
 	}
 }
 
-/**
- * Canonicalize a vaultId for stable hashing.
- */
-function canonicalizeVaultId(vaultId: string): string {
-	return vaultId.trim();
-}
-
 export class FlightTraceController {
 	private recorder: FlightRecorder | null = null;
 	private pathIdentity: PathIdentityResolver | null = null;
 	private checkpointTimer: ReturnType<typeof setInterval> | null = null;
-	private state: QaTraceState = {
-		enabled: false,
-		mode: "safe",
-		qaTraceSecret: null,
-		manualStart: false,
-	};
+	private enabled = false;
+	private pathSalt: string | null = null;
+	private saltFingerprint: string | null = null;
 
 	/** Pending recordPath() promises — flush() drains these before reading. */
 	private pendingPathPromises = new Set<Promise<void>>();
@@ -79,7 +69,7 @@ export class FlightTraceController {
 	constructor(private readonly deps: FlightTraceDeps) {}
 
 	get isEnabled(): boolean {
-		return this.state.enabled;
+		return this.enabled;
 	}
 
 	get currentRecorder(): FlightRecorder | null {
@@ -96,25 +86,27 @@ export class FlightTraceController {
 	}
 
 	/**
-	 * Start a trace. If called from the manual command, manualStart=true so
-	 * that refreshFromSettings() will not stop it on the next settings save.
+	 * Shareable fingerprint of the vault-scoped path pseudonymization salt.
+	 * Two devices configured against the same vault report the same value and
+	 * their traces can be merged; null while no trace is running.
 	 */
-	async start(
-		mode: FlightMode,
-		qaTraceSecret?: string | null,
-		options: { manualStart?: boolean } = {},
-	): Promise<void> {
-		if (this.state.enabled) return;
+	get pathSaltFingerprint(): string | null {
+		return this.saltFingerprint;
+	}
+
+	async start(): Promise<void> {
+		if (this.enabled) return;
 		const settings = this.deps.getSettings();
 		if (!settings.vaultId || !settings.host) return;
 
-		const [vaultIdHash, serverHostHash, deviceId] = await Promise.all([
-			sha256Hex(canonicalizeVaultId(settings.vaultId)),
+		const [vaultIdHash, serverHostHash, deviceId, pathSalt] = await Promise.all([
+			sha256Hex(settings.vaultId.trim()),
 			sha256Hex(canonicalizeHost(settings.host)),
 			getOrCreateLocalDeviceId(),
+			deriveVaultPathSalt(sha256Hex, settings.vaultId),
 		]);
 		const recorderOptions: FlightRecorderOptions = {
-			mode,
+			mode: RECORDING_MODE,
 			deviceId,
 			vaultIdHash,
 			serverHostHash,
@@ -122,17 +114,10 @@ export class FlightTraceController {
 			docSchemaVersion: this.deps.getDocSchemaVersion() ?? undefined,
 		};
 		this.recorder = new FlightRecorder(this.deps.app, recorderOptions);
-		this.pathIdentity = new PathIdentityResolver(sha256Hex, {
-			mode,
-			pathSecret: randomBase64Url(16),
-			qaTraceSecret: qaTraceSecret ?? null,
-		});
-		this.state = {
-			enabled: true,
-			mode,
-			qaTraceSecret: qaTraceSecret ?? null,
-			manualStart: options.manualStart ?? false,
-		};
+		this.pathIdentity = new PathIdentityResolver(sha256Hex, { salt: pathSalt });
+		this.pathSalt = pathSalt;
+		this.saltFingerprint = await deriveSaltFingerprint(sha256Hex, pathSalt);
+		this.enabled = true;
 		this.startCheckpointLoop();
 		this.record({
 			priority: "important",
@@ -141,10 +126,7 @@ export class FlightTraceController {
 			scope: "diagnostics",
 			source: "diagnostics",
 			layer: "diagnostics",
-			data: {
-				mode,
-				manualStart: this.state.manualStart,
-			},
+			data: { mode: RECORDING_MODE },
 		});
 		this.deps.registerCleanup(() => {
 			void this.stop();
@@ -152,36 +134,20 @@ export class FlightTraceController {
 	}
 
 	/**
-	 * Called from settings refresh. Only starts/stops settings-driven traces.
-	 * Does NOT stop a manually-started trace.
+	 * The whole lifecycle. `debug` is the only switch: on records, off does not.
 	 */
 	async refreshFromSettings(reason: string): Promise<void> {
-		const settings = this.deps.getSettings();
-		if (!settings.qaTraceEnabled) {
-			// Stop only if this was a settings-driven trace (not a manual start).
-			if (this.state.enabled && !this.state.manualStart) {
-				await this.stop();
-			}
+		if (!this.deps.getSettings().debug) {
+			await this.stop();
 			return;
 		}
-		if (this.state.enabled) return; // already running (manual or settings)
-		// full and local-private modes must NOT auto-resume from settings.
-		// They require explicit manual start each session for privacy safety.
-		const mode = settings.qaTraceMode;
-		if (mode === "full" || mode === "local-private") {
-			this.deps.log(
-				`QA flight recorder: ${mode} mode requires manual start (settings-driven auto-start refused)`,
-			);
-			return;
-		}
-		await this.start(mode, settings.qaTraceSecret || null, {
-			manualStart: false,
-		});
-		this.deps.log(`QA flight recorder enabled (${reason}, mode=${mode})`);
+		if (this.enabled) return;
+		await this.start();
+		if (this.enabled) this.deps.log(`Debug trace recording started (${reason})`);
 	}
 
 	async stop(): Promise<void> {
-		if (!this.state.enabled) return;
+		if (!this.enabled) return;
 		this.record({
 			priority: "important",
 			kind: FLIGHT_KIND.qaTraceStopped,
@@ -189,14 +155,16 @@ export class FlightTraceController {
 			scope: "diagnostics",
 			source: "diagnostics",
 			layer: "diagnostics",
-			data: { mode: this.state.mode },
+			data: { mode: RECORDING_MODE },
 		});
 		this.stopCheckpointLoop();
 		await this.flush();
 		await this.recorder?.shutdown();
 		this.recorder = null;
 		this.pathIdentity = null;
-		this.state = { enabled: false, mode: "safe", qaTraceSecret: null, manualStart: false };
+		this.pathSalt = null;
+		this.saltFingerprint = null;
+		this.enabled = false;
 	}
 
 	record(event: FlightEventInput): void {
@@ -229,11 +197,6 @@ export class FlightTraceController {
 		return seq;
 	}
 
-	/** @deprecated Use recordPath(). Kept for backward compatibility. */
-	recordPathEvent(event: FlightPathEventInput): void {
-		void this.recordPath(event);
-	}
-
 	/**
 	 * Flush: drain all pending path-identity promises, then flush the recorder.
 	 * Must be called before reading the session file for export.
@@ -249,7 +212,7 @@ export class FlightTraceController {
 		// is sufficient — no extra handle needed here.
 	}
 
-	async getPathId(path: string): Promise<{ pathId: string; path?: string }> {
+	async getPathId(path: string): Promise<{ pathId: string }> {
 		if (!this.pathIdentity) {
 			return { pathId: "p:unavailable" };
 		}
@@ -261,7 +224,7 @@ export class FlightTraceController {
 	 * If a trace is active, stops it first.
 	 */
 	async clearLogs(): Promise<void> {
-		if (this.state.enabled) {
+		if (this.enabled) {
 			await this.stop();
 		}
 		await clearFlightLogs(this.deps.app);
@@ -272,14 +235,20 @@ export class FlightTraceController {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * Export the current trace session.
-	 * Validates mode, flushes, writes manifest line, copies NDJSON.
+	 * Export the current trace session as one NDJSON file: a self-describing
+	 * header line stating what world the trace was recorded in, followed by the
+	 * recorded events in causal `seq` order.
+	 *
+	 * `includeFilenames` defaults to false. The redacted export is the one a
+	 * user can hand to a stranger; the unredacted one additionally carries the
+	 * pathId → vault path directory and the server URL, vault id and device name.
 	 */
 	async exportTrace(options: {
-		requestedPrivacy: "safe" | "full";
 		diagDir: string;
+		includeFilenames?: boolean;
 	}): Promise<FlightExportResult> {
-		if (!this.state.enabled || !this.recorder) {
+		const includeFilenames = options.includeFilenames ?? false;
+		if (!this.enabled || !this.recorder) {
 			return { ok: false, reason: "trace-not-active" };
 		}
 
@@ -289,31 +258,25 @@ export class FlightTraceController {
 		if (!recorder.exportable) {
 			return { ok: false, reason: "trace-not-exportable" };
 		}
-		// Flush before reading.
+		// Flush before reading: the user is told to export, never to stop first.
 		try {
 			await this.flush();
 		} catch {
 			return { ok: false, reason: "flush-failed" };
 		}
-		if (options.requestedPrivacy === "safe" && !recorder.safeToShare) {
+		// Per-export redaction only rewrites the header. A recorder that wrote
+		// raw paths into its event lines can never produce a redacted export.
+		if (!includeFilenames && !recorder.safeToShare) {
 			return { ok: false, reason: "trace-unsafe-for-safe-export" };
 		}
 
-		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-		const modeLabel = this.state.mode;
-		const outName = `flight-trace-${modeLabel}-${stamp}.ndjson`;
-		const outPath = `${options.diagDir}/${outName}`;
-
-		// Build manifest line (always first in the output file).
-		// We read segments first so we can include the count in the manifest.
 		let combinedContent = "";
 		let segmentCount = 0;
 		try {
 			const segments = await recorder.getAllSessionSegmentPaths();
 			for (const segPath of segments) {
 				try {
-					const segContent = await this.deps.app.vault.adapter.read(segPath);
-					combinedContent += segContent;
+					combinedContent += await this.deps.app.vault.adapter.read(segPath);
 					segmentCount++;
 				} catch {
 					// Segment might have been cleaned up by retention — skip
@@ -327,47 +290,59 @@ export class FlightTraceController {
 			return { ok: false, reason: "write-failed" };
 		}
 
-		const manifest: FlightEvent = {
-			eventSchemaVersion: FLIGHT_EVENT_SCHEMA_VERSION,
-			taxonomyVersion: FLIGHT_TAXONOMY_VERSION,
-			ts: Date.now(),
-			seq: 0, // manifest is not a recorded sequence event
-			kind: FLIGHT_KIND.exportManifest,
-			severity: "info",
-			scope: "diagnostics",
-			source: "traceRuntime",
-			layer: "diagnostics",
-			priority: "critical",
-			traceId: recorder.context.traceId,
-			bootId: recorder.context.bootId,
-			deviceId: recorder.context.deviceId,
-			vaultIdHash: recorder.context.vaultIdHash,
-			serverHostHash: recorder.context.serverHostHash,
-			pluginVersion: recorder.context.pluginVersion,
-			data: {
-				mode: this.state.mode,
-				includesFilenames: recorder.includesFilenames,
-				schemaVersion: FLIGHT_EVENT_SCHEMA_VERSION,
-				taxonomyVersion: FLIGHT_TAXONOMY_VERSION,
-				exportedAt: new Date().toISOString(),
-				segmentCount,
-				eventCount: combinedContent.split("\n").filter(Boolean).length,
-				bootId: recorder.currentBootId,
-				traceId: recorder.context.traceId,
-				pathIdentityDegraded: recorder.pathIdentityDegraded,
-				rotated: segmentCount > 1,
-				redaction: recorder.redactionStats,
+		const state = await this.deps.collectTraceHeaderInput().catch((err: unknown) => {
+			this.deps.log(`debug trace export: header state unavailable: ${String(err)}`);
+			return null;
+		});
+		// Every path the header will name must already have a pseudonym, so the
+		// header's file lists join against the event lines by pathId.
+		if (state && this.pathIdentity) {
+			await this.pathIdentity.prime([...state.diskHashes.keys(), ...state.crdtHashes.keys()]);
+		}
+
+		const { header, leakDetected } = await buildTraceHeader(
+			{
+				state,
+				trace: {
+					traceId: recorder.context.traceId,
+					bootId: recorder.currentBootId,
+					deviceId: recorder.context.deviceId,
+					vaultIdHash: recorder.context.vaultIdHash,
+					serverHostHash: recorder.context.serverHostHash,
+					pluginVersion: recorder.context.pluginVersion,
+					flightEventSchemaVersion: FLIGHT_EVENT_SCHEMA_VERSION,
+					flightEventTaxonomyVersion: FLIGHT_TAXONOMY_VERSION,
+					exportedAt: new Date().toISOString(),
+					eventCount: combinedContent.split("\n").filter(Boolean).length,
+					segmentCount,
+					segmentsRotated: segmentCount > 1,
+					pathIdentityDegraded: recorder.pathIdentityDegraded,
+					droppedEventCount: recorder.redactionStats.droppedCount,
+					droppedEventCountByKind: recorder.redactionStats.droppedByKind,
+					pathPseudonymSaltFingerprint: this.saltFingerprint,
+					pathDirectory: this.pathIdentity?.directory() ?? [],
+				},
 			},
-		};
-		const manifestLine = JSON.stringify(manifest) + "\n";
+			// Same salt as the recorder's pseudonyms: paths the redactor catches
+			// inside free-form text land in the same namespace as the event lines.
+			{ redacted: !includeFilenames, salt: this.pathSalt ?? undefined },
+		);
+
+		if (leakDetected) {
+			this.deps.log("debug trace export: a vault path survived redaction, export refused");
+			return { ok: false, reason: "trace-unsafe-for-safe-export" };
+		}
+
+		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+		const variant = includeFilenames ? "with-filenames" : "redacted";
+		const outPath = `${options.diagDir}/debug-trace-${variant}-${stamp}.ndjson`;
 
 		try {
-			await this.deps.app.vault.adapter.write(outPath, manifestLine + combinedContent);
-			return {
-				ok: true,
-				path: outPath,
-				includesFilenames: recorder.includesFilenames,
-			};
+			await this.deps.app.vault.adapter.write(
+				outPath,
+				`${JSON.stringify(header)}\n${combinedContent}`,
+			);
+			return { ok: true, path: outPath, includesFilenames: includeFilenames };
 		} catch {
 			return { ok: false, reason: "write-failed" };
 		}
@@ -391,15 +366,7 @@ export class FlightTraceController {
 	private async _resolveAndRecordCore(event: FlightPathEventInput, reservedSeq: number | undefined): Promise<void> {
 		const identity = await this.getPathId(event.path);
 		const { path: _removedPath, ...rest } = event;
-		this.recorder?.record(
-			{
-				...rest,
-				pathId: identity.pathId,
-				// Include raw path only in full/local-private mode.
-				...(identity.path !== undefined ? { path: identity.path } : {}),
-			},
-			{ reservedSeq },
-		);
+		this.recorder?.record({ ...rest, pathId: identity.pathId }, { reservedSeq });
 		// Emit path.identity.degraded if the resolver fell back to FNV.
 		if (this.pathIdentity?.hasDegraded) {
 			this.recorder?.markPathIdentityDegraded();
@@ -481,4 +448,3 @@ async function deleteDirectoryRecursive(app: App, dir: string): Promise<void> {
 		try { await app.vault.adapter.rmdir(dir, false); } catch { /* ok */ }
 	} catch { /* skip */ }
 }
-

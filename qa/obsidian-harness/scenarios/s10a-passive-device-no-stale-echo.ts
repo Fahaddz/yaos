@@ -41,7 +41,6 @@ export const s10aPassiveDeviceNoStaleEcho: QaScenario = {
 	id: "issue-22-passive-device-no-stale-echo",
 	title: "Issue #22: passive device remote update does not trigger stale recovery",
 	tags: ["issue-22", "passive", "remote", "recovery", "single-device", "regression", "P0"],
-	traceRecordingMode: "qa-safe",
 	traceExportPrivacy: "safe",
 
 	async setup(ctx: QaContext): Promise<void> {

@@ -3,8 +3,8 @@
 /**
  * guard-production-bundles.mjs
  *
- * Verifies that the production bundles (main.js, telemetry.js) do not
- * contain symbols that violate the Observer/Engine/Puppeteer split.
+ * Verifies that the production bundle (main.js) does not contain symbols that
+ * violate the product/QA split.
  *
  * Run after build:
  *   node scripts/guard-production-bundles.mjs          # strict (default)
@@ -13,8 +13,8 @@
  * == Modes ==
  *
  *   strict (default, used in CI):
- *     Fails if any forbidden symbol is found in any bundle, including the
- *     known-transitional seams listed in MAIN_FORBIDDEN_DEFERRED.
+ *     Fails if any forbidden symbol is found, including the known-transitional
+ *     seams listed in MAIN_FORBIDDEN_DEFERRED.
  *
  *   transitional (--transitional flag):
  *     Fails on hard-forbidden symbols. Warns on transitional seams.
@@ -23,13 +23,11 @@
  *
  * == Architecture ==
  *
- *   main.js            = Engine only. Production artifact shipped to users.
- *                        Must NOT contain telemetry implementations, Puppeteer
- *                        code, or Engine control capabilities.
- *
- *   telemetry.js       = passive Observer only.
- *                        May contain FlightRecorder, FlightTraceController, etc.
- *                        Must NOT contain mutation harness code (Puppeteer).
+ *   main.js            = The whole product. Sync engine plus the debug runtime
+ *                        (flight recorder, diagnostics), which is inert unless
+ *                        the `debug` setting is on. Shipped to users.
+ *                        Must NOT contain Puppeteer/mutation harness code or
+ *                        Engine control capabilities.
  *
  *   qa/obsidian-harness/product-main.js
  *                      = QA-enabled product build. NOT a release artifact.
@@ -38,6 +36,21 @@
  *
  *   qa/                = Puppeteer harness only. Not shipped.
  *                        May contain dangerous names.
+ *
+ * == The debug runtime is no longer a separate bundle ==
+ *
+ * The debug runtime used to be a second bundle, loaded by eval, and this guard
+ * banned FlightRecorder/FlightTraceController/FlightTraceSink/
+ * PersistentTraceLogger from main.js to prove the split held. That premise is
+ * dead: those implementations now ship inside main.js by design, so banning
+ * them would fail every build. What was enforced against the old debug bundle
+ * — no mutation harness, no scenario steppers, no unsafe CRDT/sync — is now
+ * enforced against main.js, because that code lives here.
+ *
+ * The debug runtime's read-only boundary is a type, not a bundle: main.ts
+ * hands it a SyncReadPort (scalars + read methods), never VaultSync and never
+ * a Yjs handle. That is checked by tsc, not by this script. This script only
+ * proves that shippable output contains no QA/mutation capability.
  *
  * == P2 complete: __qaOnly / Unsafe / ForceSync seams removed ==
  *
@@ -62,20 +75,25 @@ import { join, relative } from "node:path";
 const TRANSITIONAL = process.argv.includes("--transitional");
 
 // ---------------------------------------------------------------------------
-// main.js — must not contain telemetry implementations or Puppeteer code
+// main.js — the shipped product bundle. Must not contain QA/Puppeteer mutation
+// machinery or Engine control capabilities. The debug runtime itself is
+// expected here; its own implementation names are therefore NOT banned.
 // ---------------------------------------------------------------------------
 
 const MAIN_FORBIDDEN = [
-	// Telemetry implementations (must stay out of product bundle)
-	"FlightRecorder",
-	"FlightTraceController",
-	"FlightTraceSink",
-	"PersistentTraceLogger",
-	// QA harness command names
+	// QA-only flight trace command ids. These exist solely in qa/harness and
+	// qa/obsidian-harness; the product's own export entry point is
+	// exportDebugTrace, which legitimately ships.
 	"startQaFlightTrace",
 	"stopQaFlightTrace",
-	"exportSafeFlightTrace",
-	"exportFullFlightTrace",
+	// Mutation harness — was enforced against the old debug bundle, now here.
+	"VfsTorture",
+	"vfsTorture",
+	"setScenarioRunId",
+	"advanceScenarioStep",
+	"PauseEditorBinding",
+	"pauseEditorBinding",
+	"unsafe-local",
 	// Force operations
 	"ForceCrdt",
 	"forceCrdt",
@@ -93,6 +111,7 @@ const MAIN_FORBIDDEN = [
 	"resumeEditorPropagation",
 	"setExternalEditPolicyOverride",
 	"setQaNetworkHold",
+	"networkHold",
 ];
 
 // P2 regression guard — these seams were removed in P2 and must never return.
@@ -104,46 +123,32 @@ const MAIN_FORBIDDEN_DEFERRED = [
 ];
 
 // ---------------------------------------------------------------------------
-// telemetry.js — must not contain Puppeteer/mutation harness code
-// (no deferred exceptions — telemetry.js must be fully clean)
-// ---------------------------------------------------------------------------
-
-const TELEMETRY_FORBIDDEN = [
-	"VfsTorture", "vfsTorture",
-	"ForceCrdt", "forceCrdt",
-	"ForceSync", "forceSync",
-	"setScenarioRunId",
-	"advanceScenarioStep",
-	"networkHold", "setQaNetworkHold",
-	"PauseEditorBinding", "pauseEditorBinding",
-	"Unsafe", "unsafe-local", "__qaOnly",
-];
-
-// ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 
-function checkBundle(bundlePath, forbidden, deferred, bundleName) {
-	if (!existsSync(bundlePath)) {
-		console.error(`FAIL [${bundleName}]: bundle not found at ${bundlePath}`);
+const BUNDLE = "main.js";
+
+function checkProductBundle() {
+	if (!existsSync(BUNDLE)) {
+		console.error(`FAIL [${BUNDLE}]: bundle not found at ${BUNDLE}`);
 		console.error("  Run 'npm run build' first.");
 		return 1;
 	}
-	const content = readFileSync(bundlePath, "utf8");
-	const violations = forbidden.filter((s) => content.includes(s));
-	const deferredHits = deferred.filter((s) => content.includes(s));
+	const content = readFileSync(BUNDLE, "utf8");
+	const violations = MAIN_FORBIDDEN.filter((s) => content.includes(s));
+	const deferredHits = MAIN_FORBIDDEN_DEFERRED.filter((s) => content.includes(s));
 
 	if (violations.length > 0) {
-		console.error(`FAIL [${bundleName}]: forbidden symbols found:`);
+		console.error(`FAIL [${BUNDLE}]: forbidden symbols found:`);
 		violations.forEach((v) => console.error(`  - ${v}`));
 	}
 
 	if (deferredHits.length > 0) {
 		if (TRANSITIONAL) {
-			console.warn(`WARN [${bundleName}]: transitional symbols present (P2 regression guard):`);
+			console.warn(`WARN [${BUNDLE}]: transitional symbols present (P2 regression guard):`);
 			deferredHits.forEach((v) => console.warn(`  - ${v}`));
 		} else {
-			console.error(`FAIL [${bundleName}]: P2 regression guard — symbols must not re-enter bundle:`);
+			console.error(`FAIL [${BUNDLE}]: P2 regression guard — symbols must not re-enter bundle:`);
 			deferredHits.forEach((v) => console.error(`  - ${v}  (P2 regression guard — see guard script header)`));
 		}
 	}
@@ -153,7 +158,7 @@ function checkBundle(bundlePath, forbidden, deferred, bundleName) {
 
 	const sizeKb = (content.length / 1024).toFixed(1);
 	const note = deferredHits.length > 0 ? ` [${deferredHits.length} transitional symbol(s) present]` : "";
-	console.log(`PASS [${bundleName}] (${sizeKb} KB)${note}`);
+	console.log(`PASS [${BUNDLE}] (${sizeKb} KB)${note}`);
 	return 0;
 }
 
@@ -203,8 +208,7 @@ if (TRANSITIONAL) {
 	console.log("Mode: transitional (P2 regression seams warn, not fail)\n");
 }
 
-failures += checkBundle("main.js", MAIN_FORBIDDEN, MAIN_FORBIDDEN_DEFERRED, "main.js");
-failures += checkBundle("telemetry.js", TELEMETRY_FORBIDDEN, [], "telemetry.js");
+failures += checkProductBundle();
 
 const srcQaViolations = scanSrcForQaImports("src");
 if (srcQaViolations > 0) {
@@ -218,7 +222,7 @@ if (failures > 0) {
 	console.error(`\nFAIL: ${failures} production bundle violation(s).`);
 	process.exit(1);
 } else if (TRANSITIONAL) {
-	console.log("\nPARTIAL PASS (transitional): Observer bundle clean; P2 regression symbols flagged as warnings.\nRun without --transitional to see full failure list.");
+	console.log("\nPARTIAL PASS (transitional): product bundle clean; P2 regression symbols flagged as warnings.\nRun without --transitional to see full failure list.");
 	process.exit(0);
 } else {
 	console.log("\nPASS: all production bundle guards passed.");
