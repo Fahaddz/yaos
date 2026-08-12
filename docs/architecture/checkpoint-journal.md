@@ -47,11 +47,15 @@ This is chunking at the I/O boundary: the in-memory document can stay monolithic
 A save, coordinated by [`server/src/persistenceCoordinator.ts`](../../server/src/persistenceCoordinator.ts) on behalf of [`server/src/server.ts`](../../server/src/server.ts):
 
 1. Returns immediately if the document is not dirty — an update-driven flag, not a state-vector comparison. See below; the distinction is load-bearing.
-2. Computes `delta = Y.encodeStateAsUpdate(doc, baselineStateVector)`.
+2. Takes the update payloads Yjs handed the coordinator when the transactions ran, and merges them into one delta. This is the fast path, and it is O(change): the bytes already exist, so nothing walks the document to rediscover them. Three cases fall back to `Y.encodeStateAsUpdate(doc, baselineStateVector)`, which is O(document) but derives the delta from what storage actually holds and so cannot inherit a hole in the buffer — no persisted baseline yet, a dirty document with an empty buffer (an update the coordinator never observed), or a merge that throws.
 3. Appends the delta to the journal.
-4. Compacts to a checkpoint when the journal crosses either threshold:
-- more than 50 entries, or
-- more than 1 MB of total journal bytes.
+4. Relieves journal pressure, by the kind of pressure it is:
+- **entry count** above 50 makes cold load slow, because replay cost is dominated by the number of `applyUpdate` calls rather than by bytes. Answered by coalescing the journal into a single row — O(journal).
+- **journal bytes** above `max(1 MB, snapshot / 4)` makes writes wasteful. Answered by a checkpoint — O(snapshot).
+
+Answering entry-count pressure with a checkpoint, as this engine did until recently, rewrites the whole vault to relieve a few KB of deltas, and does it proportionally more often the larger the vault gets. Measured against duplicated real content: 1,022x write amplification at 3 MB, 4,063x at 12 MB, 16,231x at 48 MB, because typing produces ~83-byte deltas and so the 50-entry rule always fired long before the 1 MB one. Splitting the two answers takes steady-state full-document encodes to zero and makes save cost flat in vault size (~20 ms per 1,200 saves at every size from 3 MB to 48 MB, against 741 ms at 48 MB before).
+
+Merging is worth doing once at write time and never at read time: `Y.mergeUpdates` decodes and re-encodes every entry, so collapsing a 4,000-row journal during `loadState` cost 143 ms to save 10 ms of apply. Coalescing pays that once, amortised over the saves that produced the rows, and leaves a one-row journal for every subsequent load.
 
 Two conditions skip the journal entirely and rewrite the checkpoint directly:
 

@@ -78,6 +78,13 @@ class FakeSqlStorage {
 		}
 
 		// SELECT from journal
+		// coalesceJournal reads payloads only.
+		if (trimmed.startsWith("SELECT data FROM journal")) {
+			const table = this.tables.get("journal") ?? [];
+			const sorted = [...table].sort((a, b) => (a.id as number) - (b.id as number));
+			return new FakeSqlCursor<T>(sorted as T[]);
+		}
+
 		if (trimmed.startsWith("SELECT data, byte_length FROM journal")) {
 			const table = this.tables.get("journal") ?? [];
 			const sorted = [...table].sort((a, b) => (a.id as number) - (b.id as number));

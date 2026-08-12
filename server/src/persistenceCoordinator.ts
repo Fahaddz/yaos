@@ -30,6 +30,21 @@ export interface DocStore {
 	appendUpdate(update: Uint8Array): Promise<DocStoreJournalStats | null> | DocStoreJournalStats | null;
 	rewriteCheckpoint(update: Uint8Array, stateVector?: Uint8Array): Promise<void> | void;
 	getJournalStats(): Promise<DocStoreJournalStats> | DocStoreJournalStats;
+	/**
+	 * Collapse the journal into one entry, if the store supports it.
+	 *
+	 * Optional because the legacy KV store does not implement it; a coordinator
+	 * over a store without it falls back to the old behaviour of paying for a
+	 * full checkpoint to relieve entry-count pressure.
+	 */
+	coalesceJournal?(): Promise<DocStoreCoalesceResult> | DocStoreCoalesceResult;
+	/** Persisted snapshot size, for sizing the checkpoint trigger.  0 = unknown. */
+	getSnapshotBytes?(): number;
+}
+
+export interface DocStoreCoalesceResult {
+	status: "ok" | "noop" | "too-big" | "failed";
+	stats: DocStoreJournalStats;
 }
 
 export interface DocStoreJournalStats {
@@ -42,6 +57,24 @@ export const CHECKPOINT_FALLBACK_AFTER_FAILURES = 2;
 export const JOURNAL_COMPACT_MAX_ENTRIES = 50;
 export const JOURNAL_COMPACT_MAX_BYTES = 1 * 1024 * 1024; // 1MB
 
+/**
+ * Upper bound on checkpoint write amplification.
+ *
+ * A checkpoint rewrites the whole snapshot, so triggering one at a fixed
+ * journal size means the ratio of bytes rewritten to bytes typed grows without
+ * limit as the vault grows.  Measured against duplicated real content, with the
+ * shipping fixed thresholds: 1,022x at 3MB, 4,063x at 12MB, 16,231x at 48MB,
+ * because the 50-entry rule fires long before the 1MB rule whenever deltas are
+ * small — and typing produces deltas of ~83 bytes.
+ *
+ * Scaling the byte trigger with the snapshot pins that ratio at roughly this
+ * constant instead.  4 is deliberately conservative: with coalescing keeping the
+ * entry count at 1, a larger journal costs almost nothing at load (277KB of
+ * merged journal replays in 2.8ms), so the bound could be looser — but a bigger
+ * journal is also more state to lose if a checkpoint never lands.
+ */
+export const JOURNAL_COMPACT_AMPLIFICATION_BOUND = 4;
+
 export type PersistenceStatus = "healthy" | "degraded";
 
 export interface PersistenceCoordinatorOptions {
@@ -53,6 +86,11 @@ export interface PersistenceCoordinatorOptions {
 	journalCompactMaxEntries?: number;
 	/** Max journal bytes before compaction. Default: 1MB */
 	journalCompactMaxBytes?: number;
+	/**
+	 * Divisor bounding checkpoint write amplification: a checkpoint is triggered
+	 * once the journal exceeds snapshotBytes / this.  Default: 4
+	 */
+	journalCompactAmplificationBound?: number;
 }
 
 export interface PersistenceHealth {
@@ -74,6 +112,10 @@ export interface PersistenceHealth {
 	lastCompactionAt: string | null;
 	lastCompactionReason: string | null;
 	lastCompactionError: string | null;
+	/** Journal coalesces performed since this coordinator started. */
+	coalesceCount: number;
+	lastCoalesceAt: string | null;
+	lastCoalesceStatus: string | null;
 	/**
 	 * Whether the document holds changes that are not yet persisted.
 	 *
@@ -163,16 +205,61 @@ export class PersistenceCoordinator {
 	 */
 	private dirty = true;
 
+	/**
+	 * Update payloads emitted since the last successful persist.
+	 *
+	 * Yjs hands the encoded bytes for a transaction to this listener for free —
+	 * they are a by-product of the transaction that just ran.  Buffering them
+	 * makes a save cost O(change).  Recomputing the same information with
+	 * `Y.encodeStateAsUpdate(doc, sv)` instead costs O(document): it walks the
+	 * whole struct store to discover a change Yjs had already handed us.
+	 *
+	 * The buffer is authoritative for what to append, but NOT for whether
+	 * anything changed — that stays with `dirty`.  The two can disagree in one
+	 * direction only: dirty set with an empty buffer, which means an update
+	 * happened that this coordinator did not observe.  executeSave treats that
+	 * as a gap and falls back to a full checkpoint, because unlike a
+	 * recomputed delta an update stream cannot heal a hole in itself.
+	 */
+	private pendingUpdates: Uint8Array[] = [];
+
 	/** Bound so it can be detached in dispose(). */
-	private readonly onDocumentUpdate = (): void => {
+	private readonly onDocumentUpdate = (update: Uint8Array): void => {
+		this.pendingUpdates.push(update);
 		this.dirty = true;
 		this.health.dirty = true;
 	};
+
+	/**
+	 * Claim the buffered updates, leaving a fresh buffer behind.
+	 *
+	 * Callers MUST do this before their first await.  Anything that lands during
+	 * the write then accumulates for the next save rather than being silently
+	 * covered by a state vector that predates it.
+	 */
+	private takePendingUpdates(): Uint8Array[] {
+		const batch = this.pendingUpdates;
+		this.pendingUpdates = [];
+		return batch;
+	}
+
+	/**
+	 * Return unpersisted updates to the front of the buffer after a failed write.
+	 *
+	 * Order matters: updates that arrived during the failed attempt are already
+	 * in the buffer and happened later, so the reclaimed batch has to precede
+	 * them.
+	 */
+	private restorePendingUpdates(batch: Uint8Array[]): void {
+		if (batch.length === 0) return;
+		this.pendingUpdates = batch.concat(this.pendingUpdates);
+	}
 
 	private readonly checkpointFallbackDeltaBytes: number;
 	private readonly checkpointFallbackAfterFailures: number;
 	private readonly journalCompactMaxEntries: number;
 	private readonly journalCompactMaxBytes: number;
+	private readonly journalCompactAmplificationBound: number;
 
 	readonly health: PersistenceHealth = {
 		status: "healthy",
@@ -193,6 +280,9 @@ export class PersistenceCoordinator {
 		lastCompactionAt: null,
 		lastCompactionReason: null,
 		lastCompactionError: null,
+		coalesceCount: 0,
+		lastCoalesceAt: null,
+		lastCoalesceStatus: null,
 		dirty: true,
 		persistedGeneration: 0,
 		generationEpoch: "",
@@ -212,6 +302,8 @@ export class PersistenceCoordinator {
 			options?.journalCompactMaxEntries ?? JOURNAL_COMPACT_MAX_ENTRIES;
 		this.journalCompactMaxBytes =
 			options?.journalCompactMaxBytes ?? JOURNAL_COMPACT_MAX_BYTES;
+		this.journalCompactAmplificationBound =
+			options?.journalCompactAmplificationBound ?? JOURNAL_COMPACT_AMPLIFICATION_BOUND;
 
 		this.health.generationEpoch = randomEpochId();
 
@@ -264,6 +356,12 @@ export class PersistenceCoordinator {
 
 		const documentMatchesStorage = equalStateVectors(sv, Y.encodeStateVector(this.document));
 		if (documentMatchesStorage) {
+			// Storage reflects the document, so nothing is outstanding.  Dropping
+			// the buffer matters when a caller constructs the coordinator before
+			// materialising the loaded state: those applyUpdate calls emit update
+			// events, and replaying them into the journal would re-append content
+			// the snapshot already holds.
+			this.pendingUpdates = [];
 			this.dirty = false;
 			this.health.dirty = false;
 		}
@@ -340,9 +438,15 @@ export class PersistenceCoordinator {
 				// a change arriving mid-write must re-mark the document.
 				this.dirty = false;
 				this.health.dirty = false;
+				// The encode below captures everything the buffer holds, so claim
+				// it in the same breath.  Updates that land during the write go
+				// into the fresh buffer and survive; leaving the old batch in
+				// place would re-append content the checkpoint already contains.
+				const batch = this.takePendingUpdates();
 				const full = Y.encodeStateAsUpdate(this.document);
 				const result = await this.executeCheckpointFallback(full, reason);
 				if (!result.success) {
+					this.restorePendingUpdates(batch);
 					this.dirty = true;
 					this.health.dirty = true;
 				}
@@ -378,32 +482,74 @@ export class PersistenceCoordinator {
 		this.dirty = false;
 		this.health.dirty = false;
 
-		// Compute delta inside serialized save task
-		const baseStateVector = this.lastPersistedStateVector;
+		// Claim the buffered updates and the state vector they describe in one
+		// synchronous step, before any await.  Anything landing during the write
+		// then accumulates for the next save instead of being covered by a state
+		// vector that predates it.
+		const batch = this.takePendingUpdates();
 		const currentStateVector = Y.encodeStateVector(this.document);
+		const baseStateVector = this.lastPersistedStateVector;
 
-		const delta = baseStateVector
-			? Y.encodeStateAsUpdate(this.document, baseStateVector)
-			: Y.encodeStateAsUpdate(this.document);
+		// Fast path: Yjs already encoded these bytes when the transactions ran, so
+		// reusing them makes the common save O(change).  Recomputing the same
+		// information with encodeStateAsUpdate(doc, sv) walks the entire struct
+		// store to rediscover what the update event had already handed us.
+		//
+		// Every other branch falls back to that recomputation deliberately.  It is
+		// O(document), but it is also self-healing in a way a stream cannot be: it
+		// derives the delta from what storage actually holds, so it cannot inherit
+		// a hole in the buffer.  The stream is the optimisation; the recomputation
+		// is the correctness floor.
+		let delta: Uint8Array;
+		if (baseStateVector === null) {
+			// Nothing persisted yet, so there is no baseline for a delta to extend.
+			// The buffer only covers transactions this coordinator observed and may
+			// start above clock zero; Yjs holds an update with a gap beneath it as
+			// pending and applies none of it, so a cold load would come back empty.
+			this.trace?.("save.full_encode", { reason: "no_baseline", bufferedUpdates: batch.length });
+			delta = Y.encodeStateAsUpdate(this.document);
+		} else if (batch.length === 0) {
+			// Dirty with an empty buffer means the document changed without this
+			// coordinator observing the update.  Recompute against storage so the
+			// unobserved change is still captured.
+			this.trace?.("save.full_encode", { reason: "update_stream_gap" });
+			delta = Y.encodeStateAsUpdate(this.document, baseStateVector);
+		} else if (batch.length === 1) {
+			delta = batch[0];
+		} else {
+			try {
+				delta = Y.mergeUpdates(batch);
+			} catch (mergeErr) {
+				this.trace?.("save.full_encode", {
+					reason: "merge_failed",
+					batchSize: batch.length,
+					message: mergeErr instanceof Error ? mergeErr.message : String(mergeErr),
+				});
+				delta = Y.encodeStateAsUpdate(this.document, baseStateVector);
+			}
+		}
 
 		if (delta.byteLength === 0) {
 			this.trace?.("save.skipped_empty_delta", {});
 			return { success: true, method: "skipped" };
 		}
 
-		this.trace?.("save.delta_computed", { deltaBytes: delta.byteLength });
+		this.trace?.("save.delta_computed", { deltaBytes: delta.byteLength, batchSize: batch.length });
 
 		// Strategy: checkpoint fallback for large deltas or consecutive failures
 		const useCheckpointFallback =
 			delta.byteLength > this.checkpointFallbackDeltaBytes ||
 			this.consecutiveSaveFailures >= this.checkpointFallbackAfterFailures;
 
-		if (useCheckpointFallback) {
-			return this.executeCheckpointFallback(delta);
-		}
+		const result = useCheckpointFallback
+			? await this.executeCheckpointFallback(delta)
+			: await this.executeAppend(delta, currentStateVector);
 
-		// Normal path: journal append
-		return this.executeAppend(delta, currentStateVector);
+		// Nothing reached storage, so these updates are still outstanding.  A
+		// checkpoint supersedes them and needs no restore; a failure of either
+		// kind does, or the next save would append a delta with a hole in it.
+		if (!result.success) this.restorePendingUpdates(batch);
+		return result;
 	}
 
 	private async executeCheckpointFallback(
@@ -550,13 +696,7 @@ export class PersistenceCoordinator {
 			persistedStateVectorHash: svHash,
 		});
 
-		// Compaction if needed
-		if (
-			journalStats.entryCount > this.journalCompactMaxEntries ||
-			journalStats.totalBytes > this.journalCompactMaxBytes
-		) {
-			await this.executeCompaction(journalStats);
-		}
+		await this.relieveJournalPressure(journalStats);
 
 		return { success: true, method: "append", journalStats };
 	}
@@ -607,11 +747,73 @@ export class PersistenceCoordinator {
 
 	private consecutiveCompactionFailures = 0;
 
-	private async executeCompaction(journalStats: DocStoreJournalStats): Promise<void> {
-		const compactionReason =
-			journalStats.entryCount > this.journalCompactMaxEntries
-				? "entry_count_exceeded"
-				: "byte_size_exceeded";
+	/**
+	 * Decide how to relieve a journal that has grown, and do it.
+	 *
+	 * Two pressures exist and they are not the same problem:
+	 *
+	 *   entry count — makes cold load slow, because replay cost is dominated by
+	 *                 the number of applyUpdate calls rather than by bytes.
+	 *   journal size relative to the snapshot — makes writes wasteful, because
+	 *                 a checkpoint rewrites the whole snapshot.
+	 *
+	 * The shipping policy answered both with a checkpoint, which is O(snapshot)
+	 * and therefore the wrong tool for the first: it rewrote the entire vault
+	 * every ~51 saves no matter how large the vault or how small the deltas.
+	 * Coalescing answers entry-count pressure in O(journal) instead, and leaves
+	 * checkpoints for the case that actually needs one.
+	 *
+	 * The byte trigger keeps its absolute floor so small vaults behave as before,
+	 * and gains a relative arm so large ones stop scaling their amplification
+	 * with their own size.
+	 */
+	private async relieveJournalPressure(journalStats: DocStoreJournalStats): Promise<void> {
+		const snapshotBytes = this.store.getSnapshotBytes?.() ?? 0;
+		const byteCeiling = snapshotBytes > 0
+			? Math.max(this.journalCompactMaxBytes, Math.floor(snapshotBytes / this.journalCompactAmplificationBound))
+			: this.journalCompactMaxBytes;
+
+		if (journalStats.totalBytes > byteCeiling) {
+			await this.executeCompaction(journalStats, "byte_size_exceeded");
+			return;
+		}
+
+		if (journalStats.entryCount <= this.journalCompactMaxEntries) return;
+
+		// Entry pressure.  Prefer the cheap path; escalate only if it cannot help.
+		if (!this.store.coalesceJournal) {
+			await this.executeCompaction(journalStats, "entry_count_exceeded");
+			return;
+		}
+
+		const result = await this.store.coalesceJournal();
+		this.health.lastCoalesceAt = new Date().toISOString();
+		this.health.lastCoalesceStatus = result.status;
+		this.trace?.("save.journal_coalesced", {
+			status: result.status,
+			entriesBefore: journalStats.entryCount,
+			bytesBefore: journalStats.totalBytes,
+			entriesAfter: result.stats.entryCount,
+			bytesAfter: result.stats.totalBytes,
+		});
+
+		if (result.status === "ok") {
+			this.health.coalesceCount++;
+			this.health.journalEntryCount = result.stats.entryCount;
+			this.health.journalBytes = result.stats.totalBytes;
+			return;
+		}
+
+		// "noop" means there was nothing to merge, which cannot happen while the
+		// entry count is over the threshold — treat it like a failure and let the
+		// checkpoint sort it out rather than leaving the pressure unrelieved.
+		await this.executeCompaction(result.stats, "entry_count_exceeded");
+	}
+
+	private async executeCompaction(
+		journalStats: DocStoreJournalStats,
+		compactionReason: "entry_count_exceeded" | "byte_size_exceeded",
+	): Promise<void> {
 
 		// Circuit breaker: stop attempting compaction after 3 consecutive failures.
 		// The next successful checkpoint-fallback (triggered by append failures)
