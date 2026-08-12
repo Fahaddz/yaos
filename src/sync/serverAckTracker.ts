@@ -29,6 +29,10 @@ export type ServerAckState = {
 	candidatePersistenceFailureCount: number;
 	hasUnconfirmedCandidate: boolean;
 	candidateCapturedAt: number | null;
+	/** Receipts from this server prove a durable write, not just in-memory apply. */
+	receiptGuaranteeIsDurable: boolean;
+	/** Server reported it cannot durably store writes. */
+	serverPersistenceDegraded: boolean;
 };
 
 export class ServerAckTracker {
@@ -200,11 +204,39 @@ export class ServerAckTracker {
 	 * the marker, preserving their existing (weaker) behaviour rather than
 	 * withdrawing receipts from them.
 	 */
+	private _serverPersistenceDegraded = false;
+
+	/**
+	 * Whether the server most recently reported that it cannot durably store
+	 * writes.  Distinct from the receipt: a receipt can be outstanding simply
+	 * because nothing was sent, whereas this says storage itself is failing.
+	 */
+	get serverPersistenceDegraded(): boolean {
+		return this._serverPersistenceDegraded;
+	}
+
+	/**
+	 * Whether receipts from this server carry the durable guarantee.
+	 *
+	 * True once a durability marker has been seen: the server's persist counter
+	 * advances only after a completed write, so confirming against it means the
+	 * state reached storage.  False against a server predating the marker, where
+	 * the state-vector fallback proves only that the update was applied in
+	 * memory.  The UI must not claim the stronger guarantee for the weaker
+	 * mechanism, so the label is driven by this rather than assuming.
+	 */
+	get receiptGuaranteeIsDurable(): boolean {
+		return this._lastServerGenerationEpoch !== null;
+	}
+
 	recordServerSvEcho(
 		serverSv: Uint8Array,
-		durability: { generation: number; epoch: string } | null = null,
+		durability: { generation: number; epoch: string; degraded?: boolean } | null = null,
 	): void {
 		this._lastServerReceiptEchoAt = Date.now();
+		// Absent marker means a server too old to report health; keep the last
+		// known value rather than claiming healthy.
+		if (durability !== null) this._serverPersistenceDegraded = durability.degraded === true;
 
 		// A restart resets the counter, so a client holding generation 40 would
 		// otherwise wait forever for 41.  Re-baseline instead, and leave any
@@ -295,6 +327,8 @@ export class ServerAckTracker {
 			candidatePersistenceFailureCount: this._candidatePersistenceFailureCount,
 			hasUnconfirmedCandidate: this.hasUnconfirmedCandidate,
 			candidateCapturedAt: this._candidateCapturedAt,
+			receiptGuaranteeIsDurable: this.receiptGuaranteeIsDurable,
+			serverPersistenceDegraded: this._serverPersistenceDegraded,
 		};
 	}
 

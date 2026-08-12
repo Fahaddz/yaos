@@ -88,6 +88,14 @@ export default tseslint.config(
 		"eslint.config.js",
 		"version-bump.mjs",
 		"versions.json",
+		// esbuild outfiles. These are gitignored build artifacts, but eslint's
+		// flat config does not read .gitignore, so each one has to be listed or
+		// it aborts the whole run: a bundle has no entry in
+		// tsconfig.eslint.json, and typed rules throw on rule load rather than
+		// skipping the file (see the `qa` note above). Keep this in sync with
+		// the outfiles in esbuild.config.mjs.
 		"main.js",
+		"telemetry.js",
+		"lab.js",
 	]),
 );

@@ -8,6 +8,10 @@ export type ServerReceiptStatus = {
 	lastKnownServerReceiptEchoAt: number | null;
 	candidatePersistenceHealthy: boolean | null;
 	serverReceiptStartupValidation: string | null;
+	/** Receipts from this server prove a durable write, not just in-memory apply. */
+	receiptGuaranteeIsDurable?: boolean;
+	/** Server reported it cannot durably store writes. */
+	serverPersistenceDegraded?: boolean;
 };
 
 export function getSyncStatusLabel(state: SyncStatus): string {
@@ -78,6 +82,13 @@ export function getLabelFromConnectionState(
 	if (attentionCount > 0) {
 		base = `${base} · ${attentionCount} file${attentionCount === 1 ? "" : "s"} need attention`;
 	}
+	// Ranked ahead of the receipt: a receipt can be outstanding merely because
+	// nothing was sent, whereas this says the server cannot store what it has
+	// already accepted.  Shown even while "Connected", because a healthy socket
+	// is exactly what makes this failure invisible.
+	if (serverReceipt?.serverPersistenceDegraded === true) {
+		base = `${base} · Server not saving`;
+	}
 	return receipt ? `${base} · ${receipt}` : base;
 }
 
@@ -86,7 +97,23 @@ function shouldShowReceiptStatus(state: ConnectionState): boolean {
 }
 
 export const SERVER_RECEIPT_STATUS_TITLE =
-	"Server receipt means this device’s latest local CRDT state was applied to the server Y.Doc in memory. It does not prove durable storage or that another device received the change.";
+	"Server receipt means this device’s latest local CRDT state was written to the server’s storage. It does not prove that another device received the change.";
+
+/**
+ * Shown against a server that predates the durability marker, where the
+ * state-vector fallback proves only an in-memory apply.  Kept as a separate
+ * string rather than softening the main one: the common case now genuinely is
+ * durable, and describing it as though it were not is the mistake this
+ * replaces.
+ */
+export const SERVER_RECEIPT_STATUS_TITLE_LEGACY =
+	"Server receipt means this device’s latest local CRDT state was applied to the server Y.Doc in memory. This server does not report storage confirmation, so the receipt does not prove durable storage or that another device received the change.";
+
+export function getServerReceiptStatusTitle(receipt?: ServerReceiptStatus | null): string {
+	return receipt?.receiptGuaranteeIsDurable === true
+		? SERVER_RECEIPT_STATUS_TITLE
+		: SERVER_RECEIPT_STATUS_TITLE_LEGACY;
+}
 
 function fmtTime(ms: number): string {
 	return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -96,15 +123,22 @@ export function getServerReceiptStatusLabel(
 	receipt: ServerReceiptStatus,
 	connected: boolean,
 ): string {
+	// "saved" is claimed only when the durable marker is in force; otherwise the
+	// weaker "received" wording stands, because that is all the fallback proves.
+	const durable = receipt.receiptGuaranteeIsDurable === true;
 	let label: string;
 	if (receipt.serverAppliedLocalState === true && connected) {
-		label = "Receipt: server received latest local state";
+		label = durable
+			? "Receipt: server saved latest local state"
+			: "Receipt: server received latest local state";
 	} else if (receipt.serverAppliedLocalState === false && connected) {
 		label = "Receipt: local state not yet received by server";
 	} else if (receipt.serverAppliedLocalState === false && !connected) {
 		label = "Receipt: offline — local state not yet received by server";
 	} else if (receipt.serverAppliedLocalState === true && !connected && receipt.lastServerReceiptEchoAt !== null) {
-		label = `Receipt: offline — server receipt at ${fmtTime(receipt.lastServerReceiptEchoAt)}`;
+		label = durable
+			? `Receipt: offline — server saved at ${fmtTime(receipt.lastServerReceiptEchoAt)}`
+			: `Receipt: offline — server receipt at ${fmtTime(receipt.lastServerReceiptEchoAt)}`;
 	} else if (receipt.serverReceiptStartupValidation === "skipped_local_yjs_timeout") {
 		label = "Receipt: unchecked — local cache still loading";
 	} else if (receipt.lastKnownServerReceiptEchoAt !== null && receipt.lastServerReceiptEchoAt === null) {
@@ -147,7 +181,7 @@ export function renderConnectionState(
 ): void {
 	statusBarEl.setText(getLabelFromConnectionState(state, transferStatus, serverReceipt, attentionCount));
 	const title = serverReceipt && shouldShowReceiptStatus(state)
-		? SERVER_RECEIPT_STATUS_TITLE
+		? getServerReceiptStatusTitle(serverReceipt)
 		: "";
 	statusBarEl.setAttr("title", title);
 }
