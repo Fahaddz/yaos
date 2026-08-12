@@ -19,10 +19,6 @@ main.js
 # It is a generated release artifact — not tracked source.
 telemetry.js
 
-# lab.js is the legacy name for the telemetry bundle (now telemetry.js).
-# It must never reappear. If it does, esbuild.config.mjs has regressed.
-lab.js
-
 # Exclude sourcemaps
 *.map
 
@@ -43,8 +39,6 @@ server/.wrangler
 
 # Agent/session artifacts
 session-*.md
-plan.md
-codex-md.py
 *.session.md
 
 # QA run artifacts (flight traces, manifests, reports)
@@ -56,36 +50,21 @@ qa/**/*.js.map
 
 # TypeScript compilation artifacts (compiled .js next to .ts source)
 # Build outputs are not committed; only .ts source is tracked.
-src/debug/*.js
-src/runtime/*.js
-src/settings/*.js
-src/sync/*.js
-src/utils/*.js
-src/*.js
-tests/*.js
-
-# Temp/session artifacts
-25#.json
-review_25hash.json
+src/**/*.js
+src/**/*.js.map
+tests/**/*.js
+tests/**/*.js.map
 
 # Local working files (not for public repo)
 rca/
-QA/
-# qa/ harness source IS tracked (canonical Puppeteer harness, scenarios, controllers)
-# qa-runs/ are ignored above (generated flight traces, run artifacts, evidence bundles)
+# qa/ harness SOURCE is tracked; only its build output (qa/**/*.js above) and
+# qa-runs/ evidence are ignored.
 tools/
 .agents/
 .codex/
 .claude/
 .antigravitycli/
 .opencode/
-WITNESS-PHASE-2-VERIFICATION.md
-WITNESS-PHASE-3-VERIFICATION.md
-tests/regression-baseline.md
-tests/witness-analyzer-purity.ts
-tests/witness-checkpoint-offline.ts
-tests/witness-quorum-eventually.ts
-tests/witness-offline-analyzer-integrity.ts
 
 # Local workstation notes and incomplete working specifications.
 # Durable documentation belongs in docs/.
