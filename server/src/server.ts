@@ -220,8 +220,12 @@ export class VaultSyncServer extends YServer {
 	 *     left struct count unchanged and made heap 15% WORSE, since the rebuild
 	 *     reloads state before the old allocation is released.
 	 *
-	 * rematerializeDocument() is kept as a manual operation behind the admin
-	 * route, for support.  Nothing should call it on a schedule.
+	 * The swap itself is gone too, not merely unscheduled.  Keeping it as a
+	 * manual escape hatch would have been worse than useless: the one situation
+	 * that would tempt an operator into using it — a document approaching the
+	 * memory limit — is a fragmented one, and there the swap needs the old
+	 * document, the encoded update and the new document resident at once.  It
+	 * would spike the very object it was invoked to rescue.
 	 * See scripts/bench-interventions.mjs and docs/architecture/monolith.md.
 	 */
 
@@ -239,8 +243,6 @@ export class VaultSyncServer extends YServer {
 	 * report false for a 2KB deletion.  One long-lived listener avoids
 	 * attaching and detaching per message, which would need a finally block and
 	 * leak a listener whenever the parent handler throws.
-	 *
-	 * Re-armed by rematerializeDocument(), which replaces the document.
 	 */
 	private docUpdateCount = 0;
 	private docUpdateWatcherAttached = false;
@@ -263,17 +265,6 @@ export class VaultSyncServer extends YServer {
 	 * of this room's read amplification.
 	 */
 	private readonly traceRing = new TraceRing(MAX_DEBUG_TRACE_EVENTS);
-	/**
-	 * Durable counters for re-materialisation.
-	 *
-	 * Kept as fields rather than read back from the trace ring buffer: that
-	 * buffer holds 100 entries and a busy session fills it entirely with
-	 * per-update traces, so a rare event like this is evicted within seconds of
-	 * happening and becomes unobservable exactly when it matters most.
-	 */
-	private rematerializeCount = 0;
-	private lastRematerializedAt: string | null = null;
-	private lastRematerializeStructs: number | null = null;
 
 	private ensureDocUpdateWatcher(): void {
 		if (this.docUpdateWatcherAttached) return;
@@ -389,14 +380,6 @@ export class VaultSyncServer extends YServer {
 				// Cumulative, durable, and the only reap figure that is not
 				// misleading after the work has already been done.
 				tombstoneReapTotals: await this.loadReapTotals(),
-				rematerialize: {
-					count: this.rematerializeCount,
-					lastAt: this.lastRematerializedAt,
-					lastStructs: this.lastRematerializeStructs,
-					// Manual only; there is no scheduled trigger. See the note
-					// above maybeReapTombstonedBodies' neighbour in onSave.
-					automatic: false,
-				},
 			});
 		}
 
@@ -424,13 +407,6 @@ export class VaultSyncServer extends YServer {
 			return json(await this.executeEmergencyCompact());
 		}
 
-		if (request.method === "POST" && url.pathname === "/__yaos/rematerialize") {
-			if (!(this.env as { YAOS_ENABLE_ADMIN_ROUTES?: unknown }).YAOS_ENABLE_ADMIN_ROUTES) {
-				return json({ error: "not found" }, 404);
-			}
-			await this.ensureDocumentLoaded();
-			return json(await this.rematerializeDocument("admin"));
-		}
 
 		if (request.method === "POST" && url.pathname === "/__yaos/cleanup-kv") {
 			if (!(this.env as any).YAOS_ENABLE_ADMIN_ROUTES) {
@@ -885,90 +861,6 @@ export class VaultSyncServer extends YServer {
 		}
 	}
 
-	/**
-	 * Rebuild the in-memory document to discard accumulated V8 rope structures.
-	 *
-	 * Yjs merges adjacent same-client inserts by concatenating their strings.
-	 * Over a long warm session that runs millions of times and V8 accumulates a
-	 * deep rope it will not flatten, so a warm document costs several times a
-	 * freshly cold-loaded one holding identical state.  Measured on this
-	 * deployment: 22-64 MiB hourly peaks for a 3.66MB document whose cold-load
-	 * footprint is ~8 MiB, with hibernation not reclaiming it.  Decoding the
-	 * document's own encoded state into a fresh Y.Doc rebuilds flat strings and
-	 * returns it to the cold-load floor.  See scripts/bench-warm-memory.mjs:
-	 * ~73% recovered at realistic edit locality.
-	 *
-	 * Item fragmentation — items that could not merge — is NOT recovered by
-	 * this, and is the remainder.
-	 *
-	 * The replacement carries byte-identical state, so client state vectors
-	 * still match and no resynchronisation is required beyond the sync step 1
-	 * that onStart() sends.  Connections belong to the server rather than the
-	 * document, so nothing is disconnected.
-	 *
-	 * Runs inside blockConcurrencyWhile so no message can be applied to a
-	 * half-swapped server: without it, an update arriving between the swap and
-	 * the listener re-registration would apply to the new document but never
-	 * reach other clients.
-	 */
-	async rematerializeDocument(reason: string): Promise<{
-		status: string;
-		encodedBytes?: number;
-		structs?: number;
-		error?: string;
-	}> {
-		if (!this.documentLoaded) return { status: "not_loaded" };
-		if (this.storageMode === "kv-fallback") return { status: "skipped_kv_fallback" };
-
-		try {
-			return await this.ctx.blockConcurrencyWhile(async () => {
-				const previous = this.document;
-				const encoded = Y.encodeStateAsUpdate(previous);
-
-				// WSSharedDoc is not exported by y-partyserver; the running
-				// document's own constructor is the only handle on it, and the
-				// replacement must be that subclass so awareness exists.
-				const DocumentClass = previous.constructor as new () => Y.Doc;
-				const fresh = new DocumentClass();
-				Y.applyUpdate(fresh, encoded);
-
-				// y-partyserver declares `document` readonly, but it is a plain
-				// instance field the mixin assigns in its constructor, and no
-				// exported API replaces it.  unstable_replaceDocument is not that
-				// API: it applies an inverse diff to the EXISTING document via
-				// UndoManager, keeping the ropes we are trying to discard.
-				const writableSelf = this as unknown as { document: Y.Doc };
-				writableSelf.document = fresh;
-				// Re-arm the update counter against the new document.
-				this.docUpdateWatcherAttached = false;
-				this.getPersistenceCoordinator().retargetDocument(fresh);
-
-				// onStart re-registers the broadcast, awareness and debounced
-				// save listeners on this.document and re-sends sync step 1 to
-				// every open connection.  onLoad() returns immediately because
-				// the document is already loaded.
-				await this.onStart();
-
-				previous.destroy();
-
-				const structs = [...fresh.store.clients.values()]
-					.reduce((total, list) => total + list.length, 0);
-				this.rematerializeCount++;
-				this.lastRematerializedAt = new Date().toISOString();
-				this.lastRematerializeStructs = structs;
-				await this.recordTrace("document-rematerialized", {
-					reason,
-					encodedBytes: encoded.byteLength,
-					structs,
-				});
-				return { status: "ok", encodedBytes: encoded.byteLength, structs };
-			});
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			console.error(`${LOG_PREFIX} document re-materialisation failed:`, message);
-			return { status: "failed", error: message };
-		}
-	}
 
 	/** Count active (non-deleted) paths in a Y.Doc using the YAOS schema. */
 	private countActivePathsInDoc(doc: Y.Doc): number {
@@ -1107,18 +999,23 @@ export class VaultSyncServer extends YServer {
 	 *     single struct, so it does not grow with document size.
 	 *   - databaseSize is a SQLite property read.
 	 *
-	 * `bytesPerStructApprox` substitutes stored bytes for encoded bytes.  The
-	 * two differ by SQLite page overhead and any journal not yet compacted, but
-	 * the metric only has to separate ~10^4 (rope regime, re-materialisation
-	 * recovers it) from ~10^1 (fragmentation, it does not), and a constant
-	 * factor never moves a reading across three orders of magnitude.  Use the
-	 * census when the exact figure matters.
+	 * `structs` is the number that matters.  Memory scales with struct count at
+	 * roughly 117 bytes each, not with characters: 12.5MB of freshly synced text
+	 * costs ~3,300 structs, while 30,000 scattered edits to the same vault cost
+	 * ~30,000 more.  Against a 128MB isolate that puts the ceiling near 850,000
+	 * structs, and it is reached by fragmentation rather than by size.
+	 *
+	 * Deliberately no derived ratio.  An earlier version divided stored bytes by
+	 * struct count and called it bytesPerStruct, which mixes two denominators --
+	 * stored bytes include the journal, the snapshot and SQLite page overhead --
+	 * and this whole line of work is a monument to what convenient proxies cost.
+	 * Both raw numbers are here; divide them if you want to, knowing what you
+	 * divided.
 	 */
 	private getCheapFootprint(): {
 		clients: number;
 		structs: number;
 		databaseSizeBytes: number | null;
-		bytesPerStructApprox: number | null;
 		updatesApplied: number;
 	} {
 		let structs = 0;
@@ -1138,9 +1035,6 @@ export class VaultSyncServer extends YServer {
 			clients: this.document.store.clients.size,
 			structs,
 			databaseSizeBytes,
-			bytesPerStructApprox: databaseSizeBytes !== null && structs > 0
-				? databaseSizeBytes / structs
-				: null,
 			updatesApplied: this.docUpdateCount,
 		};
 	}

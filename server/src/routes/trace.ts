@@ -110,7 +110,3 @@ export async function cleanupVaultKv(env: Env, vaultId: string): Promise<Respons
  * structures.  Admin-gated: it replaces the live document, and while the swap
  * is transparent to clients it is not something to expose casually.
  */
-export async function rematerializeVault(env: Env, vaultId: string): Promise<Response> {
-	const stub = await getServerByName(env.YAOS_SYNC, vaultId);
-	return await stub.fetch("https://internal/__yaos/rematerialize", { method: "POST" });
-}

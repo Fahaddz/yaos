@@ -949,7 +949,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					importUntrackedFiles: () => this.importUntrackedFiles(),
 					clearLocalServerReceiptState: () => this.clearLocalServerReceiptState(),
 					resetLocalCache: () => this.resetLocalCache(),
-					rematerializeSyncStack: (reason) => this.rematerializeSyncStack(reason),
 					nuclearReset: () => this.nuclearReset(),
 				});
 				// Lab/QA commands are registered separately by the lab runtime.
@@ -1454,69 +1453,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	// 0.02 MiB of rope after 20,602 updates, because y-indexeddb's periodic
 	// encodeStateAsUpdate trim already flattens the strings.  And on a
 	// fragmented document a rebuild left struct count unchanged while making
-	// heap 15% worse.  rematerializeSyncStack stays as a manual command.
-	// See scripts/bench-interventions.mjs.
+	// heap 15% worse.  The rebuild is gone entirely rather than kept as a manual
+	// command, because the case that would tempt someone into running it -- a
+	// vault near the memory limit -- is the fragmented case, where it spikes
+	// rather than saves.  See scripts/bench-interventions.mjs.
 
 	// -------------------------------------------------------------------
-	/**
-	 * Reclaim accumulated V8 rope by rebuilding the sync stack.
-	 *
-	 * The client has the same memory drift as the server — Yjs concatenates
-	 * adjacent inserts, V8 answers `str += str` with a rope node, and nothing
-	 * flattens it — but it cannot use the server's fix.  The server swaps its
-	 * Y.Doc in place because nothing but the persistence coordinator points at
-	 * it.  Here the provider, IndexedDB persistence, DiskMirror's
-	 * afterTransaction hook and every open editor binding are all wired to this
-	 * exact document, and the provider captures its settings in closures rather
-	 * than storing them, so an in-place swap would mean re-deriving the entire
-	 * stack by hand in the most failure-sensitive file in the plugin.
-	 *
-	 * Restarting achieves the same thing using a path that already exists and is
-	 * already exercised by the reset commands: teardown, then initSync, which
-	 * cold-loads from IndexedDB into a fresh Y.Doc whose strings are flat by
-	 * construction.  No new code runs inside the CRDT path.
-	 *
-	 * It is not free — a reconnect, an IndexedDB re-read and a reconciliation
-	 * pass — which is why the caller decides when the trade is worth it rather
-	 * than this method firing on a timer.
-	 */
-	private async rematerializeSyncStack(reason: string): Promise<{
-		status: "ok" | "skipped" | "failed";
-		detail?: string;
-		updatesBefore?: number;
-	}> {
-		if (!this.vaultSync) return { status: "skipped", detail: "sync not initialized" };
-
-		const updatesBefore = this.vaultSync.documentUpdateCount;
-		this.log(`rematerialize (${reason}): restarting sync stack after ${updatesBefore} updates`);
-		this.trace("trace", "client-rematerialize-start", { reason, updatesBefore });
-
-		try {
-			await this.teardownSync();
-		} catch (error) {
-			// A failed teardown leaves the lifecycle closed, so reinitialising
-			// on top of it would build a second stack over a half-torn one.
-			console.error("[yaos] rematerialize teardown failed:", error);
-			this.trace("trace", "client-rematerialize-failed", {
-				reason, stage: "teardown", error: formatUnknown(error),
-			});
-			return { status: "failed", detail: formatUnknown(error) };
-		}
-
-		try {
-			await this.initSync(true);
-		} catch (error) {
-			console.error("[yaos] rematerialize reinit failed:", error);
-			this.trace("trace", "client-rematerialize-failed", {
-				reason, stage: "init", error: formatUnknown(error),
-			});
-			return { status: "failed", detail: formatUnknown(error) };
-		}
-
-		this.trace("trace", "client-rematerialize-done", { reason, updatesBefore });
-		this.log(`rematerialize (${reason}): sync stack rebuilt`);
-		return { status: "ok", updatesBefore };
-	}
 
 
 	/**
