@@ -316,25 +316,6 @@ export class PersistenceCoordinator {
 	}
 
 	/**
-	 * Point the coordinator at a replacement Y.Doc holding identical state.
-	 *
-	 * Used by document re-materialisation, which rebuilds the document to
-	 * discard accumulated V8 rope structures.  The replacement carries exactly
-	 * the same state, so `lastPersistedStateVector` stays valid and the health
-	 * counters stay meaningful; only the object the dirty listener is attached
-	 * to changes.
-	 *
-	 * The dirty flag is deliberately preserved rather than cleared: if the
-	 * document had unsaved changes before the swap it still has them after.
-	 */
-	retargetDocument(next: Y.Doc): void {
-		if (next === this.document) return;
-		this.document.off("update", this.onDocumentUpdate);
-		this.document = next;
-		this.document.on("update", this.onDocumentUpdate);
-	}
-
-	/**
 	 * Record the state vector that storage currently reflects, i.e. the base the
 	 * next delta is computed against.
 	 *
