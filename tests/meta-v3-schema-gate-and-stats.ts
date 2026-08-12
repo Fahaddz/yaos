@@ -94,50 +94,57 @@ function simulateServerIsMetaDeleted(value: unknown): boolean {
 // Schema Gate Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Schema gate: server supports persisted room schemas v1 through v3");
+section("Schema gate: server pins exactly one schema version");
 
 {
-	// The server must retain old persisted-room readers while the client writes
-	// the current schema. The current plugin schema is the upper bound.
-	assertEqual(SERVER_MIN_SCHEMA_VERSION, 1, "SERVER_MIN_SCHEMA_VERSION === 1");
-	assertEqual(SERVER_MAX_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_MAX_SCHEMA_VERSION === 3");
-	assert(SERVER_MIN_SCHEMA_VERSION <= SERVER_MAX_SCHEMA_VERSION, "min <= max");
-	for (const version of [1, 2, 3]) {
+	// Admission is an equality test, not a range test: the server accepts the
+	// single version the plugin writes and nothing else. The min/max pair is
+	// still published (via /api/capabilities) so the plugin can explain a
+	// mismatch, but the two values are equal by construction.
+	assertEqual(SERVER_MIN_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_MIN_SCHEMA_VERSION === SCHEMA_VERSION");
+	assertEqual(SERVER_MAX_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_MAX_SCHEMA_VERSION === SCHEMA_VERSION");
+	assertEqual(SERVER_MIN_SCHEMA_VERSION, SERVER_MAX_SCHEMA_VERSION, "the published envelope is a single value (min === max)");
+	for (const version of [EXPECTED_SCHEMA_VERSION - 1, EXPECTED_SCHEMA_VERSION + 1]) {
 		assert(
-			version >= SERVER_MIN_SCHEMA_VERSION && version <= SERVER_MAX_SCHEMA_VERSION,
-			`schema v${version} is inside the server compatibility range`,
+			version !== SERVER_MIN_SCHEMA_VERSION && version !== SERVER_MAX_SCHEMA_VERSION,
+			`schema v${version} is outside the pinned server version`,
 		);
 	}
-	assert(0 < SERVER_MIN_SCHEMA_VERSION, "schema v0 is below the server compatibility range");
-	assert(4 > SERVER_MAX_SCHEMA_VERSION, "schema v4 is above the server compatibility range");
 }
 
-section("Schema gate: v3 client accepts room at schema 2");
+section("Schema gate: room schema skew is rejected in both directions");
 
 {
-	// A v3 client should be able to connect to a room still marked as schema 2
-	// (it will mark it as 3 on connect). Schema 2 < min acceptable is NOT the rule —
-	// the client marks it forward, so stored v2 is acceptable (client upgrades it).
+	// Mirrors handleSyncSocketRoute: a room is admissible only when its recorded
+	// schemaVersion is absent (fresh room) or exactly equal to the client's.
+	const admits = (roomSchemaVersion: number | null): string | null => {
+		if (roomSchemaVersion === null || roomSchemaVersion === EXPECTED_SCHEMA_VERSION) return null;
+		return EXPECTED_SCHEMA_VERSION < roomSchemaVersion
+			? "client_schema_older_than_room"
+			: "client_schema_newer_than_room";
+	};
+
 	const doc = new Y.Doc();
 	const sys = doc.getMap("sys");
-	sys.set("schemaVersion", 2);
 
-	const stored = sys.get("schemaVersion") as number;
-	assert(stored < EXPECTED_SCHEMA_VERSION, "stored v2 < EXPECTED_SCHEMA_VERSION 3");
-	assert(stored <= SERVER_MAX_SCHEMA_VERSION, "stored v2 within server max range");
-}
+	assertEqual(admits(null), null, "a fresh room with no recorded schema is admitted");
 
-section("Schema gate: v3 client rejects future room schema");
+	sys.set("schemaVersion", EXPECTED_SCHEMA_VERSION);
+	assertEqual(admits(sys.get("schemaVersion") as number), null, "a room at the pinned schema is admitted");
 
-{
-	const doc = new Y.Doc();
-	const sys = doc.getMap("sys");
-	sys.set("schemaVersion", 4);
+	sys.set("schemaVersion", EXPECTED_SCHEMA_VERSION - 1);
+	assertEqual(
+		admits(sys.get("schemaVersion") as number),
+		"client_schema_newer_than_room",
+		"a room older than the pinned schema is rejected as newer-than-room",
+	);
 
-	const stored = sys.get("schemaVersion") as number;
-	assert(stored > EXPECTED_SCHEMA_VERSION, "future schema 4 > EXPECTED_SCHEMA_VERSION 3");
-	assert(stored > SERVER_MAX_SCHEMA_VERSION, "future schema 4 > SERVER_MAX_SCHEMA_VERSION");
-	// Client should show error and refuse to operate
+	sys.set("schemaVersion", EXPECTED_SCHEMA_VERSION + 1);
+	assertEqual(
+		admits(sys.get("schemaVersion") as number),
+		"client_schema_older_than_room",
+		"a room newer than the pinned schema is rejected as older-than-room",
+	);
 }
 
 section("Schema gate: markSchemaV3 is idempotent");

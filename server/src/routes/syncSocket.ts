@@ -9,7 +9,13 @@ import {
 } from "../version";
 import type { AuthState, Env, FatalAuthCode } from "./types";
 
-const LEGACY_CLIENT_SCHEMA_VERSION = 1;
+/**
+ * The single schema version this server admits. `SERVER_MIN_SCHEMA_VERSION` and
+ * `SERVER_MAX_SCHEMA_VERSION` are equal by construction (server/src/version.ts);
+ * admission is an equality test, and the min/max pair is only carried into
+ * rejection payloads so clients can render the published envelope.
+ */
+const SERVER_SCHEMA_VERSION = SERVER_MAX_SCHEMA_VERSION;
 
 export function parseSyncPath(pathname: string): { vaultId: string } | null {
 	const directMatch = pathname.match(/^\/vault\/sync\/([^/]+)$/);
@@ -22,14 +28,18 @@ export function parseSyncPath(pathname: string): { vaultId: string } | null {
 	return null;
 }
 
-function parseClientSchemaVersion(url: URL): { version: number; source: "query" | "legacy-default" } | null {
+/**
+ * Parse the client's declared schema version. Returns null when the parameter
+ * is absent, blank, or not a non-negative integer — all of which are hard
+ * admission failures. There is no "assume the oldest version" default: an
+ * undeclared schema is an unknown writer, not a legacy one.
+ */
+function parseClientSchemaVersion(url: URL): number | null {
 	const raw = url.searchParams.get("schemaVersion") ?? url.searchParams.get("schema");
-	if (raw === null || raw.trim() === "") {
-		return { version: LEGACY_CLIENT_SCHEMA_VERSION, source: "legacy-default" };
-	}
+	if (raw === null || raw.trim() === "") return null;
 	const parsed = Number(raw);
 	if (!Number.isInteger(parsed) || parsed < 0) return null;
-	return { version: parsed, source: "query" };
+	return parsed;
 }
 
 function isWebSocketRequest(req: Request): boolean {
@@ -165,7 +175,7 @@ export async function handleSyncSocketRoute(
 	const url = new URL(req.url);
 	const token = getSocketAuthToken(req);
 	const ticket = url.searchParams.get("ticket");
-	const clientSchema = parseClientSchemaVersion(url);
+	const clientSchemaVersion = parseClientSchemaVersion(url);
 	const disableLegacyToken = !!env.YAOS_DISABLE_LEGACY_WS_TOKEN;
 
 	const authResult = await authenticateSocketRequest(
@@ -186,7 +196,7 @@ export async function handleSyncSocketRoute(
 		);
 	}
 
-	if (!clientSchema) {
+	if (clientSchemaVersion === null) {
 		// WebSocket admission events must not write to YAOS_SYNC storage
 		// (issue #40 — a schema-mismatch loop would hammer the DO on every
 		// reconnect attempt).  Log only via console for worker-level visibility.
@@ -206,10 +216,7 @@ export async function handleSyncSocketRoute(
 		}));
 	}
 
-	if (
-		clientSchema.version < SERVER_MIN_SCHEMA_VERSION ||
-		clientSchema.version > SERVER_MAX_SCHEMA_VERSION
-	) {
+	if (clientSchemaVersion !== SERVER_SCHEMA_VERSION) {
 		// Enforce the server's declared capability envelope before probing the
 		// room Durable Object. Cached plugin preflight is helpful UX, but this is
 		// the authoritative protection against unsupported writers.
@@ -218,15 +225,14 @@ export async function handleSyncSocketRoute(
 			JSON.stringify({
 				vaultIdHint: vaultId.slice(0, 8),
 				reason: "client_schema_unsupported",
-				clientSchemaVersion: clientSchema.version,
-				clientSchemaSource: clientSchema.source,
+				clientSchemaVersion,
 				minSchemaVersion: SERVER_MIN_SCHEMA_VERSION,
 				maxSchemaVersion: SERVER_MAX_SCHEMA_VERSION,
 			}),
 		);
 		return returnSocketResponse(req, rejectSocket(req, "update_required", {
 			reason: "client_schema_unsupported",
-			clientSchemaVersion: clientSchema.version,
+			clientSchemaVersion,
 			roomSchemaVersion: null,
 			minSchemaVersion: SERVER_MIN_SCHEMA_VERSION,
 			maxSchemaVersion: SERVER_MAX_SCHEMA_VERSION,
@@ -234,23 +240,31 @@ export async function handleSyncSocketRoute(
 	}
 
 	const roomSchemaVersion = await fetchVaultSchemaVersion(env, vaultId);
-	if (roomSchemaVersion !== null && clientSchema.version < roomSchemaVersion) {
+	if (roomSchemaVersion !== null && roomSchemaVersion !== clientSchemaVersion) {
+		// Room skew is symmetric: a client older than the room would read data it
+		// cannot represent, and a client newer than the room would write data the
+		// room's other writers cannot read. Under a single pinned version the only
+		// admissible relation is equality; the two directions get distinct reasons
+		// so logs distinguish "stale plugin" from "stale room".
+		//
 		// Schema-skew rejection — console only, no YAOS_SYNC write (issue #40).
 		// A retry loop here would otherwise fan out one DO subrequest per attempt.
+		const reason = clientSchemaVersion < roomSchemaVersion
+			? "client_schema_older_than_room"
+			: "client_schema_newer_than_room";
 		console.warn(
 			`[yaos-sync:worker] ws rejected (update_required): ` +
 			JSON.stringify({
 				vaultIdHint: vaultId.slice(0, 8),
 				reason: "update_required",
-				detail: "client_schema_older_than_room",
-				clientSchemaVersion: clientSchema.version,
-				clientSchemaSource: clientSchema.source,
+				detail: reason,
+				clientSchemaVersion,
 				roomSchemaVersion,
 			}),
 		);
 		return returnSocketResponse(req, rejectSocket(req, "update_required", {
-			reason: "client_schema_older_than_room",
-			clientSchemaVersion: clientSchema.version,
+			reason,
+			clientSchemaVersion,
 			roomSchemaVersion,
 		}));
 	}
@@ -263,8 +277,7 @@ export async function handleSyncSocketRoute(
 		`[yaos-sync:worker] ws connected: ` +
 		JSON.stringify({
 			vaultIdHint: vaultId.slice(0, 8),
-			clientSchemaVersion: clientSchema.version,
-			clientSchemaSource: clientSchema.source,
+			clientSchemaVersion,
 			roomSchemaVersion,
 			authMethod: authResult.method,
 			cfRay: req.headers.get("cf-ray") ?? undefined,

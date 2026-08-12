@@ -29,6 +29,7 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { PINNED_SCHEMA_VERSION } from "./pinned-schema-version.mjs";
 
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "";
@@ -182,7 +183,7 @@ console.log("\n=== Test 1: initial connect uses ?ticket= ===");
 		prefix: `/vault/sync/${encodeURIComponent(ROOM_ID)}`,
 		params: async () => ({
 			ticket,
-			schemaVersion: "2",
+			schemaVersion: String(PINNED_SCHEMA_VERSION),
 		}),
 		WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 		connect: false,
@@ -227,7 +228,7 @@ console.log("\n=== Test 2: patched provider.url used on reconnect ===");
 	const ydoc = new Y.Doc();
 	const provider = new YSyncProvider(HOST, ROOM_ID, ydoc, {
 		prefix: `/vault/sync/${encodeURIComponent(ROOM_ID)}`,
-		params: async () => ({ ticket: ticketA, schemaVersion: "2" }),
+		params: async () => ({ ticket: ticketA, schemaVersion: String(PINNED_SCHEMA_VERSION) }),
 		WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 		connect: false,
 		maxBackoffTime: 500,
@@ -298,7 +299,7 @@ console.log("\n=== Test 3: post-expiry reconnect (sleep/wake simulation) ===");
 	const ydoc = new Y.Doc();
 	const provider = new YSyncProvider(HOST, ROOM_ID, ydoc, {
 		prefix: `/vault/sync/${encodeURIComponent(ROOM_ID)}`,
-		params: async () => ({ ticket: ticketA, schemaVersion: "2" }),
+		params: async () => ({ ticket: ticketA, schemaVersion: String(PINNED_SCHEMA_VERSION) }),
 		WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 		connect: false,
 		maxBackoffTime: 500,
@@ -316,7 +317,7 @@ console.log("\n=== Test 3: post-expiry reconnect (sleep/wake simulation) ===");
 		// Verify ticketA is now stale: the server should reject a new WS connection
 		// with it.  We do a plain HTTP probe (no WebSocket upgrade) to the sync route.
 		const staleProbe = await fetch(
-			`${HOST}/vault/sync/${encodeURIComponent(ROOM_ID)}?ticket=${encodeURIComponent(ticketA)}&schemaVersion=2`,
+			`${HOST}/vault/sync/${encodeURIComponent(ROOM_ID)}?ticket=${encodeURIComponent(ticketA)}&schemaVersion=${PINNED_SCHEMA_VERSION}`,
 		);
 		if (staleProbe.status !== 401) {
 			throw new Error(`Test 3: expected 401 for expired ticket, got ${staleProbe.status}`);

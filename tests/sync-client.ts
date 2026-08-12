@@ -7,11 +7,11 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { SCHEMA_VERSION } from "../src/sync/schema";
 
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "dev-sync-token";
 const VAULT_ID = process.env.YAOS_TEST_VAULT_ID || "yaos-smoke-test";
-const SCHEMA_VERSION = process.env.YAOS_TEST_SCHEMA_VERSION || "1";
 const ROOM_ID = VAULT_ID;
 
 const targetPath = process.argv[2] || "hi.md";
@@ -31,7 +31,7 @@ const provider = new YSyncProvider(HOST, ROOM_ID, ydoc, {
 	prefix: syncPrefix,
 	params: {
 		token: TOKEN,
-		schemaVersion: SCHEMA_VERSION,
+		schemaVersion: String(SCHEMA_VERSION),
 	},
 	WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 	connect: true,

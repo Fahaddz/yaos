@@ -1,6 +1,26 @@
+/**
+ * Live-worker admission test for the pinned schema version.
+ *
+ * The server admits exactly one schema version (SERVER_MIN/MAX_SCHEMA_VERSION
+ * in server/src/version.ts, equal to SCHEMA_VERSION in src/sync/schema.ts).
+ * This suite proves, against a real Worker, that:
+ *   - a client at the pinned version connects and syncs;
+ *   - a client below the pin is rejected with update_required;
+ *   - a client above the pin is rejected with update_required;
+ *   - a client that declares no schema at all is rejected (no legacy default).
+ *
+ * The room-skew rejections (client_schema_older_than_room /
+ * client_schema_newer_than_room) are deliberately not exercised here: the
+ * envelope check runs before the room probe, so a room at any other version can
+ * no longer be created by a client. That check is defense-in-depth for a room
+ * left behind by a rolled-back server, and is covered by
+ * tests/meta-v3-schema-gate-and-stats.ts.
+ */
+
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { PINNED_SCHEMA_VERSION } from "./pinned-schema-version.mjs";
 
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "";
@@ -125,7 +145,8 @@ async function seedRoomSchema(roomId, schemaVersion) {
 	await safeDestroy(provider, ydoc);
 }
 
-async function expectRejected(label, wsUrl, expectedReason = "client_schema_older_than_room") {
+async function expectRejected(label, wsUrl, expectedReason) {
+	let payload = null;
 	await new Promise((resolvePromise, rejectPromise) => {
 		const ws = new WebSocket(wsUrl);
 		let sawExpectedCode = false;
@@ -160,6 +181,7 @@ async function expectRejected(label, wsUrl, expectedReason = "client_schema_olde
 				if (msg?.type === "error" && msg?.code === "update_required") {
 					sawExpectedCode = true;
 					sawExpectedReason = msg.reason === expectedReason;
+					payload = msg;
 				}
 			} catch {
 				// ignore non-json
@@ -168,7 +190,10 @@ async function expectRejected(label, wsUrl, expectedReason = "client_schema_olde
 
 		ws.on("close", () => {
 			if (!sawExpectedCode || !sawExpectedReason) {
-				finish(new Error(`${label}: socket closed without update_required/${expectedReason} error`));
+				finish(new Error(
+					`${label}: socket closed without update_required/${expectedReason} error` +
+					(payload ? ` (got reason ${JSON.stringify(payload.reason)})` : ""),
+				));
 				return;
 			}
 			finish();
@@ -178,6 +203,7 @@ async function expectRejected(label, wsUrl, expectedReason = "client_schema_olde
 			finish(err);
 		});
 	});
+	return payload;
 }
 
 async function expectAllowed(roomId, schemaVersion) {
@@ -233,38 +259,44 @@ async function expectAllowed(roomId, schemaVersion) {
 }
 
 async function main() {
-	try {
-		console.log(`Schema guard integration rooms: ${ROOM_PREFIX}-v1..v3`);
-		for (const roomSchemaVersion of [1, 2, 3]) {
-			const roomId = `${ROOM_PREFIX}-room-v${roomSchemaVersion}`;
-			await seedRoomSchema(roomId, roomSchemaVersion);
-			console.log(`Seeded ${roomId} with sys.schemaVersion=${roomSchemaVersion}`);
+	const roomId = `${ROOM_PREFIX}-room-v${PINNED_SCHEMA_VERSION}`;
 
-			for (const clientSchemaVersion of [1, 2, 3]) {
-				if (clientSchemaVersion < roomSchemaVersion) {
-					await expectRejected(
-						`room v${roomSchemaVersion} rejects client v${clientSchemaVersion}`,
-						buildWsUrl(roomId, { includeSchema: true, schemaVersion: clientSchemaVersion }),
-					);
-					console.log(`Rejected room v${roomSchemaVersion} / client v${clientSchemaVersion}`);
-				} else {
-					await expectAllowed(roomId, clientSchemaVersion);
-					console.log(`Accepted room v${roomSchemaVersion} / client v${clientSchemaVersion}`);
-				}
-			}
+	await seedRoomSchema(roomId, PINNED_SCHEMA_VERSION);
+	console.log(`Seeded ${roomId} with sys.schemaVersion=${PINNED_SCHEMA_VERSION}`);
 
-			if (roomSchemaVersion === 2) {
-				await expectRejected(
-					"room v2 rejects missing schema as legacy default v1",
-					buildWsUrl(roomId, { includeSchema: false }),
-				);
-				console.log("Rejected missing-schema client against room v2 (legacy default v1)");
-			}
+	await expectAllowed(roomId, PINNED_SCHEMA_VERSION);
+	console.log(`Accepted client at the pinned schema v${PINNED_SCHEMA_VERSION}`);
+
+	for (const clientSchemaVersion of [PINNED_SCHEMA_VERSION - 1, PINNED_SCHEMA_VERSION + 1]) {
+		const payload = await expectRejected(
+			`client v${clientSchemaVersion} is outside the pinned schema`,
+			buildWsUrl(roomId, { includeSchema: true, schemaVersion: clientSchemaVersion }),
+			"client_schema_unsupported",
+		);
+		if (payload.clientSchemaVersion !== clientSchemaVersion) {
+			throw new Error(`rejection did not echo client schema v${clientSchemaVersion}: ${JSON.stringify(payload)}`);
 		}
-		process.exit(0);
-	} finally {
-		// Teardown handled by safeDestroy inside sub-calls.
+		if (
+			payload.minSchemaVersion !== PINNED_SCHEMA_VERSION ||
+			payload.maxSchemaVersion !== PINNED_SCHEMA_VERSION
+		) {
+			throw new Error(`rejection did not publish the pinned envelope: ${JSON.stringify(payload)}`);
+		}
+		console.log(`Rejected client v${clientSchemaVersion} with client_schema_unsupported`);
 	}
+
+	// No legacy default: an undeclared schema is an unknown writer, not a v1 one.
+	const undeclared = await expectRejected(
+		"client that declares no schema",
+		buildWsUrl(roomId, { includeSchema: false }),
+		"invalid_client_schema",
+	);
+	if (undeclared.clientSchemaVersion !== null) {
+		throw new Error(`undeclared-schema rejection should report a null client schema: ${JSON.stringify(undeclared)}`);
+	}
+	console.log("Rejected client with no schemaVersion param (invalid_client_schema)");
+
+	process.exit(0);
 }
 
 main().catch((err) => {

@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { PINNED_SCHEMA_VERSION } from "./pinned-schema-version.mjs";
 
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "";
@@ -99,33 +100,61 @@ function assertFatalUpdateResponse(result, expectedCode, expectedReason) {
 	return payload;
 }
 
-console.log("\n--- WebSocket protocol: authenticated out-of-range schema ---");
+console.log("\n--- WebSocket protocol: authenticated schema above the pin ---");
 {
 	const ticket = await fetchTicket(ROOM_ID);
+	const clientSchemaVersion = PINNED_SCHEMA_VERSION + 1;
 	const result = await captureSocket(socketUrl(ROOM_ID, {
 		ticket,
-		schemaVersion: "4",
+		schemaVersion: String(clientSchemaVersion),
 	}));
 	const payload = assertFatalUpdateResponse(result, "update_required", "update required");
 	assert(payload.reason === "client_schema_unsupported", "schema rejection reports the explicit unsupported-client reason");
-	assert(payload.clientSchemaVersion === 4, "schema rejection echoes the client schema");
-	assert(payload.minSchemaVersion === 1 && payload.maxSchemaVersion === 3, "schema rejection publishes the supported 1..3 envelope");
+	assert(payload.clientSchemaVersion === clientSchemaVersion, "schema rejection echoes the client schema");
+	assert(
+		payload.minSchemaVersion === PINNED_SCHEMA_VERSION && payload.maxSchemaVersion === PINNED_SCHEMA_VERSION,
+		`schema rejection publishes the pinned v${PINNED_SCHEMA_VERSION} envelope`,
+	);
 }
 
-console.log("\n--- WebSocket protocol: authentication precedes out-of-range schema ---");
+console.log("\n--- WebSocket protocol: authenticated schema below the pin ---");
 {
-	const result = await captureSocket(socketUrl(ROOM_ID, { schemaVersion: "4" }));
+	// Previously admitted by the v1..v3 range. Admission is now an equality test,
+	// so an older writer is refused at the edge instead of reaching the room.
+	const ticket = await fetchTicket(ROOM_ID);
+	const clientSchemaVersion = PINNED_SCHEMA_VERSION - 1;
+	const result = await captureSocket(socketUrl(ROOM_ID, {
+		ticket,
+		schemaVersion: String(clientSchemaVersion),
+	}));
+	const payload = assertFatalUpdateResponse(result, "update_required", "update required");
+	assert(payload.reason === "client_schema_unsupported", "below-pin schema rejection reports the unsupported-client reason");
+	assert(payload.clientSchemaVersion === clientSchemaVersion, "below-pin rejection echoes the client schema");
+}
+
+console.log("\n--- WebSocket protocol: undeclared schema is rejected, never defaulted ---");
+{
+	const ticket = await fetchTicket(ROOM_ID);
+	const result = await captureSocket(socketUrl(ROOM_ID, { ticket }));
+	const payload = assertFatalUpdateResponse(result, "update_required", "update required");
+	assert(payload.reason === "invalid_client_schema", "a connection with no schemaVersion is rejected as invalid, not assumed legacy");
+	assert(payload.clientSchemaVersion === null, "undeclared-schema rejection reports a null client schema");
+}
+
+console.log("\n--- WebSocket protocol: authentication precedes schema enforcement ---");
+{
+	const result = await captureSocket(socketUrl(ROOM_ID, { schemaVersion: String(PINNED_SCHEMA_VERSION + 1) }));
 	const payload = assertFatalUpdateResponse(result, "unauthorized", "unauthorized");
 	assert(payload.reason === undefined, "auth rejection does not disclose schema-range details");
 	assert(payload.minSchemaVersion === undefined && payload.maxSchemaVersion === undefined, "auth rejection omits schema envelope details");
 }
 
-console.log("\n--- WebSocket protocol: supported ticket-authenticated schema upgrades normally ---");
+console.log("\n--- WebSocket protocol: pinned ticket-authenticated schema upgrades normally ---");
 {
 	const ticket = await fetchTicket(ROOM_ID);
 	const result = await captureSocket(socketUrl(ROOM_ID, {
 		ticket,
-		schemaVersion: "2",
+		schemaVersion: String(PINNED_SCHEMA_VERSION),
 	}), { settleAfterOpenMs: 250 });
 	assert(result.upgradeStatus === 101, `supported connection upgrades with HTTP 101 (got ${result.upgradeStatus})`);
 	assert(result.opened, "supported connection opens");

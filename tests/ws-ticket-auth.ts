@@ -31,6 +31,11 @@ import {
 	SERVER_MIN_SCHEMA_VERSION,
 } from "../server/src/version";
 
+// The single schema version the server admits. Every request in this suite that
+// is meant to reach the room must declare it, or it is refused at admission
+// before the Durable Object is ever touched.
+const PINNED_SCHEMA_VERSION = SERVER_MAX_SCHEMA_VERSION;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -206,7 +211,7 @@ console.log("\n--- WS route: valid ticket passes auth gate (does not produce 401
 	};
 
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
-	const wsUrl = `https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}&schemaVersion=2`;
+	const wsUrl = `https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}&schemaVersion=${PINNED_SCHEMA_VERSION}`;
 	const req = new Request(wsUrl, {
 		headers: { Upgrade: "websocket", Connection: "Upgrade" },
 	});
@@ -234,7 +239,7 @@ console.log("\n--- WS route: expired ticket rejected before DO wake ---");
 	// Send as plain HTTP (no Upgrade header) — avoids WebSocketPair which is
 	// unavailable in Node.js.  The auth gate fires before any WS-specific code.
 	const req = new Request(
-		`https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}&schemaVersion=2`,
+		`https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}&schemaVersion=${PINNED_SCHEMA_VERSION}`,
 	);
 
 	let doTouched = false;
@@ -256,7 +261,7 @@ console.log("\n--- WS route: tampered ticket rejected before DO wake ---");
 	const idx = 5;
 	const tampered = `${payload}.${sig!.slice(0, idx)}${sig![idx] === "a" ? "b" : "a"}${sig!.slice(idx + 1)}`;
 	const req = new Request(
-		`https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(tampered)}&schemaVersion=2`,
+		`https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(tampered)}&schemaVersion=${PINNED_SCHEMA_VERSION}`,
 	);
 
 	let doTouched = false;
@@ -275,7 +280,7 @@ console.log("\n--- WS route: ticket for wrong vaultId rejected before DO wake --
 	const trapEnv = makeTrapEnv();
 	const { ticket } = await createTicket(ENV_AUTH, OTHER_VAULT_ID);
 	const req = new Request(
-		`https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}&schemaVersion=2`,
+		`https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}&schemaVersion=${PINNED_SCHEMA_VERSION}`,
 	);
 
 	let doTouched = false;
@@ -299,7 +304,7 @@ console.log("\n--- WS route: legacy ?token= still accepted (migration path) ---"
 		YAOS_CONFIG: {} as unknown as Env["YAOS_CONFIG"],
 	};
 
-	const wsUrl = `https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=2`;
+	const wsUrl = `https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=${PINNED_SCHEMA_VERSION}`;
 	const req = new Request(wsUrl, {
 		headers: { Upgrade: "websocket", Connection: "Upgrade" },
 	});
@@ -321,7 +326,7 @@ console.log("\n--- WS route: no ticket and no token → rejected before DO wake 
 {
 	const trapEnv = makeTrapEnv();
 	const req = new Request(
-		`https://example.test/vault/sync/${VAULT_ID}?schemaVersion=2`,
+		`https://example.test/vault/sync/${VAULT_ID}?schemaVersion=${PINNED_SCHEMA_VERSION}`,
 	);
 
 	let doTouched = false;
@@ -335,9 +340,15 @@ console.log("\n--- WS route: no ticket and no token → rejected before DO wake 
 	assert(!doTouched, "no auth: DO namespace not touched");
 }
 
-console.log("\n--- WS route: schema bounds preserve auth priority and never probe a Durable Object ---");
+console.log("\n--- WS route: the pinned schema is enforced by equality and never probes a Durable Object ---");
 {
-	for (const schemaVersion of [SERVER_MIN_SCHEMA_VERSION - 1, SERVER_MAX_SCHEMA_VERSION + 1]) {
+	assertEqual(
+		SERVER_MIN_SCHEMA_VERSION,
+		SERVER_MAX_SCHEMA_VERSION,
+		"the server publishes a single pinned schema version (min === max)",
+	);
+
+	for (const schemaVersion of [PINNED_SCHEMA_VERSION - 1, PINNED_SCHEMA_VERSION + 1]) {
 		const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 		const authenticatedRequests = [
 			{
@@ -359,8 +370,8 @@ console.log("\n--- WS route: schema bounds preserve auth priority and never prob
 			assertEqual(body.error, "update_required", `${label}, schema v${schemaVersion} uses update_required`);
 			assertEqual(body.reason, "client_schema_unsupported", `${label}, schema v${schemaVersion} reports an explicit reason`);
 			assertEqual(body.clientSchemaVersion, schemaVersion, `${label}, schema v${schemaVersion} is echoed safely`);
-			assertEqual(body.minSchemaVersion, SERVER_MIN_SCHEMA_VERSION, "response includes server minimum");
-			assertEqual(body.maxSchemaVersion, SERVER_MAX_SCHEMA_VERSION, "response includes server maximum");
+			assertEqual(body.minSchemaVersion, SERVER_MIN_SCHEMA_VERSION, "response includes the pinned minimum");
+			assertEqual(body.maxSchemaVersion, SERVER_MAX_SCHEMA_VERSION, "response includes the pinned maximum");
 			assertEqual(
 				getGetServerByNameCallCount(),
 				0,
@@ -376,12 +387,42 @@ console.log("\n--- WS route: schema bounds preserve auth priority and never prob
 		);
 		assertEqual(unauthenticated.status, 401, `unauthenticated schema v${schemaVersion} returns 401, not 426`);
 		const unauthenticatedBody = await unauthenticated.json() as Record<string, unknown>;
-		assertEqual(unauthenticatedBody.error, "unauthorized", "authentication rejection takes precedence over schema bounds");
-		assert(!("reason" in unauthenticatedBody), "unauthenticated rejection does not disclose schema-range details");
+		assertEqual(unauthenticatedBody.error, "unauthorized", "authentication rejection takes precedence over the schema pin");
+		assert(!("reason" in unauthenticatedBody), "unauthenticated rejection does not disclose schema-pin details");
 		assertEqual(
 			getGetServerByNameCallCount(),
 			0,
 			`unauthenticated schema v${schemaVersion} does not call getServerByName`,
+		);
+	}
+}
+
+console.log("\n--- WS route: an undeclared schema is rejected, never defaulted to a legacy version ---");
+{
+	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
+	const undeclaredRequests = [
+		{ label: "no schemaVersion param", query: "" },
+		{ label: "blank schemaVersion", query: "&schemaVersion=" },
+		{ label: "non-integer schemaVersion", query: "&schemaVersion=3.5" },
+		{ label: "non-numeric schemaVersion", query: "&schemaVersion=latest" },
+	];
+
+	for (const { label, query } of undeclaredRequests) {
+		const trapEnv = makeTrapEnv();
+		resetGetServerByNameCallCount();
+		const res = await worker.fetch(
+			new Request(`https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}${query}`),
+			trapEnv,
+		);
+		assertEqual(res.status, 426, `${label} returns 426`);
+		const body = await res.json() as Record<string, unknown>;
+		assertEqual(body.error, "update_required", `${label} uses update_required`);
+		assertEqual(body.reason, "invalid_client_schema", `${label} reports invalid_client_schema`);
+		assertEqual(body.clientSchemaVersion, null, `${label} reports a null client schema`);
+		assertEqual(
+			getGetServerByNameCallCount(),
+			0,
+			`${label} does not call getServerByName before rejection`,
 		);
 	}
 }
@@ -447,7 +488,7 @@ console.log("\n--- WS route: legacy ?token= rejected when YAOS_DISABLE_LEGACY_WS
 {
 	const trapEnv = makeTrapEnv({ YAOS_DISABLE_LEGACY_WS_TOKEN: "true" });
 	const req = new Request(
-		`https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=2`,
+		`https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=${PINNED_SCHEMA_VERSION}`,
 	);
 
 	let doTouched = false;
@@ -472,7 +513,7 @@ console.log("\n--- WS route: legacy warning logged on successful legacy auth ---
 		YAOS_CONFIG: {} as unknown as Env["YAOS_CONFIG"],
 	};
 	const req = new Request(
-		`https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=2`,
+		`https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=${PINNED_SCHEMA_VERSION}`,
 	);
 
 	const warnMessages: string[] = [];

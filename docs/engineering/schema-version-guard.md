@@ -2,7 +2,7 @@
 
 ## What the guard does
 
-`scripts/guard-schema-version.mjs` runs 7 checks to prevent the P1 regression
+`scripts/guard-schema-version.mjs` runs 6 checks to prevent the P1 regression
 where `src/sync/schema.ts` was deleted and `SCHEMA_VERSION` was re-inlined as a
 literal `2` directly in `vaultSync.ts`:
 
@@ -12,12 +12,21 @@ literal `2` directly in `vaultSync.ts`:
 | 2 | `src/sync/vaultSync.ts` imports from `"./schema"` | Import removed or path changed |
 | 3 | `vaultSync.ts` does NOT contain `export const SCHEMA_VERSION = N` | Constant re-inlined as a literal |
 | 4 | `SCHEMA_VERSION` value in `schema.ts` equals `EXPECTED_SCHEMA_VERSION` | Version bumped in source but guard not updated, or vice versa |
-| 5 | `server/src/version.ts` exists and `SERVER_MAX_SCHEMA_VERSION` equals expected | Server contract deleted, or server and plugin disagree |
-| 6 | `server/src/version.ts` `SERVER_MIN_SCHEMA_VERSION` is less than or equal to expected | Server rejects supported plugin schema |
-| 7 | (implicit) Server `min <= max` | Min/max drift on server side |
+| 5 | `server/src/version.ts` exists | Server contract deleted. This is a hard failure, never a warning: that file is the only place the admitted schema version is declared to clients |
+| 6 | `SERVER_MIN_SCHEMA_VERSION === SERVER_MAX_SCHEMA_VERSION === EXPECTED_SCHEMA_VERSION` | Server and plugin disagree, or the pin was widened back into a range |
 
 The guard exits non-zero if any check fails and prints `FAIL: <reason>` for
 each violation.
+
+### There is no supported range
+
+The server admits exactly one schema version. WebSocket admission in
+`server/src/routes/syncSocket.ts` is an equality test against that single value,
+and a client that declares no schema at all is rejected outright. The published
+`minSchemaVersion` / `maxSchemaVersion` pair in `/api/capabilities` therefore
+always carries the same number twice; it survives as a pair only so the plugin
+can tell the user *which* side is out of date. Check 6 is what stops the pin
+from silently drifting back into a range.
 
 ---
 
@@ -64,11 +73,10 @@ SERVER_MIN_SCHEMA_VERSION = 4
 SERVER_MAX_SCHEMA_VERSION = 4
 ```
 
-Note: if the server is designed to accept a range of plugin versions during a
-transition window, set `SERVER_MIN_SCHEMA_VERSION` to the oldest still-supported
-version and `SERVER_MAX_SCHEMA_VERSION` to the new version. The guard allows
-this range as long as max equals the plugin schema and min is less than or
-equal to it.
+Both constants must always equal the plugin's `SCHEMA_VERSION`. Setting them to
+different values is a guard failure, not a transition window: an older client is
+refused at admission with `update_required`, so the upgrade path is "redeploy
+the server and update the plugin", never "run a mixed fleet".
 
 ### 3. `scripts/guard-schema-version.mjs`
 
@@ -89,8 +97,7 @@ version bump.
 | File | Pattern to find | New value |
 |------|----------------|-----------|
 | `src/sync/schema.ts` | `export const SCHEMA_VERSION = 3` | `= 4` |
-| `server/src/version.ts` | `SERVER_MIN_SCHEMA_VERSION = 3` | `= 4` |
-| `server/src/version.ts` | `SERVER_MAX_SCHEMA_VERSION = 3` | `= 4` |
+| `server/src/version.ts` | `SERVER_MIN_SCHEMA_VERSION` and `SERVER_MAX_SCHEMA_VERSION`, both `= 3` | both `= 4` |
 | `scripts/guard-schema-version.mjs` | `EXPECTED_SCHEMA_VERSION = 3` | `= 4` |
 
 ---
@@ -110,10 +117,7 @@ PASS: src/sync/schema.ts exists
 PASS: src/sync/schema.ts: SCHEMA_VERSION = 4
 PASS: src/sync/vaultSync.ts imports from "./schema"
 PASS: src/sync/vaultSync.ts has no inlined SCHEMA_VERSION literal
-PASS: server/src/version.ts: SERVER_MIN_SCHEMA_VERSION = 4
-PASS: server/src/version.ts: SERVER_MAX_SCHEMA_VERSION = 4
-PASS: server supports schema range v4..v4
-PASS: server and plugin schema versions agree on max: v4
+PASS: server/src/version.ts pins schema v4 (min === max === plugin SCHEMA_VERSION)
 
 PASS: schema version guard — all checks passed.
 ```
@@ -125,19 +129,20 @@ npm run test:regressions
 ```
 
 That command runs the guard against the repository and then runs
-`tests/schema-version-guard.mjs`, a hermetic temporary-fixture regression. The
-fixture contains valid plugin schema files but intentionally omits
-`server/src/version.ts`; it must fail with a non-zero exit status. This prevents
-the guard from silently downgrading a missing server compatibility contract to
-a warning.
+`tests/schema-version-guard.mjs`, a hermetic temporary-fixture regression. It
+builds fixtures containing valid plugin schema files and then, in turn, omits
+`server/src/version.ts`, declares a `1..3` range, and declares a correct pin.
+The first two must exit non-zero and the third must exit zero. That stops the
+guard from silently downgrading a missing server compatibility contract to a
+warning, and stops the pin from being widened back into a range.
 
 ---
 
 ## How to test that the guard catches a regression
 
 The automated temporary-fixture regression covers the missing-server-contract
-case. To manually test the original plugin-side regression without leaving a
-source edit behind:
+and widened-range cases. To manually test the original plugin-side regression
+without leaving a source edit behind:
 
 1. In `src/sync/vaultSync.ts`, temporarily add:
    ```typescript
@@ -152,4 +157,4 @@ source edit behind:
 4. Revert the temporary change.
 
 Alternatively, temporarily set `EXPECTED_SCHEMA_VERSION` in the guard to the
-wrong value and confirm checks 4, 5, and 6 fail.
+wrong value and confirm checks 4 and 6 fail.

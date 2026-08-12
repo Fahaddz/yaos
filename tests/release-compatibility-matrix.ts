@@ -61,17 +61,17 @@ assert(parseVersion(SERVER_VERSION) !== null, "server version is numeric semver"
 assert(atLeast(SERVER_VERSION, SERVER_MIN_COMPATIBLE_SERVER_VERSION_FOR_PLUGIN), "current server satisfies the plugin's advertised server floor");
 assert(atLeast(packageJson.version, SERVER_MIN_COMPATIBLE_PLUGIN_VERSION_FOR_SERVER), "current plugin satisfies the server's advertised plugin floor");
 assert(atLeast(packageJson.version, SERVER_RECOMMENDED_PLUGIN_VERSION), "current plugin meets the server recommendation");
-assert(SERVER_MIN_SCHEMA_VERSION <= SERVER_MAX_SCHEMA_VERSION, "server schema minimum does not exceed maximum");
-assert(SERVER_MAX_SCHEMA_VERSION === SCHEMA_VERSION, "server maximum equals the current plugin schema");
-
-for (const version of [1, 2, 3]) {
+assert(
+	SERVER_MIN_SCHEMA_VERSION === SERVER_MAX_SCHEMA_VERSION,
+	"server publishes a single pinned schema version (min === max)",
+);
+assert(SERVER_MAX_SCHEMA_VERSION === SCHEMA_VERSION, "the pinned server schema equals the current plugin schema");
+for (const version of [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1]) {
 	assert(
-		version >= SERVER_MIN_SCHEMA_VERSION && version <= SERVER_MAX_SCHEMA_VERSION,
-		`persisted room schema v${version} is supported by the current server`,
+		version !== SERVER_MIN_SCHEMA_VERSION && version !== SERVER_MAX_SCHEMA_VERSION,
+		`schema v${version} is not admitted by the pinned server`,
 	);
 }
-assert(0 < SERVER_MIN_SCHEMA_VERSION, "schema v0 is rejected below the supported range");
-assert(SERVER_MAX_SCHEMA_VERSION + 1 > SERVER_MAX_SCHEMA_VERSION, "a future schema is rejected above the supported range");
 
 console.log("\n--- Emitted release artifact contract ---");
 {
@@ -237,17 +237,17 @@ console.log("\n--- Runtime compatibility decision matrix ---");
 		"live server plugin floor blocks an outdated plugin before sync",
 	);
 
-	const blockedMinSchema = evaluateCompatibility({
+	const blockedBelowPin = evaluateCompatibility({
 		pluginVersion: manifest.version,
-		schemaVersion: 0,
+		schemaVersion: SERVER_MIN_SCHEMA_VERSION - 1,
 	});
-	assert(blockedMinSchema.blocked, "local schema below the server minimum is blocked at runtime");
+	assert(blockedBelowPin.blocked, "local schema one below the pinned server schema is blocked at runtime");
 
-	const blockedMaxSchema = evaluateCompatibility({
+	const blockedAbovePin = evaluateCompatibility({
 		pluginVersion: manifest.version,
 		schemaVersion: SERVER_MAX_SCHEMA_VERSION + 1,
 	});
-	assert(blockedMaxSchema.blocked, "local schema above the server maximum is blocked at runtime");
+	assert(blockedAbovePin.blocked, "local schema one above the pinned server schema is blocked at runtime");
 
 	const manifestPluginFloorOnly = evaluateCompatibility({
 		pluginVersion: "1.0.0",

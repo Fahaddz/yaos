@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { PINNED_SCHEMA_VERSION } from "./pinned-schema-version.mjs";
 
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "";
@@ -118,7 +119,7 @@ async function withProvider(label, callback) {
 		prefix: `/vault/sync/${encodeURIComponent(ROOM_ID)}`,
 		params: {
 			token: TOKEN,
-			schemaVersion: "2",
+			schemaVersion: String(PINNED_SCHEMA_VERSION),
 		},
 		WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 		connect: false,
@@ -232,7 +233,7 @@ async function main() {
 		const baselineEchoCount = getSvEchoes().length;
 		const sys = ydoc.getMap("sys");
 		sys.set("initialized", true);
-		sys.set("schemaVersion", 2);
+		sys.set("schemaVersion", PINNED_SCHEMA_VERSION);
 		const text = ydoc.getText("manual-connect");
 		text.insert(0, "manual connect smoke");
 		writtenCandidateSv = Y.encodeStateVector(ydoc);
