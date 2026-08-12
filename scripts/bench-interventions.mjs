@@ -167,7 +167,8 @@ async function runChild(spec) {
 		peak = Math.max(warm, liveBytes() - baseline);
 		// Drop the update: it is a transient of the encode, not a residue of the
 		// remedy, and keeping it would charge this variant for the buffer.
-		encoded = null;
+		void encoded.byteLength;
+		encoded = undefined;
 		settle();
 		after = liveBytes() - baseline;
 	} else if (spec.variant === "remat") {
