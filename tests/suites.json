@@ -1,0 +1,25 @@
+{
+	"notSuites": {
+		"tests/run-suites.mjs": "The runner itself. Discovers and spawns every other suite.",
+		"tests/worker-integration.mjs": "Integration driver, not a suite. Boots `wrangler dev` and spawns the live-worker suites against it. Owned by `npm run test:integration:worker`.",
+		"tests/pinned-schema-version.mjs": "Shared helper module with no assertions. Exports PINNED_SCHEMA_VERSION, read out of src/sync/schema.ts, for the plain-node suites that cannot import the TypeScript constant."
+	},
+	"skip": {
+		"tests/server-update-local.mjs": "Owned by `npm run test:server-update-local`, which runs `build:server-release` first. Needs dist/release-assets/yaos-server.zip on disk and shells out to git in a temp clone.",
+		"tests/schema-guard.mjs": "Live-worker suite. Spawned by tests/worker-integration.mjs; needs a running server on 127.0.0.1:8787 and SYNC_TOKEN.",
+		"tests/provider-manual-connect.mjs": "Live-worker suite. Spawned by tests/worker-integration.mjs; exits non-zero without SYNC_TOKEN.",
+		"tests/sync-client.ts": "Live-worker suite. Spawned by tests/worker-integration.mjs with positional args (file path, text); needs a running server and SYNC_TOKEN.",
+		"tests/snapshots.ts": "Live-worker suite. Spawned by tests/worker-integration.mjs; needs a running server, SYNC_TOKEN, and an R2 binding for snapshot routes.",
+		"tests/hardening-worker.mjs": "Live-worker suite. Spawned by tests/worker-integration.mjs; needs a running server and SYNC_TOKEN.",
+		"tests/ws-ticket-reconnect.mjs": "Live-worker suite. Spawned by tests/worker-integration.mjs, which starts the server with YAOS_TICKET_TTL_MS:8000 so post-expiry reconnect is reachable in seconds.",
+		"tests/ws-admission-protocol.mjs": "Live-worker suite. Spawned by tests/worker-integration.mjs; needs a running server and SYNC_TOKEN.",
+		"tests/live-seed-check.mjs": "Manual probe against a deployed server. Throws unless YAOS_TEST_HOST, SYNC_TOKEN, and YAOS_TEST_VAULT_ID are all set.",
+		"tests/persistence-handoff-proof.mjs": "Issue #24 RCA experiment against a live server. Throws without SYNC_TOKEN; two-device handoff over real WebSockets.",
+		"tests/persistence-eviction-proof.mjs": "Issue #24 RCA experiment. Defaults YAOS_TEST_HOST to a real deployment URL and sleeps 160s waiting for Durable Object eviction — far too slow and too external for the regression gate."
+	},
+	"serialReason": "These suites write into the repo tree, so they must never run concurrently with each other or with a build. The runner is sequential today, which satisfies this for free; the list exists so that adding parallelism cannot silently break it.",
+	"serial": [
+		"tests/release-compatibility-matrix.ts",
+		"tests/server-update-local.mjs"
+	]
+}
