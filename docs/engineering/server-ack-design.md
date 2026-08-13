@@ -1086,7 +1086,7 @@ Current coverage:
 - `tests/contracts/server-post-apply-wiring.ts`
 - `tests/server/receipt-durability.ts` — generation gating, epoch re-baselining, fallback path
 - `tests/client/status-label.ts` — durable vs fallback copy, degraded segment
-- `tests/live/provider-manual-connect.mjs` through `npm run test:integration:worker`
+- `tests/live/provider-manual-connect.ts` through `npm run test:integration:worker`
 
 ### Integration test
 

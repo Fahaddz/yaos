@@ -36,7 +36,6 @@ const tempDir = mkdtempSync(join(tmpdir(), "yaos-server-update-"));
 const zipPath = join(tempDir, "yaos-server.zip");
 const extractDir = join(tempDir, "extract");
 const protectedPrefixes = [".github", ".github/"];
-const allowMigrationUpdate = process.env.YAOS_ALLOW_MIGRATION_UPDATE?.trim().toLowerCase() === "true";
 
 function collectTomlArrayBindingValues(source, sectionName, keyName) {
 	const values = new Set();
@@ -175,16 +174,6 @@ async function main() {
 	const rawManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 	if (!Array.isArray(rawManifest.updateOwnedPaths)) {
 		throw new Error("Artifact manifest is missing updateOwnedPaths");
-	}
-	if (rawManifest.migrationRequired === true && !allowMigrationUpdate) {
-		throw new Error(
-			[
-				"STOP: this YAOS release is marked as migration-required.",
-				"Automatic updates are disabled for migration-required releases to protect Durable Object/SQLite state.",
-				"Read the upgrade guide and apply the migration manually before re-running this updater.",
-				"If you intentionally want to bypass this guard, set YAOS_ALLOW_MIGRATION_UPDATE=true.",
-			].join(" "),
-		);
 	}
 	const wranglerWarnings = collectWranglerDriftWarnings(
 		join(repoRoot, "wrangler.toml"),
