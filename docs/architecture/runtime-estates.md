@@ -31,6 +31,10 @@ nothing is recorded, the flight recorder is never started, and the sync runtime
 writes to a no-op trace sink. Turning `debug` on starts the flight recorder;
 there is no second switch.
 
+That holds on every platform. The debug runtime has no Node dependency —
+recording, retention and export all go through `app.vault.adapter` — so mobile
+records and exports a trace exactly like desktop. There is no platform gate.
+
 It must not contain mutation harness code, scenario controls, or Engine control
 capabilities. `scripts/guard-production-bundles.mjs` enforces that against the
 built bundle; run `npm run verify:bundles` after a build.

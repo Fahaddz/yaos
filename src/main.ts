@@ -1,4 +1,4 @@
-import { MarkdownView, Modal, Notice, Platform, Plugin, TFile, arrayBufferToHex } from "obsidian";
+import { MarkdownView, Modal, Notice, Plugin, TFile, arrayBufferToHex } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
 	VaultSyncSettingTab,
@@ -440,11 +440,10 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 		// Install the debug/Observer runtime when debug or qaDebugMode is enabled.
 		//
-		// Mobile: the runtime has no Node dependency — it reads and writes through
-		// app.vault.adapter, which exists on mobile too. The gate below is therefore
-		// a deliberate policy choice (flight recording is desktop-only) rather than a
-		// capability limit. Debug mode on mobile is silently inert; sync is unaffected.
-		if ((this.settings.debug || this.settings.qaDebugMode) && !Platform.isMobile) {
+		// This runs on mobile too: the runtime has no Node dependency. Recording,
+		// retention and export all go through app.vault.adapter, which exists on
+		// every platform. settings.debug is the only gate, and it is off by default.
+		if (this.settings.debug || this.settings.qaDebugMode) {
 			const host: TelemetryRuntimeHost = {
 					app: this.app,
 					getSettings: () => this.settings,
