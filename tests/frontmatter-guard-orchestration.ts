@@ -8,7 +8,7 @@
  * branch discriminator. Scenarios A through E cover the four
  * handleBoundFileSyncGap block sites and the two syncFileFromDisk block
  * sites by way of the helper-call invariant; the bound branches are
- * exercised end-to-end through __qaOnlyForceSyncFileFromDiskUnsafe.
+ * exercised end-to-end through the QA harness ingestDiskFileNow path.
  *
  * In-scope (ingest direction, six sites in src/runtime/reconciliationController.ts,
  * identified by enclosing function and predicate `reason` literal):

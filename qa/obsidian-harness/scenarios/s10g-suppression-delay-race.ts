@@ -12,7 +12,7 @@
  *
  * Mechanism:
  *   1. Create file, open in editor, let binding settle.
- *   2. Inject remote content via forceCrdtContent(originClass: "remote").
+ *   2. Inject remote content via __qaOnlyForceCrdtContentUnsafe(originClass: "remote").
  *      This updates Y.Text + editor + schedules diskMirror write.
  *   3. Wait for diskMirror to write and the suppression entry to EXPIRE (>500ms).
  *   4. Force syncFileFromDisk via ingestDiskFileNow.
@@ -66,7 +66,7 @@ export const s10gSuppressionDelayRace: QaScenario = {
 		// 4. Inject remote content (simulates remote device pushing an edit).
 		//    This triggers: Y.Text update → y-codemirror → editor update →
 		//    diskMirror observer → scheduleOpenWrite(1500ms).
-		const injectResult = await ctx.yaos.forceCrdtContent(
+		const injectResult = await ctx.yaos.__qaOnlyForceCrdtContentUnsafe(
 			SCRATCH,
 			REMOTE_EDIT,
 			{ originClass: "remote" },

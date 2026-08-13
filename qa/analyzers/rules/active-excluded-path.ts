@@ -64,6 +64,7 @@ export function checkActiveExcludedPath(events: FlightEvent[]): AnalyzerFinding[
 		findings.push({
 			rule: "active-excluded-path",
 			severity: "warning",
+			eventSeqs: [],
 			description:
 				"COVERAGE: no excludedByPolicy metadata or unredacted path fields in trace — " +
 				"active-excluded-path rule could not run. " +

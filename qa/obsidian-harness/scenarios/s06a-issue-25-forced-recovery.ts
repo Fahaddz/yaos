@@ -19,8 +19,8 @@
  *   6. waitForIdle — recovery settles.
  *   7. POSTCONDITION: disk == CRDT == editor (all converged to divergent).
  *
- * Why writeAdapterFile and NOT forceCrdtContent:
- *   forceCrdtContent propagates to editor via y-codemirror. Obsidian then
+ * Why writeAdapterFile and NOT __qaOnlyForceCrdtContentUnsafe:
+ *   Forcing CRDT content propagates to the editor via y-codemirror. Obsidian then
  *   auto-saves editor→disk within ~1s, destroying the disk≠CRDT state before
  *   recovery can be triggered. writeAdapterFile writes to disk only, leaving
  *   CRDT and editor unchanged, and the vault event triggers recovery naturally.

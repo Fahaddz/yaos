@@ -237,8 +237,13 @@ export default class YaosQaHarnessPlugin extends Plugin {
 	 * Private fields are accessed via `as any` — acceptable in a QA-only file.
 	 */
 	private mountYaosDebugApi(): void {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const product = (this.app.plugins as any).plugins?.["yaos"] as Record<string, unknown> | undefined;
+		// Obsidian's plugin registry is a private API absent from obsidian.d.ts.
+		// Cast the app once into a named local (per src/sync/diskMirror.ts), then
+		// read through it; every consumer below re-guards what it touches.
+		const appInternals = this.app as unknown as {
+			plugins?: { plugins?: Record<string, Record<string, unknown> | undefined> };
+		};
+		const product = appInternals.plugins?.plugins?.["yaos"];
 
 		// Guard 1: product plugin must be loaded
 		if (!product) {

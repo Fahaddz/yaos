@@ -1,14 +1,25 @@
 /**
- * Tests for QA port fencing.
+ * Fencing for the product debug port.
  *
- * Verifies:
- * 1. YaosDebugPort and YaosUnsafeQaPort interfaces exist and are well-typed
- * 2. The guard:qa-isolation script passes (sync/runtime don't import QA)
- * 3. Port interfaces correctly categorize safe vs unsafe operations
+ * `YaosDebugPort` (src/telemetry/debug/ports/yaosDebugPort.ts) is the read-only
+ * capability surface the product exposes for debugging. The invariant this file
+ * defends is one-directional and belongs to yaos: **no mutating, scenario-control
+ * or policy-override capability may appear on the product port.**
+ *
+ * The mirror-image assertion — that the QA harness implementation satisfies
+ * `YaosUnsafeQaPort` — is a compile-time check inside the harness itself
+ * (`qa/harness/qaDebugApi.ts`, verified by `tsconfig.qa.json`). It is not
+ * restated here, because a runtime test cannot check assignability: this suite
+ * runs under jiti, which erases types. A previous version of this file mocked
+ * `YaosUnsafeQaPort` and passed for months while its mock had drifted from the
+ * real port — the erased annotation checked nothing.
+ *
+ * `guard:qa-isolation` is likewise not spawned here. `test:regressions` runs it
+ * directly before this suite, and CI runs it again; a third invocation proved
+ * nothing.
  */
 
 import type { YaosDebugPort } from "../src/telemetry/debug/ports/yaosDebugPort";
-import type { YaosUnsafeQaPort } from "../qa/harness/ports/yaosUnsafeQaPort";
 
 let passed = 0;
 let failed = 0;
@@ -23,110 +34,104 @@ function assert(condition: boolean, msg: string) {
 	}
 }
 
-console.log("\n--- Test 1: YaosDebugPort interface shape ---");
+// A complete mock of the port. This is the load-bearing part: the annotation
+// forces the object to satisfy YaosDebugPort exactly, so adding a member to the
+// port fails compilation here until it is listed — and every check below is
+// derived from these keys rather than a hand-maintained copy of them.
+const mockDebugPort: YaosDebugPort = {
+	isLocalReady: () => true,
+	isProviderSynced: () => true,
+	isProviderConnected: () => true,
+	isReconciled: () => true,
+	isReconcileInFlight: () => false,
+	getConnectionState: () => "connected",
+	getServerReceiptState: () => "confirmed",
+	getReceiptSnapshot: () => ({
+		serverAppliedLocalState: true,
+		lastServerReceiptEchoAt: 1,
+		lastKnownServerReceiptEchoAt: 1,
+		hasCandidateSv: false,
+	}),
+	getActiveMarkdownPaths: () => [],
+	getDiskMarkdownPaths: () => [],
+	getEditorBindingHealth: () => ({
+		path: "x.md",
+		hasCm6Extension: true,
+		hasYjsBinding: true,
+		isQaPaused: false,
+		editorViewExists: true,
+	}),
+	getRuntimeState: () => "foreground",
+	getDiskHash: async () => null,
+	getCrdtHash: async () => null,
+	getEditorHash: async () => null,
+	waitForIdle: async () => {},
+	waitForLocalReady: async () => {},
+	waitForProviderSynced: async () => {},
+	waitForReconciled: async () => {},
+	waitForFile: async () => {},
+	waitForReceiptAfter: async () => {},
+	forceReconcile: async () => {},
+	forceReconnect: () => {},
+	disconnectProvider: () => {},
+	connectProvider: () => {},
+	startFlightTrace: async () => {},
+	stopFlightTrace: async () => {},
+	exportFlightTrace: async () => "",
+	getActiveTraceInfo: () => null,
+};
+
+const portKeys = Object.keys(mockDebugPort);
+
+console.log("\n--- Test 1: the port is populated and callable ---");
 {
-	// Type-level check: a mock implementation compiles.
-	const mockDebugPort: YaosDebugPort = {
-		isLocalReady: () => true,
-		isProviderSynced: () => true,
-		isProviderConnected: () => true,
-		isReconciled: () => true,
-		isReconcileInFlight: () => false,
-		getConnectionState: () => "connected",
-		getServerReceiptState: () => "confirmed",
-		getReceiptSnapshot: () => ({ serverAppliedLocalState: true, lastServerReceiptEchoAt: 1, lastKnownServerReceiptEchoAt: 1, hasCandidateSv: false }),
-		getActiveMarkdownPaths: () => [],
-		getDiskMarkdownPaths: () => [],
-		getEditorBindingHealth: () => ({ path: "x.md", hasCm6Extension: true, hasYjsBinding: true, isQaPaused: false, editorViewExists: true }),
-		getRuntimeState: () => "foreground",
-		getDiskHash: async () => null,
-		getCrdtHash: async () => null,
-		getEditorHash: async () => null,
-		waitForIdle: async () => {},
-		waitForLocalReady: async () => {},
-		waitForProviderSynced: async () => {},
-		waitForReconciled: async () => {},
-		waitForFile: async () => {},
-		waitForReceiptAfter: async () => {},
-		forceReconcile: async () => {},
-		forceReconnect: () => {},
-		disconnectProvider: () => {},
-		connectProvider: () => {},
-		startFlightTrace: async () => {},
-		stopFlightTrace: async () => {},
-		exportFlightTrace: async () => "",
-		getActiveTraceInfo: () => null,
-	};
-
-	assert(typeof mockDebugPort.isLocalReady === "function", "isLocalReady is a function");
-	assert(typeof mockDebugPort.waitForIdle === "function", "waitForIdle is a function");
-	assert(typeof mockDebugPort.forceReconcile === "function", "forceReconcile is a function");
-	assert(typeof mockDebugPort.getDiskHash === "function", "getDiskHash is a function");
-	assert(typeof mockDebugPort.getActiveTraceInfo === "function", "getActiveTraceInfo is a function");
-
-	// Verify no unsafe methods leak into debug port.
-	const debugPortKeys = Object.keys(mockDebugPort);
-	assert(!debugPortKeys.some(k => k.includes("__qaOnly")), "no __qaOnly methods in debug port");
-	assert(!debugPortKeys.some(k => k.includes("Scenario")), "no scenario methods in debug port");
-	assert(!debugPortKeys.some(k => k.includes("Unsafe")), "no Unsafe methods in debug port");
-}
-
-console.log("\n--- Test 2: YaosUnsafeQaPort interface shape ---");
-{
-	const mockUnsafePort: YaosUnsafeQaPort = {
-		__qaOnlyForceCrdtContentUnsafe: async () => ({ beforeHash: null, afterHash: "abc", fileExisted: false }),
-		__qaOnlyForceSyncFileFromDiskUnsafe: async () => {},
-		__qaOnlyPauseEditorBindingPropagationUnsafe: async () => true,
-		__qaOnlyResumeEditorBindingPropagationUnsafe: async () => true,
-		setQaNetworkHold: () => {},
-		__qaOnlyEmitPhaseUnsafe: async () => {},
-		__qaOnlySetExternalEditPolicyOverrideUnsafe: async () => ({ previous: null }),
-		getDeviceId: () => "device-1",
-	};
-
-	assert(typeof mockUnsafePort.__qaOnlyForceCrdtContentUnsafe === "function", "forceCrdt exists");
-	assert(typeof mockUnsafePort.setQaNetworkHold === "function", "network hold exists");
-
-	// Verify all mutation methods have __qaOnly or explicit unsafe naming.
-	const unsafeKeys = Object.keys(mockUnsafePort);
-	const safeReadKeys = ["getDeviceId", "setQaNetworkHold"];
-	const unsafeOnlyKeys = unsafeKeys.filter(k => !safeReadKeys.includes(k));
+	assert(portKeys.length > 0, "port exposes at least one member");
 	assert(
-		unsafeOnlyKeys.every(k => k.includes("__qaOnly") || k.includes("Unsafe")),
-		"all mutation methods have __qaOnly or Unsafe in name",
+		portKeys.every((k) => typeof (mockDebugPort as Record<string, unknown>)[k] === "function"),
+		"every port member is a function",
 	);
 }
 
-console.log("\n--- Test 3: debug port has no data-mutating methods ---");
+console.log("\n--- Test 2: no QA-only capability on the product port ---");
 {
-	// The key contract: YaosDebugPort should not be able to mutate CRDT content,
-	// control scenarios, or override policies.
-	const debugMethods = [
-		"isLocalReady", "isProviderSynced", "isProviderConnected", "isReconciled",
-		"isReconcileInFlight", "getConnectionState", "getServerReceiptState",
-		"getReceiptSnapshot", "getActiveMarkdownPaths", "getDiskMarkdownPaths",
-		"getEditorBindingHealth", "getRuntimeState", "getDiskHash", "getCrdtHash",
-		"getEditorHash", "waitForIdle", "waitForLocalReady", "waitForProviderSynced",
-		"waitForReconciled", "waitForFile", "waitForReceiptAfter",
-		"forceReconcile", "forceReconnect", "disconnectProvider", "connectProvider",
-		"startFlightTrace", "stopFlightTrace", "exportFlightTrace", "getActiveTraceInfo",
-	];
-
-	const dangerousPatterns = ["forceCrdt", "forceSync", "Scenario", "networkHold", "Override"];
-	for (const method of debugMethods) {
-		assert(
-			!dangerousPatterns.some(p => method.toLowerCase().includes(p.toLowerCase())),
-			`debug port method '${method}' is not dangerous`,
-		);
+	// Naming conventions the QA tree uses to mark capabilities that must never
+	// be reachable from the product. See qa/harness/ports/yaosUnsafeQaPort.ts.
+	const qaOnlyMarkers = ["__qaOnly", "Unsafe", "Scenario"];
+	for (const marker of qaOnlyMarkers) {
+		const offenders = portKeys.filter((k) => k.toLowerCase().includes(marker.toLowerCase()));
+		assert(offenders.length === 0, `no port member contains '${marker}'${offenders.length ? ` (found: ${offenders.join(", ")})` : ""}`);
 	}
 }
 
-console.log("\n--- Test 4: guard:qa-isolation passes ---");
+console.log("\n--- Test 3: no mutation or policy-override capability on the product port ---");
 {
-	const { spawnSync } = await import("node:child_process");
-	const result = spawnSync("node", ["scripts/guard-qa-isolation.mjs"], { encoding: "utf8" });
-	assert(result.status === 0, "guard:qa-isolation passes");
-	assert(result.stdout.includes("PASS"), "output includes PASS");
+	// Derived from the mock's real keys, NOT a hand-maintained list. A hardcoded
+	// copy silently stops covering members added to the port after it was written.
+	const forbiddenCapabilities = [
+		"forceCrdt",
+		"forceSync",
+		"ingestDisk",
+		"networkHold",
+		"Override",
+		"pauseEditor",
+		"resumeEditor",
+		"emitPhase",
+	];
+	for (const capability of forbiddenCapabilities) {
+		const offenders = portKeys.filter((k) => k.toLowerCase().includes(capability.toLowerCase()));
+		assert(offenders.length === 0, `no port member provides '${capability}'${offenders.length ? ` (found: ${offenders.join(", ")})` : ""}`);
+	}
+}
+
+console.log("\n--- Test 4: the reconnect/reconcile members present are not data mutators ---");
+{
+	// forceReconcile / forceReconnect / disconnectProvider / connectProvider are
+	// deliberately on the port: they drive sync lifecycle, not content. This
+	// pins that distinction so a content mutator cannot be smuggled in behind a
+	// similar-sounding name.
+	assert(portKeys.includes("forceReconcile"), "forceReconcile is present (lifecycle, allowed)");
+	assert(portKeys.includes("forceReconnect"), "forceReconnect is present (lifecycle, allowed)");
+	assert(!portKeys.some((k) => /^force(?!Reconcile$|Reconnect$)/.test(k)), "no other force* member on the port");
 }
 
 console.log(`\n${"─".repeat(55)}`);

@@ -1,0 +1,24 @@
+{
+	// Typecheck the QA harness against product source.
+	//
+	// The root tsconfig includes src/**/*.ts only, so qa/ is checked by nothing.
+	// That is how four import paths pointing at deleted modules survived
+	// unnoticed. This config exists to be run by hand before touching the QA
+	// tree; it is deliberately NOT wired into CI.
+	//
+	//   npx tsc -noEmit -p tsconfig.qa.json
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		// qa/ runs under bun/node, not the Obsidian renderer, so it does not
+		// inherit the plugin's ES6 + DOM target.
+		"target": "ES2022",
+		"lib": ["ESNext", "DOM"],
+		"module": "ESNext",
+		"types": ["node"],
+		"noEmit": true
+	},
+	"include": [
+		"src/**/*.ts",
+		"qa/**/*.ts"
+	]
+}

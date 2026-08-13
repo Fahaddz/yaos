@@ -91,7 +91,10 @@ export const s06bIssue25Natural: QaScenario = {
 			if (selStart >= 0 && selEnd > selStart) {
 				const toPos = (text: string, idx: number) => {
 					const lines = text.slice(0, idx).split("\n");
-					return { line: lines.length - 1, ch: lines[lines.length - 1].length };
+					// String.split always yields at least one element, but
+					// noUncheckedIndexedAccess cannot see that.
+					const lastLine = lines[lines.length - 1] ?? "";
+					return { line: lines.length - 1, ch: lastLine.length };
 				};
 				(editor as { setSelection(a: unknown, b: unknown): void }).setSelection(
 					toPos(full, selStart),

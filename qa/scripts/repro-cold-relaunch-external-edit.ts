@@ -393,7 +393,7 @@ async function main() {
 		`artifact contains REMOTE_FROM_A`,
 	);
 	assert(
-		!survivorContent?.includes("REMOTE_FROM_A") ?? true,
+		!survivorContent?.includes("REMOTE_FROM_A"),
 		`REMOTE_FROM_A not in main file (should be in artifact only)`,
 	);
 

@@ -169,17 +169,18 @@ export interface YaosQaDebugApi {
 	/**
 	 * QA-ONLY. Unsafe. Do not call in production code.
 	 *
-	 * Directly invokes syncFileFromDisk for a path. Deterministically
-	 * exercises the editor-bound recovery code path without waiting for
-	 * a real filesystem event. Use ONLY in forced-recovery regression
-	 * scenarios — NOT as a substitute for natural event-pipeline tests.
+	 * Triggers a deterministic disk→CRDT ingest for a single path, bypassing
+	 * the dirty queue. Exercises the editor-bound recovery code path without
+	 * waiting for a real filesystem event. Use ONLY in forced-recovery
+	 * regression scenarios — NOT as a substitute for natural event-pipeline
+	 * tests.
 	 */
-	__qaOnlyForceSyncFileFromDiskUnsafe(path: string, reason?: "create" | "modify"): Promise<void>;
+	ingestDiskFileNow(path: string, reason?: "create" | "modify"): Promise<void>;
 
-	/** QA-ONLY. Unsafe. Pause editor->CRDT propagation for a bound path. */
-	__qaOnlyPauseEditorBindingPropagationUnsafe(path: string): Promise<boolean>;
-	/** QA-ONLY. Unsafe. Resume editor->CRDT propagation for a bound path. */
-	__qaOnlyResumeEditorBindingPropagationUnsafe(path: string): Promise<boolean>;
+	/** QA-ONLY. Unsafe. Pause editor↔CRDT propagation for a bound path. */
+	pauseEditorPropagation(path: string): Promise<boolean>;
+	/** QA-ONLY. Unsafe. Resume editor↔CRDT propagation for a bound path. */
+	resumeEditorPropagation(path: string): Promise<boolean>;
 
 	/**
 	 * QA-ONLY. Unsafe.
@@ -223,7 +224,7 @@ export interface YaosQaDebugApi {
 	 * Pass null to clear and revert to the real setting.
 	 * Returns the previous effective policy.
 	 */
-	__qaOnlySetExternalEditPolicyOverrideUnsafe(
+	setExternalEditPolicyOverride(
 		policy: "always" | "closed-only" | "never" | null,
 	): Promise<{ previous: "always" | "closed-only" | "never" }>;
 }

@@ -139,11 +139,9 @@ export const s05bFrontmatterOpenEditor: QaScenario = {
 	async assert(ctx: QaContext): Promise<void> {
 		await ctx.assert.fileExists(SCRATCH_OPEN);
 		await ctx.assert.diskEqualsCrdt(SCRATCH_OPEN);
-		const content = await (async () => {
-			const file = (ctx as unknown as { app: { vault: { read: (f: object) => Promise<string> }; getFileByPath: (p: string) => object | null } }).app.vault.getFileByPath(SCRATCH_OPEN);
-			if (!file) throw new Error(`File not found: ${SCRATCH_OPEN}`);
-			return (ctx as unknown as { app: { vault: { read: (f: object) => Promise<string> } } }).app.vault.read(file);
-		})();
+		const file = ctx.app.vault.getFileByPath(SCRATCH_OPEN);
+		if (!file) throw new Error(`File not found: ${SCRATCH_OPEN}`);
+		const content = await ctx.app.vault.read(file);
 		const fmMatches = (content.match(/^---$/gm) ?? []).length;
 		if (fmMatches !== 2) {
 			throw new Error(
