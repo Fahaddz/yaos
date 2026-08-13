@@ -26,7 +26,12 @@
  */
 
 import * as Y from "yjs";
+import type { App } from "obsidian";
 import { DiskMirror } from "../../src/sync/diskMirror";
+import type { EditorBindingManager } from "../../src/sync/editorBinding";
+import type { VaultSync } from "../../src/sync/vaultSync";
+import { partialOf } from "../mocks/productFixture.ts";
+import { readField as metaField } from "../mocks/readField.ts";
 import {
 	ORIGIN_SEED,
 	ORIGIN_DISK_SYNC,
@@ -72,7 +77,11 @@ function makeMirrorHarness() {
 	const doc = new Y.Doc();
 	const meta = doc.getMap("meta");
 	const idToText = doc.getMap("idToText");
-	const fakeProvider = { __kind: "fake-provider-for-meta-tests" };
+	// Only ever compared by identity (isLocalOrigin) and used as a transaction
+	// origin, so `roomname` carries the marker purely to name it in a debugger.
+	const fakeProvider = partialOf<VaultSync["provider"]>({
+		roomname: "fake-provider-for-meta-tests",
+	});
 
 	// Semantic observer state — mirrors VaultSync._metaSnapshot/_metaDeepObserver
 	let snapshot = buildMetaSnapshot(meta);
@@ -96,20 +105,22 @@ function makeMirrorHarness() {
 	};
 	meta.observeDeep(metaDeepHandler);
 
-	const fakeVaultSync = {
+	const fakeVaultSync = partialOf<VaultSync>({
 		provider: fakeProvider,
 		ydoc: doc,
 		meta,
 		idToText: {
 			get: (fileId: string) => idToText.get(fileId) as Y.Text | undefined,
 		},
-		getFileIdForText: () => null,
+		// `undefined`, not `null`: that is what VaultSync.getFileIdForText
+		// returns on a miss.
+		getFileIdForText: () => undefined,
 		isFileMetaDeleted: () => false,
 		observeMetaChanges: (cb: (batch: MetaChangeBatch) => void) => {
 			listeners.add(cb);
 			return () => { listeners.delete(cb); };
 		},
-	};
+	});
 
 	// Capture disk operations instead of executing them
 	const calls = {
@@ -118,30 +129,24 @@ function makeMirrorHarness() {
 		scheduleWrite: [] as string[],
 	};
 
-	const fakeApp = { workspace: { getActiveViewOfType: () => null } };
-	const fakeEditorBindings = { getLastEditorActivityForPath: () => null };
+	const fakeApp = partialOf<App>({ workspace: { getActiveViewOfType: () => null } });
+	const fakeEditorBindings = partialOf<EditorBindingManager>({
+		getLastEditorActivityForPath: () => null,
+	});
 
-	const mirror = new DiskMirror(
-		fakeApp as any,
-		fakeVaultSync as any,
-		fakeEditorBindings as any,
-		false,
-	);
+	const mirror = new DiskMirror(fakeApp, fakeVaultSync, fakeEditorBindings, false);
 
-	// Spy on private methods
-	const dm = mirror as any;
-	const origDelete = dm.handleRemoteDelete.bind(mirror);
-	const origRename = dm.handleRemoteRename.bind(mirror);
-	const origSchedule = dm.scheduleWrite.bind(mirror);
-
-	dm.handleRemoteDelete = (path: string, ...args: any[]) => {
+	// Spy on private methods.  Element access reaches a private member without a
+	// cast, and unlike a cast it is checked: the member must exist and the
+	// replacement must match its real signature.
+	mirror["handleRemoteDelete"] = async (path: string) => {
 		calls.handleRemoteDelete.push(path);
 		// Don't call original — no real vault
 	};
-	dm.handleRemoteRename = (from: string, to: string) => {
+	mirror["handleRemoteRename"] = async (from: string, to: string) => {
 		calls.handleRemoteRename.push({ from, to });
 	};
-	dm.scheduleWrite = (path: string) => {
+	mirror["scheduleWrite"] = (path: string) => {
 		calls.scheduleWrite.push(path);
 	};
 
@@ -488,8 +493,8 @@ s.section("v2 migration: new active entries written as flat objects (not nested 
 	s.check(!(entryA instanceof Y.Map), "active entry is NOT a nested Y.Map (flat v2)");
 	s.check(!(entryDead instanceof Y.Map), "tombstone entry is NOT a nested Y.Map (flat v2)");
 	s.check(!(entryLegacy instanceof Y.Map), "legacy tombstone is NOT a nested Y.Map (flat v2)");
-	s.check(typeof (entryA as any).path === "string", "active entry has string path");
-	s.check(typeof (entryDead as any).deletedAt === "number", "tombstone has numeric deletedAt");
+	s.check(typeof metaField(entryA, "path") === "string", "active entry has string path");
+	s.check(typeof metaField(entryDead, "deletedAt") === "number", "tombstone has numeric deletedAt");
 	assertEqual(sys.get("schemaVersion"), 2, "schemaVersion is 2 after v2 migration, not 3");
 }
 
@@ -515,7 +520,7 @@ s.section("v2 migration: after migration, lazy v3 conversion only upgrades touch
 			// Lazy conversion
 			const nestedEntry = new Y.Map();
 			meta.set("id-3", nestedEntry);
-			nestedEntry.set("path", (entry as any).path);
+			nestedEntry.set("path", metaField(entry, "path"));
 			nestedEntry.set("mtime", Date.now());
 		}
 	}, ORIGIN_SEED);
@@ -551,7 +556,7 @@ s.section("v2 migration: loser-path tombstones are flat, not nested");
 
 	s.check(!(meta.get("loser-id-1") instanceof Y.Map), "loser tombstone 1 is flat");
 	s.check(!(meta.get("loser-id-2") instanceof Y.Map), "loser tombstone 2 is flat");
-	assertEqual(typeof (meta.get("loser-id-1") as any).deletedAt, "number", "loser tombstone 1 has deletedAt");
+	assertEqual(typeof metaField(meta.get("loser-id-1"), "deletedAt"), "number", "loser tombstone 1 has deletedAt");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -611,10 +616,11 @@ s.section("consumeRemoteRename: consume-on-use semantics");
 	// Test the DiskMirror consumeRemoteRename method directly.
 	// This proves the consume-on-use pattern: marker is available once, then gone.
 	const { mirror } = makeMirrorHarness();
-	const dm = mirror as any;
 
-	// Manually populate the pending set (mirrors what handleRemoteRename does)
-	dm._pendingRemoteRenameNewPaths.add("notes/target.md");
+	// Manually populate the pending set (mirrors what handleRemoteRename does).
+	// Element access reads a private field without a cast, and is checked: the
+	// field must exist and comes back as its real Set<string> type.
+	mirror["_pendingRemoteRenameNewPaths"].add("notes/target.md");
 
 	// First consume returns true
 	s.check(mirror.consumeRemoteRename("notes/target.md") === true, "first consume returns true");
@@ -628,10 +634,9 @@ s.section("consumeRemoteRename: path normalization");
 
 {
 	const { mirror } = makeMirrorHarness();
-	const dm = mirror as any;
 
 	// Add with already-normalized path
-	dm._pendingRemoteRenameNewPaths.add("notes/sub/file.md");
+	mirror["_pendingRemoteRenameNewPaths"].add("notes/sub/file.md");
 	// Consume with same path — must match
 	s.check(mirror.consumeRemoteRename("notes/sub/file.md") === true, "normalized path consumed correctly");
 }
@@ -649,10 +654,9 @@ s.section("consumeRemoteRename: passive rename does not re-enqueue in CRDT");
 	// spurious CRDT rename writes happened).
 
 	const { mirror } = makeMirrorHarness();
-	const dm = mirror as any;
 
 	// Simulate: DiskMirror marks a rename as remote-originated
-	dm._pendingRemoteRenameNewPaths.add("notes/renamed.md");
+	mirror["_pendingRemoteRenameNewPaths"].add("notes/renamed.md");
 
 	// main.ts logic: consume and check
 	const isRemote = mirror.consumeRemoteRename("notes/renamed.md");
@@ -664,18 +668,17 @@ s.section("consumeRemoteRename: passive rename does not re-enqueue in CRDT");
 	s.check(isRemote, "isRemote=true means queueRename is skipped (invariant)");
 
 	// After consume, the pending set is empty
-	assertEqual(dm._pendingRemoteRenameNewPaths.size, 0, "pending set empty after consume");
+	assertEqual(mirror["_pendingRemoteRenameNewPaths"].size, 0, "pending set empty after consume");
 }
 
 s.section("consumeRemoteRename: local rename does not match (set is empty)");
 
 {
 	const { mirror } = makeMirrorHarness();
-	const dm = mirror as any;
 
 	// No pending remote renames — this is a user-initiated rename
 	s.check(mirror.consumeRemoteRename("notes/user-renamed.md") === false, "user rename not in pending set");
 	// No side effects
-	assertEqual(dm._pendingRemoteRenameNewPaths.size, 0, "pending set stays empty");
+	assertEqual(mirror["_pendingRemoteRenameNewPaths"].size, 0, "pending set stays empty");
 }
 await s.done();

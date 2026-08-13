@@ -1,9 +1,18 @@
 /**
  * Fake Durable Object SQLite storage for SqlDocStore-backed tests.
  *
- * Structurally implements the subset of the DO storage surface SqlDocStore
- * uses; the worker-types interface is private, so callers cast with
- * `ConstructorParameters<typeof SqlDocStore>[0]`.
+ * No cast is needed to construct a `SqlDocStore` over this: SqlDocStore's
+ * parameter type `DurableObjectStorageWithSql` (sqlDocStore.ts:81) is private,
+ * so a test cannot *name* it, but `FakeDurableObjectStorage` satisfies it
+ * structurally, and structural satisfaction is all `new SqlDocStore(...)`
+ * asks for.  Note that sqlDocStore.ts:72-79 declares its own local `SqlStorage`
+ * and `SqlStorageCursor` interfaces that shadow the identically named
+ * @cloudflare/workers-types globals and are strictly weaker than them — an
+ * unconstrained row type and a two-member cursor.  The shapes below mirror that
+ * local surface deliberately; matching the real worker-types `SqlStorage`
+ * instead would make this fake *unassignable* to the product parameter, because
+ * the real `exec` constrains its row type to `Record<string, SqlStorageValue>`
+ * and the product's does not.
  *
  * Two behaviours matter beyond the query table:
  *   - `transactionSync` rolls back on throw, as real DO storage does.  The

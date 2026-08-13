@@ -3,6 +3,7 @@ import { handleClaimRoute } from "../../server/src/routes/auth";
 import type { AuthState, Env } from "../../server/src/routes/types";
 import { renderSetupPage } from "../../server/src/setupPage";
 import { buildMobileSetupUrl, renderSetupQrDataUrl } from "../../server/src/setupQr";
+import { makeConfigNamespace, makeEnv } from "../mocks/workerEnv.ts";
 import { suite } from "../harness.ts";
 
 const s = suite("setup-page-qr");
@@ -57,13 +58,14 @@ const claimedConfig = {
 	updateRepoBranch: null,
 };
 
-const configStub = {
-	fetch: async (input: string | Request, init?: RequestInit): Promise<Response> => {
-		const requestUrl = typeof input === "string" ? input : input.url;
-		const pathname = new URL(requestUrl).pathname;
+// The stub reads the claim body off the Request rather than a raw RequestInit,
+// which is what the Durable Object actually receives.
+const env: Env = makeEnv({
+	YAOS_CONFIG: makeConfigNamespace(async (req) => {
+		const pathname = new URL(req.url).pathname;
 		if (pathname === "/__yaos/claim") {
 			claimWriteCount++;
-			const body = JSON.parse(String(init?.body)) as { tokenHash?: string };
+			const body = JSON.parse(await req.text()) as { tokenHash?: string };
 			persistedTokenHash = body.tokenHash ?? null;
 			claimedConfig.tokenHash = persistedTokenHash ?? "placeholder";
 			return new Response(null, { status: 200 });
@@ -75,16 +77,8 @@ const configStub = {
 			});
 		}
 		throw new Error(`unexpected config request: ${pathname}`);
-	},
-};
-
-const env = {
-	YAOS_CONFIG: {
-		idFromName: () => "global-config" as unknown as DurableObjectId,
-		get: () => configStub as unknown as DurableObjectStub,
-	},
-	YAOS_SYNC: {},
-} as unknown as Env;
+	}),
+});
 const unclaimed: AuthState = { mode: "unclaimed", claimed: false };
 
 const invalidClaim = await handleClaimRoute(

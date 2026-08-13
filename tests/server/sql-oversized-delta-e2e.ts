@@ -154,7 +154,7 @@ function makeDocWithSize(targetBytes: number): Y.Doc {
 s.section("Test 1: delta just below threshold (1.4MB) → journal append");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	const doc = new Y.Doc();
 	const text = doc.getText("content");
@@ -187,7 +187,7 @@ s.section("Test 1: delta just below threshold (1.4MB) → journal append");
 s.section("Test 2: delta above threshold (2MB) → returns null, no exception");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	// Create a raw 2MB Uint8Array as the oversized update
 	const bigDelta = new Uint8Array(2 * 1024 * 1024); // exactly 2MB
@@ -213,14 +213,14 @@ s.section("Test 2: delta above threshold (2MB) → returns null, no exception");
 s.section("Test 3: coordinator oversized delta → checkpoint-fallback succeeds");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	const doc = new Y.Doc();
 	const text = doc.getText("content");
 	// ~2MB of text — large enough to produce a >1.5MB encoded delta
 	text.insert(0, "Z".repeat(2_000_000));
 
-	const coordinator = new PersistenceCoordinator(doc, store as any);
+	const coordinator = new PersistenceCoordinator(doc, store);
 	coordinator.setInitialStateVector(Y.encodeStateVector(new Y.Doc())); // empty base
 
 	const result = await coordinator.enqueueSave();
@@ -254,14 +254,14 @@ s.section("Test 3: coordinator oversized delta → checkpoint-fallback succeeds"
 s.section("Test 4: repeated oversized updates → no infinite loop, all succeed");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	// Start with a moderately large doc
 	const doc = new Y.Doc();
 	const text = doc.getText("content");
 	text.insert(0, "B".repeat(2_000_000));
 
-	const coordinator = new PersistenceCoordinator(doc, store as any);
+	const coordinator = new PersistenceCoordinator(doc, store);
 	coordinator.setInitialStateVector(Y.encodeStateVector(new Y.Doc())); // empty base
 
 	const results = [];
@@ -302,14 +302,14 @@ s.section("Test 4: repeated oversized updates → no infinite loop, all succeed"
 s.section("Test 5: small delta after oversized checkpoint → journal append");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	const doc = new Y.Doc();
 	const text = doc.getText("content");
 
 	// First save: oversized — goes to checkpoint
 	text.insert(0, "D".repeat(2_000_000));
-	const coordinator = new PersistenceCoordinator(doc, store as any);
+	const coordinator = new PersistenceCoordinator(doc, store);
 	coordinator.setInitialStateVector(Y.encodeStateVector(new Y.Doc()));
 
 	const oversizedResult = await coordinator.enqueueSave();

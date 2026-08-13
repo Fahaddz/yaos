@@ -215,7 +215,7 @@ export class EditorBindingManager {
 		// Only bind .md files
 		if (!file.path.endsWith(".md")) return;
 
-		const leafId = (view.leaf as unknown as { id: string }).id ?? file.path;
+		const leafId = view.leaf.id ?? file.path;
 		const cm = this.getCmView(view);
 		if (!cm) {
 			this.log(`bind: no CM EditorView for "${file.path}"`);
@@ -298,7 +298,7 @@ export class EditorBindingManager {
 		if (!file) return false;
 		if (!file.path.endsWith(".md")) return false;
 
-		const leafId = (view.leaf as unknown as { id: string }).id ?? file.path;
+		const leafId = view.leaf.id ?? file.path;
 		const cm = this.getCmView(view);
 		if (!cm) {
 			this.log(`repair: no CM EditorView for "${file.path}"`);
@@ -412,7 +412,7 @@ export class EditorBindingManager {
 		}
 
 		const leafId =
-			(view.leaf as unknown as { id: string }).id ?? file.path;
+			view.leaf.id ?? file.path;
 		this.log(`rebind: forcing "${file.path}" (leaf=${leafId}, reason=${reason})`);
 		this.unbind(view);
 		this.bind(view, deviceName);
@@ -424,7 +424,7 @@ export class EditorBindingManager {
 	unbind(view: MarkdownView): void {
 		const file = view.file;
 		const leafId =
-			(view.leaf as unknown as { id: string }).id ?? file?.path ?? "unknown";
+			view.leaf.id ?? file?.path ?? "unknown";
 
 		const binding = this.bindings.get(leafId);
 		if (!binding) return;
@@ -676,7 +676,7 @@ export class EditorBindingManager {
 	getBindingDebugInfoForView(view: MarkdownView): BindingDebugInfo | null {
 		const file = view.file;
 		const leafId =
-			(view.leaf as unknown as { id: string }).id ?? file?.path ?? "unknown";
+			view.leaf.id ?? file?.path ?? "unknown";
 		const binding = this.bindings.get(leafId);
 		if (!binding) return null;
 
@@ -712,7 +712,7 @@ export class EditorBindingManager {
 	getBindingHealthForView(view: MarkdownView): BindingHealthStatus {
 		const file = view.file;
 		const leafId =
-			(view.leaf as unknown as { id: string }).id ?? file?.path ?? "unknown";
+			view.leaf.id ?? file?.path ?? "unknown";
 		const binding = this.bindings.get(leafId);
 		if (!binding) {
 			return {
@@ -765,7 +765,7 @@ export class EditorBindingManager {
 		if (!file) return null;
 
 		const leafId =
-			(view.leaf as unknown as { id: string }).id ?? file.path;
+			view.leaf.id ?? file.path;
 		const cm = this.getCmView(view);
 		if (!cm) {
 			return {
@@ -867,7 +867,7 @@ export class EditorBindingManager {
 		if (!container) return null;
 
 		const leafId =
-			(view.leaf as unknown as { id?: string }).id ?? view.file?.path ?? null;
+			view.leaf.id ?? view.file?.path ?? null;
 		if (leafId) {
 			const existing = this.bindings.get(leafId);
 			if (
@@ -1440,7 +1440,7 @@ export class EditorBindingManager {
 					path: file.path,
 					reason,
 					leafId:
-						(view.leaf as unknown as { id: string }).id ?? file.path,
+						view.leaf.id ?? file.path,
 				});
 			}
 			return null;
@@ -1467,7 +1467,7 @@ export class EditorBindingManager {
 		if (!file) return;
 
 		const leafId =
-			(view.leaf as unknown as { id: string }).id ?? file.path;
+			view.leaf.id ?? file.path;
 		const existing = this.bindings.get(leafId);
 		this.trace?.("editor", "binding-blocked-tombstone", {
 			path: file.path,
@@ -1491,9 +1491,7 @@ export class EditorBindingManager {
 		source: string,
 		issues: string[],
 	): Record<string, unknown> {
-		const activeLeaf =
-			(binding.view.leaf as unknown as { workspace?: { activeLeaf?: unknown } })
-				.workspace?.activeLeaf;
+		const activeLeaf = binding.view.leaf.workspace?.activeLeaf;
 		return {
 			leafId,
 			path: binding.path,
@@ -1513,8 +1511,7 @@ export class EditorBindingManager {
 			return false;
 		}
 
-		const activeLeaf =
-			(view.leaf as unknown as { workspace?: { activeLeaf?: unknown } }).workspace?.activeLeaf;
+		const activeLeaf = view.leaf.workspace?.activeLeaf;
 		const isActiveLeaf = view.leaf === activeLeaf;
 		if (isActiveLeaf) {
 			return true;

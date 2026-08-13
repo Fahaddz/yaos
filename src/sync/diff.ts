@@ -109,12 +109,19 @@ export function applyDiffToYTextWithPostcondition(
 export function forceReplaceYText(
 	ytext: Y.Text,
 	newText: string,
-	origin: string,
+	origin: unknown,
 ): void {
 	// Recovery-only. Do not use for normal sync/edit propagation.
 	// Callers must already have chosen newText as the authority. This fallback
 	// intentionally discards current Y.Text content when a targeted recovery
 	// diff cannot satisfy its postcondition.
+	//
+	// `origin` is `unknown` rather than `string` because a Yjs transaction
+	// origin is an arbitrary value — it is only ever compared by identity or by
+	// isLocalOrigin(), never parsed. Every product caller passes one of the
+	// ORIGIN_* string constants; a caller that needs a write classified as
+	// remote (the QA harness routes recovery writes through the provider
+	// object) passes that object, exactly as Y.Doc.transact allows.
 	const replace = () => {
 		const currentLength = ytext.length;
 		if (currentLength > 0) ytext.delete(0, currentLength);

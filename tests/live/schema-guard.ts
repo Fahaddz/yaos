@@ -21,6 +21,7 @@ import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
 import { SCHEMA_VERSION } from "../../src/sync/schema.ts";
+import { describeFatalFrame, onFatalFrame, parseFatalFrame, type FatalFrame } from "./fatalFrame.ts";
 
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "";
@@ -29,18 +30,6 @@ const ROOM_PREFIX = `${BASE_VAULT_ID}-schema-guard`;
 
 if (!TOKEN) {
 	throw new Error("SYNC_TOKEN is required for schema-guard test");
-}
-
-/**
- * The subset of the Worker's fatal rejection frame this suite asserts on.
- * Built by rejectSocket() in server/src/routes/syncSocket.ts.
- */
-interface SchemaRejection {
-	readonly type?: string;
-	readonly code?: string;
-	readonly reason?: string;
-	readonly clientSchemaVersion?: number | null;
-	readonly serverSchemaVersion?: number;
 }
 
 function wait(ms: number): Promise<void> {
@@ -151,16 +140,10 @@ async function seedRoomSchema(roomId: string, schemaVersion: number): Promise<vo
 			resolvePromise(undefined);
 		};
 
-		provider.on("message", (event: { data: unknown }) => {
-			if (typeof event.data !== "string") return;
-			try {
-				const msg = JSON.parse(event.data) as SchemaRejection | null;
-				if (msg?.type === "error") {
-					finish(new Error(`Seeding rejected by server: ${msg.code}`));
-				}
-			} catch {
-				// Not JSON, ignore.
-			}
+		// The provider never emits "message"; the Worker's rejection frame
+		// arrives on the "__YPS:" channel as "custom-message" (./fatalFrame.ts).
+		onFatalFrame(provider, (frame) => {
+			finish(new Error(`Seeding rejected by server: ${describeFatalFrame(frame)}`));
 		});
 
 		provider.on("sync", (synced: boolean) => {
@@ -179,8 +162,8 @@ async function seedRoomSchema(roomId: string, schemaVersion: number): Promise<vo
 	await safeDestroy(provider, ydoc);
 }
 
-async function expectRejected(label: string, wsUrl: string, expectedReason: string): Promise<SchemaRejection> {
-	let payload: SchemaRejection | null = null;
+async function expectRejected(label: string, wsUrl: string, expectedReason: string): Promise<FatalFrame> {
+	let payload: FatalFrame | null = null;
 	await new Promise<void>((resolvePromise, rejectPromise) => {
 		const ws = new WebSocket(wsUrl);
 		let sawExpectedCode = false;
@@ -208,17 +191,15 @@ async function expectRejected(label: string, wsUrl: string, expectedReason: stri
 			resolvePromise(undefined);
 		};
 
+		// A raw `ws` socket really does emit "message", and it receives the
+		// unprefixed copy of the same payload rejectSocket() sends twice.
 		ws.on("message", (data) => {
 			const text = typeof data === "string" ? data : data.toString();
-			try {
-				const msg = JSON.parse(text) as SchemaRejection | null;
-				if (msg?.type === "error" && msg?.code === "update_required") {
-					sawExpectedCode = true;
-					sawExpectedReason = msg.reason === expectedReason;
-					payload = msg;
-				}
-			} catch {
-				// ignore non-json
+			const msg = parseFatalFrame(text);
+			if (msg?.code === "update_required") {
+				sawExpectedCode = true;
+				sawExpectedReason = msg.reason === expectedReason;
+				payload = msg;
 			}
 		});
 
@@ -276,16 +257,8 @@ async function expectAllowed(roomId: string, schemaVersion: number): Promise<voi
 			resolvePromise(undefined);
 		};
 
-		provider.on("message", (event: { data: unknown }) => {
-			if (typeof event.data !== "string") return;
-			try {
-				const msg = JSON.parse(event.data) as SchemaRejection | null;
-				if (msg?.type === "error") {
-					finish(new Error(`Compatible schema client was rejected: ${msg.code}`));
-				}
-			} catch {
-				// Not JSON, ignore.
-			}
+		onFatalFrame(provider, (frame) => {
+			finish(new Error(`Compatible schema client was rejected: ${describeFatalFrame(frame)}`));
 		});
 
 		provider.on("sync", (synced: boolean) => {

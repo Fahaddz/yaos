@@ -7,6 +7,7 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { SCHEMA_VERSION } from "../../src/sync/schema.ts";
 
 const HOST = process.env.YAOS_TEST_HOST || "https://kavin-yaos.ripplor.workers.dev";
 const TOKEN = process.env.SYNC_TOKEN;
@@ -50,7 +51,7 @@ function connectAndSync(label: string): Promise<Device> {
 		}, 15_000);
 		const prov = new YSyncProvider(HOST, VAULT_ID, doc, {
 			prefix: PREFIX,
-			params: { token: TOKEN, schemaVersion: "2" },
+			params: { token: TOKEN, schemaVersion: String(SCHEMA_VERSION) },
 			WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 			connect: true,
 		});

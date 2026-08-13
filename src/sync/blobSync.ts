@@ -1688,19 +1688,10 @@ export class BlobSyncManager {
 	}
 
 	private async deleteLocalReplica(file: TFile): Promise<"trash" | "delete"> {
-		const fileManager = (
-			this.app as unknown as {
-				fileManager?: {
-					trashFile?: (
-						file: TFile,
-						system?: boolean,
-					) => Promise<void>;
-				};
-			}
-		).fileManager;
+		const fileManager = this.app.fileManager;
 		if (fileManager?.trashFile) {
 			try {
-				await fileManager.trashFile(file, true);
+				await fileManager.trashFile(file);
 				return "trash";
 			} catch {
 				// Some adapters do not support system trash; fall back to delete.

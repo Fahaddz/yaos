@@ -29,6 +29,7 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { readField, readNumber } from "../mocks/readField.ts";
 
 // `HOST`/`TOKEN` are re-bound as `string` after the guard: `process.exit`
 // narrows the module-level flow, but the hoisted `connectDevice` declaration
@@ -80,7 +81,7 @@ function connectDevice(label: string): Promise<{
 		const provider = new YSyncProvider(HOST, VAULT_ID, doc, {
 			prefix: `/vault/sync/${encodeURIComponent(VAULT_ID)}`,
 			params: { token: TOKEN, schemaVersion: "8" },
-			WebSocketPolyfill: (globalThis as any).WebSocket ?? WebSocket,
+			WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 			connect: true,
 			maxBackoffTime: 2000,
 		});
@@ -120,7 +121,7 @@ function connectDevice(label: string): Promise<{
 	});
 }
 
-async function fetchDebug(): Promise<any> {
+async function fetchDebug(): Promise<unknown> {
 	const res = await fetch(
 		`${HOST}/vault/${encodeURIComponent(VAULT_ID)}/debug/recent`,
 		{ headers: { Authorization: `Bearer ${TOKEN}` } },
@@ -174,25 +175,25 @@ console.log("--- Phase 2: Check server persistence health ---");
 await sleep(1000);
 const debug1 = await fetchDebug();
 
-assert(debug1.documentLoaded === true, "document is loaded");
-assert(debug1.persistence.status === "healthy", `persistence status is healthy (got ${debug1.persistence.status})`);
-assert(debug1.persistence.pendingPersistence === false, `no pending persistence (got ${debug1.persistence.pendingPersistence})`);
-assert(debug1.persistence.successfulSaveCount > 0, `successful saves > 0 (got ${debug1.persistence.successfulSaveCount})`);
-assert(debug1.persistence.failedSaveCount === 0, `failed saves === 0 (got ${debug1.persistence.failedSaveCount})`);
-assert(debug1.persistence.lastSaveError === null, `no save error (got ${debug1.persistence.lastSaveError})`);
+assert(readField(debug1, "documentLoaded") === true, "document is loaded");
+assert(readField(debug1, "persistence", "status") === "healthy", `persistence status is healthy (got ${readField(debug1, "persistence", "status")})`);
+assert(readField(debug1, "persistence", "pendingPersistence") === false, `no pending persistence (got ${readField(debug1, "persistence", "pendingPersistence")})`);
+assert((readNumber(debug1, "persistence", "successfulSaveCount") ?? 0) > 0, `successful saves > 0 (got ${readField(debug1, "persistence", "successfulSaveCount")})`);
+assert(readField(debug1, "persistence", "failedSaveCount") === 0, `failed saves === 0 (got ${readField(debug1, "persistence", "failedSaveCount")})`);
+assert(readField(debug1, "persistence", "lastSaveError") === null, `no save error (got ${readField(debug1, "persistence", "lastSaveError")})`);
 
 console.log("\n--- Phase 2b: Check document summary ---");
-const summary1 = debug1.documentSummary;
-assert(summary1.activePathCount === FILE_COUNT, `activePathCount === ${FILE_COUNT} (got ${summary1.activePathCount})`);
-assert(summary1.tombstonedPathCount === 0, `tombstonedPathCount === 0 (got ${summary1.tombstonedPathCount})`);
-assert(summary1.activePathsWithText === FILE_COUNT, `activePathsWithText === ${FILE_COUNT} (got ${summary1.activePathsWithText})`);
-assert(summary1.activePathsMissingFromPathToId === 0, `no paths missing from pathToId (got ${summary1.activePathsMissingFromPathToId})`);
-assert(summary1.activePathsMissingText === 0, `no paths missing text (got ${summary1.activePathsMissingText})`);
-assert(summary1.pathToIdWithoutActiveMeta === 0, `no pathToId without active meta (got ${summary1.pathToIdWithoutActiveMeta})`);
-assert(summary1.schemaVersion === 8, `schemaVersion === 8 (got ${summary1.schemaVersion})`);
+const summary1 = readField(debug1, "documentSummary");
+assert(readField(summary1, "activePathCount") === FILE_COUNT, `activePathCount === ${FILE_COUNT} (got ${readField(summary1, "activePathCount")})`);
+assert(readField(summary1, "tombstonedPathCount") === 0, `tombstonedPathCount === 0 (got ${readField(summary1, "tombstonedPathCount")})`);
+assert(readField(summary1, "activePathsWithText") === FILE_COUNT, `activePathsWithText === ${FILE_COUNT} (got ${readField(summary1, "activePathsWithText")})`);
+assert(readField(summary1, "activePathsMissingFromPathToId") === 0, `no paths missing from pathToId (got ${readField(summary1, "activePathsMissingFromPathToId")})`);
+assert(readField(summary1, "activePathsMissingText") === 0, `no paths missing text (got ${readField(summary1, "activePathsMissingText")})`);
+assert(readField(summary1, "pathToIdWithoutActiveMeta") === 0, `no pathToId without active meta (got ${readField(summary1, "pathToIdWithoutActiveMeta")})`);
+assert(readField(summary1, "schemaVersion") === 8, `schemaVersion === 8 (got ${readField(summary1, "schemaVersion")})`);
 
-console.log(`\n  Server journal: ${debug1.persistence.journalEntryCount} entries, ${debug1.persistence.journalBytes} bytes`);
-console.log(`  Document: ${summary1.activePathCount} active, ${summary1.pathToIdCount} pathToId, ${summary1.idToTextCount} idToText\n`);
+console.log(`\n  Server journal: ${readField(debug1, "persistence", "journalEntryCount")} entries, ${readField(debug1, "persistence", "journalBytes")} bytes`);
+console.log(`  Document: ${readField(summary1, "activePathCount")} active, ${readField(summary1, "pathToIdCount")} pathToId, ${readField(summary1, "idToTextCount")} idToText\n`);
 
 // ── Phase 3: Device B connects alone — sequential handoff ──────────────────
 

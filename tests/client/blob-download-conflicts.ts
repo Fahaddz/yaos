@@ -1,5 +1,8 @@
-import { TFile } from "obsidian";
+import { App, TFile, type FileStats } from "obsidian";
+import * as Y from "yjs";
 import { BlobSyncManager } from "../../src/sync/blobSync";
+import { VaultSync } from "../../src/sync/vaultSync";
+import type { BlobRef } from "../../src/types";
 import { suite } from "../harness.ts";
 
 const s = suite("blob-download-conflicts");
@@ -21,59 +24,153 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
 }
 
 interface StoredFile {
-	file: TFile & { path: string; stat: { mtime: number; size: number } };
+	file: TFile;
 	data: ArrayBuffer;
 }
 
-function makeHarness() {
+/**
+ * `TFile`'s fields are declared but never initialised by the declaration file
+ * (the real class is constructed by Obsidian), so a fixture just fills them in.
+ * Kept as a real `TFile` because blobSync gates on `instanceof TFile`.
+ */
+function makeFile(path: string, stat: FileStats): TFile {
+	const file = new TFile();
+	file.path = path;
+	file.stat = stat;
+	return file;
+}
+
+/**
+ * Exactly the `app.vault` surface BlobSyncManager consumes. `delete` and
+ * `getFiles` are optional because the default fixture omits them and the tests
+ * that exercise deletion/reconcile install their own — installing them here
+ * would change which code paths the untouched tests reach.
+ */
+interface FakeVault {
+	getAbstractFileByPath(path: string): TFile | null;
+	readBinary(file: TFile): Promise<ArrayBuffer>;
+	modifyBinary(file: TFile, data: ArrayBuffer): Promise<void>;
+	createBinary(path: string, data: ArrayBuffer): Promise<void>;
+	createFolder(path: string): Promise<void>;
+	adapter: { stat(path: string): Promise<FileStats | null> };
+	configDir: string;
+	delete?(file: TFile): Promise<void>;
+	getFiles?(): TFile[];
+}
+
+/** Exactly the `app.fileManager` surface `deleteLocalReplica` probes. */
+interface FakeFileManager {
+	trashFile?(file: TFile, system?: boolean): Promise<void>;
+}
+
+interface VaultFixture {
+	vault: FakeVault;
+	files: Map<string, StoredFile>;
+	put(path: string, data: ArrayBuffer): StoredFile;
+}
+
+/** In-memory vault: a path → bytes map with monotonic mtimes. */
+function makeVaultFixture(): VaultFixture {
 	let clock = 1;
 	const files = new Map<string, StoredFile>();
-	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 
 	function put(path: string, data: ArrayBuffer): StoredFile {
 		const existing = files.get(path);
-		const file = existing?.file ?? (new TFile() as TFile & {
-			path: string;
-			stat: { mtime: number; size: number };
-		});
 		const writtenAt = clock++;
+		const stat: FileStats = {
+			ctime: existing?.file.stat.ctime ?? writtenAt,
+			mtime: writtenAt,
+			size: data.byteLength,
+		};
+		const file = existing?.file ?? makeFile(path, stat);
 		file.path = path;
-		file.stat = { ctime: existing?.file.stat.ctime ?? writtenAt, mtime: writtenAt, size: data.byteLength };
+		file.stat = stat;
 		const stored = { file, data };
 		files.set(path, stored);
 		return stored;
 	}
 
-	const app = {
-		vault: {
-			getAbstractFileByPath: (path: string) => files.get(path)?.file ?? null,
-			readBinary: async (file: TFile & { path: string }) => {
-				const stored = files.get(file.path);
-				if (!stored) throw new Error("missing file");
-				return stored.data;
-			},
-			modifyBinary: async (file: TFile & { path: string }, data: ArrayBuffer) => {
-				put(file.path, data);
-			},
-			createBinary: async (path: string, data: ArrayBuffer) => {
-				if (files.has(path)) {
-					const error = new Error("exists") as Error & { code?: string };
-					error.code = "EEXIST";
-					throw error;
-				}
-				put(path, data);
-			},
-			createFolder: async () => {},
-			adapter: {
-				stat: async (path: string) => files.get(path)?.file.stat ?? null,
-			},
-			configDir: ".obsidian",
+	const vault: FakeVault = {
+		getAbstractFileByPath: (path) => files.get(path)?.file ?? null,
+		readBinary: async (file) => {
+			const stored = files.get(file.path);
+			if (!stored) throw new Error("missing file");
+			return stored.data;
 		},
-	} as any;
+		modifyBinary: async (file, data) => {
+			put(file.path, data);
+		},
+		createBinary: async (path, data) => {
+			if (files.has(path)) {
+				const error = new Error("exists") as Error & { code?: string };
+				error.code = "EEXIST";
+				throw error;
+			}
+			put(path, data);
+		},
+		createFolder: async () => {},
+		adapter: {
+			stat: async (path) => files.get(path)?.file.stat ?? null,
+		},
+		configDir: ".obsidian",
+	};
+
+	return { vault, files, put };
+}
+
+/**
+ * `App` cannot be constructed outside Obsidian, and satisfying it member by
+ * member would mean faking Workspace, MetadataCache, Keymap and Scope — none of
+ * which blobSync touches. The prototype gives a real `App` to hand to the
+ * constructor; the two members blobSync actually reads are supplied by
+ * reference, so tests mutate `vault`/`fileManager` directly and the manager sees
+ * it (it re-reads `app.fileManager` on every delete).
+ */
+function makeApp(vault: FakeVault, fileManager: FakeFileManager): App {
+	return Object.assign(Object.create(App.prototype) as App, {
+		vault,
+		fileManager,
+	});
+}
+
+/**
+ * BlobSyncManager only reaches into VaultSync's two blob CRDT maps.
+ * `Object.create(VaultSync.prototype)` gives the real prototype methods
+ * (`isBlobTombstoned`, `getBlobRef`, …) without the constructor's provider and
+ * IndexedDB wiring, and the maps go in through `Object.assign` because they are
+ * `readonly` on the class.
+ */
+function makeVaultSyncFixture(): VaultSync {
+	const ydoc = new Y.Doc();
+	return Object.assign(Object.create(VaultSync.prototype) as VaultSync, {
+		ydoc,
+		pathToBlob: ydoc.getMap<BlobRef>("pathToBlob"),
+		blobTombstones: ydoc.getMap<{ deletedAt: number }>("blobTombstones"),
+		debug: false,
+	});
+}
+
+/**
+ * Stub the download leg of the manager's blob HTTP client. `BlobHttpClient` is
+ * not exported (and has private fields, so no stand-in is assignable to it), so
+ * the instance the constructor built is mutated in place — `download` is the
+ * only member these tests exercise.
+ */
+function stubDownload(
+	manager: BlobSyncManager,
+	download: () => Promise<ArrayBuffer>,
+): void {
+	manager["blobClient"].download = download;
+}
+
+function makeHarness() {
+	const { vault, files, put } = makeVaultFixture();
+	const fileManager: FakeFileManager = {};
+	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 
 	const manager = new BlobSyncManager(
-		app,
-		{} as any,
+		makeApp(vault, fileManager),
+		makeVaultSyncFixture(),
 		{
 			host: "https://worker.example",
 			token: "token",
@@ -86,7 +183,7 @@ function makeHarness() {
 		(source, msg, details) => traces.push({ source, msg, details }),
 	);
 
-	return { app, manager, files, put, traces };
+	return { vault, fileManager, manager, files, put, traces };
 }
 
 async function runDownload(
@@ -96,19 +193,18 @@ async function runDownload(
 	onDownload?: () => void,
 ): Promise<string> {
 	const hash = await sha256Hex(data);
-	(manager as any).blobClient = {
-		download: async () => {
-			onDownload?.();
-			return data;
-		},
-	};
-	await (manager as any).processDownload({
+	stubDownload(manager, async () => {
+		onDownload?.();
+		return data;
+	});
+	await manager["processDownload"]({
 		path,
 		hash,
 		sizeBytes: data.byteLength,
 		retries: 0,
 		status: "processing",
 		readyAt: 0,
+		rerunResets: 0,
 	});
 	return hash;
 }
@@ -156,10 +252,10 @@ s.section("Test 2: unchanged existing attachment can be overwritten");
 
 s.section("Test 3: create race mismatch is quarantined instead of overwritten");
 {
-	const { app, manager, files, put, traces } = makeHarness();
-	const originalCreateBinary = app.vault.createBinary;
+	const { vault, manager, files, put, traces } = makeHarness();
+	const originalCreateBinary = vault.createBinary;
 	let raced = false;
-	app.vault.createBinary = async (path: string, data: ArrayBuffer) => {
+	vault.createBinary = async (path: string, data: ArrayBuffer) => {
 		if (path === "img.png" && !raced) {
 			raced = true;
 			put(path, bytes("local-race"));
@@ -189,11 +285,11 @@ s.section("Test 3: create race mismatch is quarantined instead of overwritten");
 
 s.section("Test 4: create race same hash is skipped");
 {
-	const { app, manager, files, put, traces } = makeHarness();
+	const { vault, manager, files, put, traces } = makeHarness();
 	const remote = bytes("remote");
-	const originalCreateBinary = app.vault.createBinary;
+	const originalCreateBinary = vault.createBinary;
 	let raced = false;
-	app.vault.createBinary = async (path: string, data: ArrayBuffer) => {
+	vault.createBinary = async (path: string, data: ArrayBuffer) => {
 		if (path === "img.png" && !raced) {
 			raced = true;
 			put(path, remote);
@@ -222,32 +318,30 @@ s.section("Test 4: create race same hash is skipped");
 
 s.section("Test 5: blob remote delete prefers trashFile");
 {
-	const { app, manager, files, put, traces } = makeHarness();
+	const { vault, fileManager, manager, files, put, traces } = makeHarness();
 	const existing = put("attachment.png", bytes("local data"));
 	const trashedPaths: string[] = [];
 	const deletedPaths: string[] = [];
 
 	// Seed hash cache so knownHash matches — file is clean, delete should proceed
 	const knownHash = "deadbeef1234";
-	(manager as any).hashCache["attachment.png"] = {
+	manager["hashCache"]["attachment.png"] = {
 		mtime: existing.file.stat.mtime,
 		size: existing.file.stat.size,
 		hash: knownHash,
 	};
 
 	// Add trashFile to the app mock
-	(app as any).fileManager = {
-		trashFile: async (file: TFile & { path: string }, system?: boolean) => {
-			trashedPaths.push(file.path);
-			files.delete(file.path);
-		},
+	fileManager.trashFile = async (file) => {
+		trashedPaths.push(file.path);
+		files.delete(file.path);
 	};
-	(app as any).vault.delete = async (file: TFile & { path: string }) => {
+	vault.delete = async (file) => {
 		deletedPaths.push(file.path);
 		files.delete(file.path);
 	};
 
-	await (manager as any).handleRemoteDelete("attachment.png", knownHash);
+	await manager["handleRemoteDelete"]("attachment.png", knownHash);
 
 	s.check(trashedPaths.includes("attachment.png"), "blob remote delete uses trashFile");
 	s.check(deletedPaths.length === 0, "blob remote delete does not use hard delete when trash is available");
@@ -265,26 +359,26 @@ s.section("Test 5: blob remote delete prefers trashFile");
 
 s.section("Test 6: blob remote delete falls back when trash unavailable");
 {
-	const { app, manager, files, put, traces } = makeHarness();
+	const { vault, fileManager, manager, files, put, traces } = makeHarness();
 	const existing = put("attachment2.png", bytes("local data 2"));
 	const deletedPaths: string[] = [];
 
 	// Seed hash cache so knownHash matches — file is clean, delete should proceed
 	const knownHash = "deadbeef5678";
-	(manager as any).hashCache["attachment2.png"] = {
+	manager["hashCache"]["attachment2.png"] = {
 		mtime: existing.file.stat.mtime,
 		size: existing.file.stat.size,
 		hash: knownHash,
 	};
 
 	// No fileManager.trashFile — simulate unavailable trash
-	(app as any).fileManager = undefined;
-	(app as any).vault.delete = async (file: TFile & { path: string }) => {
+	fileManager.trashFile = undefined;
+	vault.delete = async (file) => {
 		deletedPaths.push(file.path);
 		files.delete(file.path);
 	};
 
-	await (manager as any).handleRemoteDelete("attachment2.png", knownHash);
+	await manager["handleRemoteDelete"]("attachment2.png", knownHash);
 
 	s.check(deletedPaths.includes("attachment2.png"), "blob remote delete falls back to hard delete");
 	s.check(!files.has("attachment2.png"), "file is removed from vault");
@@ -301,29 +395,27 @@ s.section("Test 6: blob remote delete falls back when trash unavailable");
 
 s.section("Test 7: blob remote delete falls back when trashFile throws");
 {
-	const { app, manager, files, put, traces } = makeHarness();
+	const { vault, fileManager, manager, files, put, traces } = makeHarness();
 	const existing = put("attachment3.png", bytes("local data 3"));
 	const deletedPaths: string[] = [];
 
 	// Seed hash cache so knownHash matches — file is clean, delete should proceed
 	const knownHash = "deadbeef9abc";
-	(manager as any).hashCache["attachment3.png"] = {
+	manager["hashCache"]["attachment3.png"] = {
 		mtime: existing.file.stat.mtime,
 		size: existing.file.stat.size,
 		hash: knownHash,
 	};
 
-	(app as any).fileManager = {
-		trashFile: async () => {
-			throw new Error("trash not supported");
-		},
+	fileManager.trashFile = async () => {
+		throw new Error("trash not supported");
 	};
-	(app as any).vault.delete = async (file: TFile & { path: string }) => {
+	vault.delete = async (file) => {
 		deletedPaths.push(file.path);
 		files.delete(file.path);
 	};
 
-	await (manager as any).handleRemoteDelete("attachment3.png", knownHash);
+	await manager["handleRemoteDelete"]("attachment3.png", knownHash);
 
 	s.check(deletedPaths.includes("attachment3.png"), "falls back to hard delete when trash throws");
 	s.check(
@@ -339,27 +431,27 @@ s.section("Test 7: blob remote delete falls back when trashFile throws");
 
 s.section("Test 8: blob remote delete suppresses path before deletion");
 {
-	const { app, manager, files, put, traces } = makeHarness();
+	const { vault, manager, files, put, traces } = makeHarness();
 	const existing = put("suppressed.png", bytes("suppress me"));
 
 	// Seed hash cache so knownHash matches — file is clean, delete should proceed
 	const knownHash = "deadbeefdef0";
-	(manager as any).hashCache["suppressed.png"] = {
+	manager["hashCache"]["suppressed.png"] = {
 		mtime: existing.file.stat.mtime,
 		size: existing.file.stat.size,
 		hash: knownHash,
 	};
 
-	(app as any).vault.delete = async (file: TFile & { path: string }) => {
+	vault.delete = async (file) => {
 		// Check suppression is active before deletion completes
 		s.check(
-			(manager as any).isSuppressed("suppressed.png"),
+			manager.isSuppressed("suppressed.png"),
 			"path is suppressed before delete executes",
 		);
 		files.delete(file.path);
 	};
 
-	await (manager as any).handleRemoteDelete("suppressed.png", knownHash);
+	await manager["handleRemoteDelete"]("suppressed.png", knownHash);
 	s.check(!files.has("suppressed.png"), "file is deleted after suppression");
 }
 
@@ -367,18 +459,18 @@ s.section("Test 8: blob remote delete suppresses path before deletion");
 
 s.section("Test 9: blob remote delete preserves locally modified file");
 {
-	const { app, manager, files, put, traces } = makeHarness();
+	const { vault, manager, files, put, traces } = makeHarness();
 	const existing = put("locally-modified.png", bytes("local version"));
 
 	// Seed the hash cache with the KNOWN hash (the hash at last sync)
 	const knownHash = "aabbccdd00112233445566778899aabbccddeeff0011223344556677889900aa";
 	// The file was modified locally — stat doesn't match any cache entry (cache is empty),
 	// so getCachedHash will return null → localDirty = true
-	(app as any).vault.delete = async () => {
+	vault.delete = async () => {
 		throw new Error("should not delete locally modified file");
 	};
 
-	await (manager as any).handleRemoteDelete("locally-modified.png", knownHash);
+	await manager["handleRemoteDelete"]("locally-modified.png", knownHash);
 
 	s.check(files.has("locally-modified.png"), "locally modified file is preserved");
 	s.check(
@@ -394,25 +486,25 @@ s.section("Test 9: blob remote delete preserves locally modified file");
 
 s.section("Test 10: blob remote delete proceeds when hash matches known");
 {
-	const { app, manager, files, put, traces } = makeHarness();
+	const { vault, manager, files, put, traces } = makeHarness();
 	const existing = put("unchanged.png", bytes("same content"));
 
 	// Seed the hash cache so getCachedHash returns the known hash
 	const knownHash = "known-hash-matching";
 	const stat = existing.file.stat;
-	(manager as any).hashCache["unchanged.png"] = {
+	manager["hashCache"]["unchanged.png"] = {
 		mtime: stat.mtime,
 		size: stat.size,
 		hash: knownHash,
 	};
 
 	const deletedPaths: string[] = [];
-	(app as any).vault.delete = async (file: TFile & { path: string }) => {
+	vault.delete = async (file) => {
 		deletedPaths.push(file.path);
 		files.delete(file.path);
 	};
 
-	await (manager as any).handleRemoteDelete("unchanged.png", knownHash);
+	await manager["handleRemoteDelete"]("unchanged.png", knownHash);
 
 	s.check(!files.has("unchanged.png"), "unmodified file is deleted");
 	s.check(deletedPaths.includes("unchanged.png"), "delete was called for unmodified file");
@@ -426,24 +518,22 @@ s.section("Test 10: blob remote delete proceeds when hash matches known");
 
 s.section("Test 11: blob remote delete preserves when no known hash baseline");
 {
-	const { app, manager, files, put, traces } = makeHarness();
+	const { vault, fileManager, manager, files, put, traces } = makeHarness();
 	const existing = put("no-baseline.png", bytes("mystery content"));
 
 	// Track whether tombstone was cleared (it should NOT be for unknown baseline)
 	let tombstoneCleared = false;
-	(manager as any).vaultSync = {
+	manager["vaultSync"] = Object.assign(Object.create(VaultSync.prototype) as VaultSync, {
 		isBlobTombstoned: () => true,
 		blobTombstones: {
 			delete: () => { tombstoneCleared = true; },
 		},
-	};
+	});
 
-	(app as any).vault.delete = async () => { throw new Error("should not delete when knownHash is null"); };
-	(app as any).fileManager = {
-		trashFile: async () => { throw new Error("should not trash when knownHash is null"); },
-	};
+	vault.delete = async () => { throw new Error("should not delete when knownHash is null"); };
+	fileManager.trashFile = async () => { throw new Error("should not trash when knownHash is null"); };
 
-	await (manager as any).handleRemoteDelete("no-baseline.png", null);
+	await manager["handleRemoteDelete"]("no-baseline.png", null);
 
 	s.check(files.has("no-baseline.png"), "file preserved when no known hash baseline");
 	s.check(
@@ -475,15 +565,13 @@ s.section("Test 12: rerunResets cap triggers permanent failure");
 	};
 
 	// Mock blobClient to throw
-	(manager as any).blobClient = {
-		download: async () => { throw new Error("always fails"); },
-	};
+	stubDownload(manager, async () => { throw new Error("always fails"); });
 
-	await (manager as any).processDownload(item);
+	await manager["processDownload"](item);
 
 	// Item should be permanently failed — not restarted
 	s.check(
-		!((manager as any).downloadQueue as Map<string, unknown>).has("capped.png"),
+		!manager["downloadQueue"].has("capped.png"),
 		"capped item removed from queue (permanent failure)",
 	);
 	s.check(
@@ -494,7 +582,7 @@ s.section("Test 12: rerunResets cap triggers permanent failure");
 		"permanent failure trace emitted for capped item",
 	);
 	s.check(
-		(manager as any)._permanentDownloadFailures === 1,
+		manager["_permanentDownloadFailures"] === 1,
 		"permanent download failure counter incremented",
 	);
 }
@@ -516,25 +604,23 @@ s.section("Test 13: rerunResets below cap allows fresh restart");
 		rerunResets: 3, // < MAX_RERUN_RESETS (5)
 	};
 
-	(manager as any).blobClient = {
-		download: async () => { throw new Error("temporary"); },
-	};
+	stubDownload(manager, async () => { throw new Error("temporary"); });
 
 	// Put item in queue so processDownload can find it
-	(manager as any).downloadQueue.set("restartable.png", item);
+	manager["downloadQueue"].set("restartable.png", item);
 
-	await (manager as any).processDownload(item);
+	await manager["processDownload"](item);
 
 	// Item should be restarted, not permanently failed
 	s.check(
-		((manager as any).downloadQueue as Map<string, any>).has("restartable.png"),
+		manager["downloadQueue"].has("restartable.png"),
 		"restartable item still in queue after rerun reset",
 	);
 	s.check(item.retries === 0, "retries reset to 0 after rerun");
 	s.check(item.rerunResets === 4, "rerunResets incremented");
 	s.check(item.status === "pending", "status reset to pending");
 	s.check(
-		(manager as any)._permanentDownloadFailures === 0,
+		manager["_permanentDownloadFailures"] === 0,
 		"no permanent failure for restartable item",
 	);
 }
@@ -545,7 +631,7 @@ s.section("Test 14: debug snapshot includes permanent failure counters");
 {
 	const { manager } = makeHarness();
 
-	const snapshot = (manager as any).getDebugSnapshot();
+	const snapshot = manager.getDebugSnapshot();
 	s.check(
 		"permanentUploadFailures" in snapshot,
 		"debug snapshot has permanentUploadFailures",
@@ -582,14 +668,12 @@ s.section("Test 15: destroy during in-flight does not resurrect");
 		resolveDownload = resolve;
 	});
 
-	(manager as any).blobClient = {
-		download: async () => {
-			// download started — destroy while in flight
-			manager.destroy();
-			await downloadPromise; // wait until test signals
-			return remoteData;
-		},
-	};
+	stubDownload(manager, async () => {
+		// download started — destroy while in flight
+		manager.destroy();
+		await downloadPromise; // wait until test signals
+		return remoteData;
+	});
 
 	const item = {
 		path: "inflight.png",
@@ -601,10 +685,10 @@ s.section("Test 15: destroy during in-flight does not resurrect");
 		needsRerun: false,
 		rerunResets: 0,
 	};
-	(manager as any).downloadQueue.set("inflight.png", item);
+	manager["downloadQueue"].set("inflight.png", item);
 
 	// Start processing — it will call blobClient.download which destroys mid-flight
-	const processPromise = (manager as any).processDownload(item);
+	const processPromise = manager["processDownload"](item);
 
 	// Let the download resolve after destroy
 	resolveDownload!();
@@ -612,15 +696,15 @@ s.section("Test 15: destroy during in-flight does not resurrect");
 
 	// After destroy + download resolving, queue should remain empty
 	s.check(
-		(manager as any).downloadQueue.size === 0,
+		manager["downloadQueue"].size === 0,
 		"download queue empty after destroy (not resurrected)",
 	);
 	s.check(
-		(manager as any).uploadQueue.size === 0,
+		manager["uploadQueue"].size === 0,
 		"upload queue empty after destroy",
 	);
 	s.check(
-		(manager as any).inflightDownloads.size === 0,
+		manager["inflightDownloads"].size === 0,
 		"inflight tracking cleared by destroy",
 	);
 
@@ -636,23 +720,23 @@ s.section("Test 16: concurrent kickUploadDrain does not duplicate drain");
 	const { manager, put, traces } = makeHarness();
 
 	// Force uploadDraining = true to simulate active drain
-	(manager as any).uploadDraining = true;
+	manager["uploadDraining"] = true;
 
 	let drainCalled = false;
-	const originalDrain = (manager as any).drainUploads.bind(manager);
-	(manager as any).drainUploads = async () => {
+	const originalDrain = manager["drainUploads"].bind(manager);
+	manager["drainUploads"] = async () => {
 		drainCalled = true;
 		return originalDrain();
 	};
 
 	// Kick should be a no-op when already draining
-	(manager as any).kickUploadDrain();
+	manager["kickUploadDrain"]();
 
 	s.check(!drainCalled, "drainUploads NOT called when uploadDraining is true");
 
 	// Reset and verify it would call if not draining
-	(manager as any).uploadDraining = false;
-	(manager as any).kickUploadDrain();
+	manager["uploadDraining"] = false;
+	manager["kickUploadDrain"]();
 
 	// drainUploads should have been called (though it exits immediately with empty queue)
 	s.check(drainCalled, "drainUploads called when uploadDraining is false");
@@ -665,8 +749,8 @@ s.section("Test 17: importQueue preserves rerunResets near cap");
 	const { manager } = makeHarness();
 
 	// Prevent drain from starting during import (we just want to check state)
-	(manager as any).uploadDraining = true;
-	(manager as any).downloadDraining = true;
+	manager["uploadDraining"] = true;
+	manager["downloadDraining"] = true;
 
 	const snapshot = {
 		uploads: [
@@ -677,20 +761,22 @@ s.section("Test 17: importQueue preserves rerunResets near cap");
 		],
 	};
 
-	(manager as any).importQueue(snapshot);
+	manager.importQueue(snapshot);
 
-	const uploadItem = (manager as any).uploadQueue.get("near-cap.png");
+	const uploadItem = manager["uploadQueue"].get("near-cap.png");
 	s.check(uploadItem !== undefined, "near-cap upload item imported");
-	s.check(uploadItem.rerunResets === 4, "rerunResets preserved at 4 (near cap)");
-	s.check(uploadItem.needsRerun === true, "needsRerun preserved");
-	s.check(uploadItem.status === "pending", "status normalized to pending on import");
-	s.check(uploadItem.readyAt === 0, "readyAt reset to 0 on import");
+	// The check above proves the entry is present; `!` keeps the field reads terse.
+	s.check(uploadItem!.rerunResets === 4, "rerunResets preserved at 4 (near cap)");
+	s.check(uploadItem!.needsRerun === true, "needsRerun preserved");
+	s.check(uploadItem!.status === "pending", "status normalized to pending on import");
+	s.check(uploadItem!.readyAt === 0, "readyAt reset to 0 on import");
 
-	const downloadItem = (manager as any).downloadQueue.get("at-cap.png");
+	const downloadItem = manager["downloadQueue"].get("at-cap.png");
 	s.check(downloadItem !== undefined, "at-cap download item imported");
-	s.check(downloadItem.rerunResets === 5, "rerunResets preserved at 5 (at cap)");
-	s.check(downloadItem.needsRerun === true, "needsRerun preserved for download");
-	s.check(downloadItem.status === "pending", "download status normalized to pending");
+	// Same reasoning as the upload item above.
+	s.check(downloadItem!.rerunResets === 5, "rerunResets preserved at 5 (at cap)");
+	s.check(downloadItem!.needsRerun === true, "needsRerun preserved for download");
+	s.check(downloadItem!.status === "pending", "download status normalized to pending");
 }
 
 // ── Test 18: download conflict artifact does not update target hash cache ────
@@ -702,7 +788,7 @@ s.section("Test 18: conflict artifact does not pollute target hash cache");
 
 	// Seed hash cache for target with known value
 	const originalHash = "original-target-hash";
-	(manager as any).hashCache["target.png"] = {
+	manager["hashCache"]["target.png"] = {
 		mtime: existing.file.stat.mtime,
 		size: existing.file.stat.size,
 		hash: originalHash,
@@ -711,12 +797,10 @@ s.section("Test 18: conflict artifact does not pollute target hash cache");
 	// Simulate download that creates a conflict artifact
 	const remoteData = bytes("remote version");
 	const remoteHash = await sha256Hex(remoteData);
-	(manager as any).blobClient = {
-		download: async () => {
-			put("target.png", bytes("local changed during download"));
-			return remoteData;
-		},
-	};
+	stubDownload(manager, async () => {
+		put("target.png", bytes("local changed during download"));
+		return remoteData;
+	});
 
 	const item = {
 		path: "target.png",
@@ -732,16 +816,16 @@ s.section("Test 18: conflict artifact does not pollute target hash cache");
 	// Put a different stat so getCachedHash returns the original hash but it differs
 	// from item.hash — this makes it take the conflict path
 	const stat = existing.file.stat;
-	(manager as any).hashCache["target.png"] = {
+	manager["hashCache"]["target.png"] = {
 		mtime: stat.mtime,
 		size: stat.size,
 		hash: "different-from-remote",
 	};
 
-	await (manager as any).processDownload(item);
+	await manager["processDownload"](item);
 
 	// Verify target hash cache was NOT updated to remote hash
-	const targetEntry = (manager as any).hashCache["target.png"];
+	const targetEntry = manager["hashCache"]["target.png"];
 	s.check(
 		targetEntry?.hash !== remoteHash,
 		"target hash cache NOT updated to remote hash after conflict",
@@ -775,44 +859,40 @@ s.section("Test 19: Multi-pass: unknown-baseline preserved blob is NOT re-upload
 	put("attachments/preserved.png", bytes("local image data"));
 
 	// Simulate: the vaultSync has this path tombstoned
-	const vaultSync = {
-		pathToBlob: new Map([["attachments/preserved.png", { hash: "remote-hash-old", size: 100 }]]),
+	const blobTombstones = new Map([["attachments/preserved.png", true]]);
+	const vaultSync = Object.assign(Object.create(VaultSync.prototype) as VaultSync, {
+		pathToBlob: new Map<string, BlobRef>([["attachments/preserved.png", { hash: "remote-hash-old", size: 100 }]]),
 		isBlobTombstoned: (path: string) => path === "attachments/preserved.png",
-		blobTombstones: new Map([["attachments/preserved.png", true]]),
+		blobTombstones,
 		getBlobRef: () => null,
 		setBlobRef: () => { throw new Error("setBlobRef should not be called"); },
 		deleteBlobRef: () => {},
-	};
-	(manager as any).vaultSync = vaultSync;
+	});
+	manager["vaultSync"] = vaultSync;
 
 	// Step 2–3: Remote tombstone with unknown baseline
 	// Call handleRemoteDelete with knownHash = null
-	await (manager as any).handleRemoteDelete("attachments/preserved.png", null);
+	await manager["handleRemoteDelete"]("attachments/preserved.png", null);
 
 	// Verify: path is in preservedUnresolvedPaths
 	s.check(
-		(manager as any).preservedUnresolvedPaths.has("attachments/preserved.png"),
+		manager.preservedUnresolvedPaths.has("attachments/preserved.png"),
 		"blob path recorded as preserved-unresolved after unknown-baseline remote-delete",
 	);
 
 	// Verify: tombstone was NOT cleared
 	s.check(
-		vaultSync.blobTombstones.has("attachments/preserved.png"),
+		blobTombstones.has("attachments/preserved.png"),
 		"blob tombstone remains after preserve-unresolved",
 	);
 
 	// Step 4: Run reconcile scan
 	// Add vault.getFiles() to return the local file
-	const localFile = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	localFile.path = "attachments/preserved.png";
-	(localFile as any).stat = { mtime: 5, size: 16 };
-	(manager as any).app = {
-		vault: {
-			getFiles: () => [localFile],
-			getAbstractFileByPath: () => localFile,
-			configDir: ".obsidian",
-		},
-	};
+	const localFile = makeFile("attachments/preserved.png", { ctime: 5, mtime: 5, size: 16 });
+	const scanFixture = makeVaultFixture();
+	scanFixture.vault.getFiles = () => [localFile];
+	scanFixture.vault.getAbstractFileByPath = () => localFile;
+	manager["app"] = makeApp(scanFixture.vault, {});
 
 	const result = manager.reconcile("authoritative", []);
 
@@ -826,27 +906,25 @@ s.section("Test 19: Multi-pass: unknown-baseline preserved blob is NOT re-upload
 		"preserved-unresolved blob counted as skipped",
 	);
 	s.check(
-		!(manager as any).uploadQueue.has("attachments/preserved.png"),
+		!manager["uploadQueue"].has("attachments/preserved.png"),
 		"upload queue does NOT contain preserved-unresolved path",
 	);
 
 	// Verify tombstone still present
 	s.check(
-		vaultSync.blobTombstones.has("attachments/preserved.png"),
+		blobTombstones.has("attachments/preserved.png"),
 		"blob tombstone still present after reconcile",
 	);
 
 	// Step 6: Now simulate user explicitly modifying the file (handleFileChange)
 	// This should clear the guard and allow future uploads
-	(manager as any).preservedUnresolvedPaths.add("attachments/preserved.png"); // re-add for clarity
-	const fakeFile = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	fakeFile.path = "attachments/preserved.png";
-	(fakeFile as any).stat = { mtime: 10, size: 20 };
+	manager["preservedUnresolved"].paths.add("attachments/preserved.png"); // re-add for clarity
+	const fakeFile = makeFile("attachments/preserved.png", { ctime: 10, mtime: 10, size: 20 });
 
 	// Suppress the debounce timer to avoid async issues
 	manager.handleFileChange(fakeFile);
 	s.check(
-		!(manager as any).preservedUnresolvedPaths.has("attachments/preserved.png"),
+		!manager.preservedUnresolvedPaths.has("attachments/preserved.png"),
 		"preserved-unresolved cleared after user modify event (handleFileChange)",
 	);
 
@@ -855,15 +933,15 @@ s.section("Test 19: Multi-pass: unknown-baseline preserved blob is NOT re-upload
 
 s.section("Test 20: Multi-pass: stat-failure during blob remote-delete becomes preserve-unresolved");
 {
-	const { manager, put, traces } = makeHarness();
+	const { vault, manager, put, traces } = makeHarness();
 
 	put("attachments/stat-fails.png", bytes("file data"));
 
 	// Override stat to throw
-	(manager as any).app.vault.adapter.stat = async () => { throw new Error("EBUSY"); };
+	vault.adapter.stat = async () => { throw new Error("EBUSY"); };
 
 	// Call handleRemoteDelete with a known hash (so it enters the stat path)
-	await (manager as any).handleRemoteDelete("attachments/stat-fails.png", "known-hash-abc123");
+	await manager["handleRemoteDelete"]("attachments/stat-fails.png", "known-hash-abc123");
 
 	// File should NOT be deleted (check that delete was not called)
 	const deleteTrace = traces.find((t) => t.msg === "remote-delete-applied");
@@ -875,7 +953,7 @@ s.section("Test 20: Multi-pass: stat-failure during blob remote-delete becomes p
 	);
 	s.check(!!preserveTrace, "preserve trace emitted with stat-failed reason");
 	s.check(
-		(manager as any).preservedUnresolvedPaths.has("attachments/stat-fails.png"),
+		manager.preservedUnresolvedPaths.has("attachments/stat-fails.png"),
 		"blob path recorded as preserved-unresolved after stat failure",
 	);
 }
@@ -887,7 +965,7 @@ s.section("Test 21: processUpload skips preserved-unresolved paths (queue snapsh
 	put("attachments/zombie.png", bytes("zombie data"));
 
 	// Mark path as preserved-unresolved (simulates prior remote-delete with unknown baseline)
-	(manager as any).preservedUnresolvedPaths.add("attachments/zombie.png");
+	manager["preservedUnresolved"].paths.add("attachments/zombie.png");
 
 	// Simulate a stale queue entry that slipped through (e.g., from importQueue)
 	const item = {
@@ -899,14 +977,14 @@ s.section("Test 21: processUpload skips preserved-unresolved paths (queue snapsh
 		needsRerun: false,
 		rerunResets: 0,
 	};
-	(manager as any).uploadQueue.set("attachments/zombie.png", item);
+	manager["uploadQueue"].set("attachments/zombie.png", item);
 
 	// Process the upload — should be blocked by the guard
-	await (manager as any).processUpload(item);
+	await manager["processUpload"](item);
 
 	// Upload should have been removed from queue without uploading
 	s.check(
-		!(manager as any).uploadQueue.has("attachments/zombie.png"),
+		!manager["uploadQueue"].has("attachments/zombie.png"),
 		"stale upload removed from queue",
 	);
 	const skipTrace = traces.find(

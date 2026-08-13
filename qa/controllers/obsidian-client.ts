@@ -77,10 +77,9 @@ export class ObsidianClient {
 	/** Check that the YAOS debug API and harness API are available. */
 	async isQaReady(): Promise<boolean> {
 		try {
-			return await this.evalInObsidian(() => {
-				const w = window as unknown as Record<string, unknown>;
-				return !!(w.__YAOS_DEBUG__ && w.__YAOS_QA__);
-			});
+			return await this.evalInObsidian(
+				() => !!(window.__YAOS_DEBUG__ && window.__YAOS_QA__),
+			);
 		} catch {
 			return false;
 		}

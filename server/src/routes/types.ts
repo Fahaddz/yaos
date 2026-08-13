@@ -24,6 +24,13 @@ export interface Env {
 	 * refresh timer fire in seconds rather than minutes.
 	 */
 	YAOS_TICKET_TTL_MS?: string;
+	/**
+	 * Set to any non-empty string to expose the mutating admin routes
+	 * (POST /__yaos/compact). Unset, they answer 404 — the route is invisible
+	 * rather than merely forbidden. Read as a plain truthiness check, so any
+	 * non-empty value enables it.
+	 */
+	YAOS_ENABLE_ADMIN_ROUTES?: string;
 }
 
 export type JsonResponse = (body: unknown, status?: number) => Response;

@@ -35,6 +35,7 @@ import {
 	type PersistenceHealth,
 } from "./persistenceCoordinator";
 import type { LoadedDocState } from "./sqlDocStore";
+import type { Env } from "./routes/types";
 
 const MAX_DEBUG_TRACE_EVENTS = 200;
 const JOURNAL_COMPACT_MAX_ENTRIES = 50;
@@ -59,10 +60,6 @@ const CHECKPOINT_FALLBACK_AFTER_FAILURES = 2;
 const CHECKPOINT_FALLBACK_DELTA_BYTES = 2 * 1024 * 1024;
 
 type ServerTraceEntry = StoredTraceEntry;
-
-interface ServerEnv {
-	YAOS_BUCKET?: R2Bucket;
-}
 
 type SvEchoCounters = {
 	baselineSent: number;
@@ -98,7 +95,17 @@ function json(body: unknown, status = 200): Response {
 	});
 }
 
-export class VaultSyncServer extends YServer {
+/**
+ * The per-room Durable Object.
+ *
+ * Parameterised with the same `Env` the HTTP routes use, so `this.env` is the
+ * real binding set. partyserver defaults that parameter to the empty
+ * `Cloudflare.Env`, which is why every binding read used to need a cast: the
+ * admin-route flag went through `as any`, and the R2 bucket through a second,
+ * partial `ServerEnv` interface declared locally in this file. Both are gone —
+ * a binding that is not in routes/types.ts is now a compile error here.
+ */
+export class VaultSyncServer extends YServer<Env> {
 	static options = {
 		hibernate: true,
 	};
@@ -358,7 +365,7 @@ export class VaultSyncServer extends YServer {
 		}
 
 		if (request.method === "POST" && url.pathname === "/__yaos/compact") {
-			if (!(this.env as any).YAOS_ENABLE_ADMIN_ROUTES) {
+			if (!this.env.YAOS_ENABLE_ADMIN_ROUTES) {
 				return json({ error: "not found" }, 404);
 			}
 			await this.ensureDocumentLoaded();
@@ -633,7 +640,7 @@ export class VaultSyncServer extends YServer {
 
 	private getSqlDocStore(): SqlDocStore {
 		if (!this.sqlDocStore) {
-			this.sqlDocStore = new SqlDocStore(this.ctx.storage as any);
+			this.sqlDocStore = new SqlDocStore(this.ctx.storage);
 		}
 		return this.sqlDocStore;
 	}
@@ -854,7 +861,7 @@ export class VaultSyncServer extends YServer {
 		const run = runSerialized(
 			serialized,
 			async () => {
-				const bucket = (this.env as ServerEnv).YAOS_BUCKET;
+				const bucket = this.env.YAOS_BUCKET;
 				if (!bucket) {
 					return {
 						status: "unavailable",
@@ -1068,7 +1075,7 @@ export class VaultSyncServer extends YServer {
 
 	private getRoomId(): string {
 		try {
-			const candidate = (this as unknown as { name?: unknown }).name;
+			const candidate = this.name;
 			if (typeof candidate === "string" && candidate.length > 0) {
 				return candidate;
 			}

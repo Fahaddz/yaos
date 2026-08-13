@@ -13,7 +13,15 @@
  */
 
 import * as Y from "yjs";
+import type { App, FileStats, Stat } from "obsidian";
+import type { RuntimeConfig } from "../../src/runtime/runtimeConfig";
+import type { VaultSyncSettings } from "../../src/settings/settingsStore";
+import type { VaultSync } from "../../src/sync/vaultSync";
+import { partialOf } from "../mocks/productFixture.ts";
 import { suite } from "../harness.ts";
+
+/** The options bag VaultSync.ensureFile accepts, derived so it cannot drift. */
+type EnsureFileOptions = NonNullable<Parameters<VaultSync["ensureFile"]>[3]>;
 
 const s = suite("tombstone-revive");
 
@@ -340,15 +348,16 @@ s.section("Test 8: importUntrackedFiles through real ReconciliationController");
 	s.check(tombsBefore.length === 1, "tombstone exists before import");
 
 	// Track ensureFile calls
-	let ensureFileCalls: Array<{ path: string; content: string; opts: any }> = [];
+	let ensureFileCalls: Array<{ path: string; content: string; opts: EnsureFileOptions | undefined }> = [];
 
 	// Create a real TFile mock
-	const file = new TFile() as InstanceType<typeof TFile> & { path: string; stat: { mtime: number; size: number } };
+	const file = new TFile() as InstanceType<typeof TFile> & { path: string; stat: FileStats };
 	file.path = "notes/revived-via-controller.md";
-	(file as any).stat = { mtime: 99, size: 25 };
+	// `ctime` is part of FileStats; the old fixture omitted it behind a cast.
+	file.stat = { ctime: 99, mtime: 99, size: 25 };
 
 	// Build a VaultSync mock that has real Y.Doc-backed ensureFile behavior
-	const vaultSync = {
+	const vaultSync = partialOf<VaultSync>({
 		isInitialized: true,
 		markInitialized: () => {},
 		getTextForPath: (path: string) => {
@@ -362,7 +371,7 @@ s.section("Test 8: importUntrackedFiles through real ReconciliationController");
 			});
 			return foundText;
 		},
-		ensureFile: (path: string, content: string, device?: string, opts?: any) => {
+		ensureFile: (path: string, content: string, device?: string, opts?: EnsureFileOptions) => {
 			ensureFileCalls.push({ path, content, opts });
 			const revive = opts?.reviveTombstone === true;
 
@@ -393,28 +402,32 @@ s.section("Test 8: importUntrackedFiles through real ReconciliationController");
 			return doc.getText("result"); // non-null means success
 		},
 		getActiveMarkdownPaths: () => [],
-	};
+	});
 
 	// Set up the controller
-	const traces: Array<{ source: string; msg: string; details?: any }> = [];
+	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	const controller = new ReconciliationController({
-		app: {
+		app: partialOf<App>({
 			vault: {
 				read: async () => "revived content from disk",
 				getAbstractFileByPath: (path: string) =>
 					path === "notes/revived-via-controller.md" ? file : null,
-				adapter: { stat: async () => ({ mtime: 99, size: 25 }) },
+				adapter: {
+					// `type`/`ctime` are part of Stat but not of FileStats, so they
+					// have to be supplied here.  This path is always a file.
+					stat: async (): Promise<Stat | null> => ({ type: "file", ctime: 99, mtime: 99, size: 25 }),
+				},
 			},
 			workspace: { iterateAllLeaves: () => {} },
-		} as any,
-		getSettings: () => ({ deviceName: "TestDevice" }) as any,
-		getRuntimeConfig: () => ({
+		}),
+		getSettings: () => partialOf<VaultSyncSettings>({ deviceName: "TestDevice" }),
+		getRuntimeConfig: () => partialOf<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
-		getVaultSync: () => vaultSync as any,
+		}),
+		getVaultSync: () => vaultSync,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
 		getEditorBindings: () => null,
@@ -429,7 +442,7 @@ s.section("Test 8: importUntrackedFiles through real ReconciliationController");
 		setAwaitingFirstProviderSyncAfterStartup: () => {},
 		saveDiskIndex: async () => {},
 		refreshStatusBar: () => {},
-		trace: (source: string, msg: string, details?: any) => {
+		trace: (source: string, msg: string, details?: Record<string, unknown>) => {
 			traces.push({ source, msg, details });
 		},
 		scheduleTraceStateSnapshot: () => {},
@@ -437,10 +450,12 @@ s.section("Test 8: importUntrackedFiles through real ReconciliationController");
 	});
 
 	// Inject untracked files list (normally set by reconcile)
-	(controller as any).untrackedFiles = ["notes/revived-via-controller.md"];
+	// Element access reads the controller's private field without a cast, and is
+	// checked: it must exist and it comes back as its real string[] type.
+	controller["untrackedFiles"] = ["notes/revived-via-controller.md"];
 
 	// Call the real importUntrackedFiles
-	await (controller as any).importUntrackedFiles();
+	await controller.importUntrackedFiles();
 
 	// Verify ensureFile was called with reviveTombstone: true
 	s.check(ensureFileCalls.length === 1, "ensureFile called once during import");

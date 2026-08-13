@@ -132,7 +132,7 @@ type ServerReceiptStartupValidation =
  *   pathToId:        Y.Map<string>         — vault-relative path -> stable fileId (markdown)
  *   idToText:        Y.Map<Y.Text>         — fileId -> Y.Text (markdown content)
  *   meta:            Y.Map<FileMeta>       — fileId -> metadata { path, deleted?, mtime? }
- *   sys:             Y.Map<any>            — sentinel/bookkeeping { initialized, lastSync }
+ *   sys:             Y.Map<unknown>        — sentinel/bookkeeping { initialized, lastSync }
  *   pathToBlob:      Y.Map<BlobRef>        — vault-relative path -> { hash, size }
  *   blobMeta:        Y.Map<BlobMeta>       — sha256 hex -> { size, mime, createdAt }
  *   blobTombstones:  Y.Map<BlobTombstone>  — vault-relative path -> { deletedAt, device? }
@@ -358,15 +358,16 @@ export class VaultSync {
 		this.persistence = new IndexeddbPersistence(idbName, this.ydoc);
 
 		// Catch IndexedDB open/write failures (unavailable, quota, permissions).
-		// y-indexeddb's internal _db promise rejects if IDB can't open.
+		// y-indexeddb declares its internal `_db` open promise, which rejects
+		// if IDB can't open.
 		// We also listen for unhandled IDB transaction errors.
-		(this.persistence as unknown as { _db: Promise<IDBDatabase> })._db
+		this.persistence._db
 			.catch((err: unknown) => {
 				this.captureIndexedDbError(err, "open");
 				console.error("[yaos] IndexedDB failed to open:", err);
 			});
 
-		(this.persistence as unknown as { _db: Promise<IDBDatabase> })._db
+		this.persistence._db
 			.then((db: IDBDatabase) => {
 				db.addEventListener("error", (event) => {
 					const target = event.target as { error?: unknown } | null;
@@ -471,20 +472,18 @@ export class VaultSync {
 		};
 
 		// y-partyserver emits "__YPS:" control payloads via "custom-message".
-		(this.provider as unknown as { on: (event: string, cb: (payload: string) => void) => void })
-			.on("custom-message", handleFatalAuthPayload);
-		(this.provider as unknown as { on: (event: string, cb: (payload: string) => void) => void })
-			.on("custom-message", (payload: string) => {
-				// SV echoes are Level 3 receipt signals only. They are not durable.
-				// When the server supplies a durability marker, ServerAckTracker
-				// gates on its persist counter advancing; the state-vector
-				// dominance check is the fallback for servers without one, and
-				// cannot see deletion-only changes at all.
-				handleSvEchoCustomMessage(payload, this._svEchoCounters, (sv, durability) => {
-					this.serverAckTracker.recordServerSvEcho(sv, durability);
-					options?.onServerReceiptStatusChanged?.();
-				});
+		this.provider.on("custom-message", handleFatalAuthPayload);
+		this.provider.on("custom-message", (payload: string) => {
+			// SV echoes are Level 3 receipt signals only. They are not durable.
+			// When the server supplies a durability marker, ServerAckTracker
+			// gates on its persist counter advancing; the state-vector
+			// dominance check is the fallback for servers without one, and
+			// cannot see deletion-only changes at all.
+			handleSvEchoCustomMessage(payload, this._svEchoCounters, (sv, durability) => {
+				this.serverAckTracker.recordServerSvEcho(sv, durability);
+				options?.onServerReceiptStatusChanged?.();
 			});
+		});
 		// Fallback for servers that still send plain text JSON frames.
 		this.provider.on("message", (event: MessageEvent) => {
 			if (typeof event.data === "string") {
@@ -523,7 +522,7 @@ export class VaultSync {
 			});
 
 			// Also resolve (false) if IDB errors out after we started waiting
-			(this.persistence as unknown as { _db: Promise<IDBDatabase> })._db
+			this.persistence._db
 				.catch(() => {
 					clearTimeout(timeout);
 					this.captureIndexedDbError(new Error("IndexedDB failed during waitForLocalPersistence"), "wait");

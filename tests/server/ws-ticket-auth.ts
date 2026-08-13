@@ -27,6 +27,7 @@ import { isTicketEndpointUnsupported, SocketTicketHttpError, patchTicketInUrl } 
 import { getGetServerByNameCallCount, resetGetServerByNameCallCount } from "../mocks/partyserver";
 import type { AuthState, Env } from "../../server/src/routes/types";
 import { SERVER_SCHEMA_VERSION } from "../../server/src/version";
+import { FakeR2Bucket, makeEnv, makeStoredConfigNamespace, makeTrapNamespace } from "../mocks/workerEnv.ts";
 import { suite } from "../harness.ts";
 
 // The single schema version the server admits. Every request in this suite that
@@ -59,17 +60,13 @@ const OTHER_VAULT_ID = "other-vault-xyz";
  * Used to prove the DO is never woken on rejection paths.
  */
 function makeTrapEnv(extra: Partial<Env> = {}): Env {
-	const trap = new Proxy({}, {
-		get(_: object, prop: string) {
-			return () => { throw new Error(`Durable Object namespace accessed before auth: ${prop}`); };
-		},
-	});
-	return {
+	const accessed = "Durable Object namespace accessed before auth";
+	return makeEnv({
 		SYNC_TOKEN: ENV_AUTH.envToken,
-		YAOS_SYNC: trap as unknown as Env["YAOS_SYNC"],
-		YAOS_CONFIG: trap as unknown as Env["YAOS_CONFIG"],
+		YAOS_SYNC: makeTrapNamespace(accessed),
+		YAOS_CONFIG: makeTrapNamespace(accessed),
 		...extra,
-	};
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -191,11 +188,10 @@ s.section("WS route: valid ticket passes auth gate (does not produce 401/503)");
 	// both of which hit getServerByName.  We call handleSyncSocketRoute
 	// directly, catch the expected harness throw, and confirm the route did
 	// NOT reject at the auth gate.
-	const env: Env = {
-		SYNC_TOKEN: ENV_AUTH.envToken,
-		YAOS_SYNC: {} as unknown as Env["YAOS_SYNC"],
-		YAOS_CONFIG: {} as unknown as Env["YAOS_CONFIG"],
-	};
+	// Both namespaces stay trapped: the route reaches the DO through
+	// getServerByName, which the partyserver mock replaces, so nothing should
+	// ever read a namespace off the env.
+	const env: Env = makeEnv({ SYNC_TOKEN: ENV_AUTH.envToken });
 
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 	const wsUrl = `https://example.test/vault/sync/${VAULT_ID}?ticket=${encodeURIComponent(ticket)}&schemaVersion=${PINNED_SCHEMA_VERSION}`;
@@ -285,11 +281,7 @@ s.section("WS route: legacy ?token= still accepted (migration path)");
 {
 	// Same harness constraint: partyserver throws post-auth.  Call
 	// handleSyncSocketRoute directly and catch the expected throw.
-	const env: Env = {
-		SYNC_TOKEN: ENV_AUTH.envToken,
-		YAOS_SYNC: {} as unknown as Env["YAOS_SYNC"],
-		YAOS_CONFIG: {} as unknown as Env["YAOS_CONFIG"],
-	};
+	const env: Env = makeEnv({ SYNC_TOKEN: ENV_AUTH.envToken });
 
 	const wsUrl = `https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=${PINNED_SCHEMA_VERSION}`;
 	const req = new Request(wsUrl, {
@@ -487,11 +479,7 @@ s.section("WS route: legacy warning logged on successful legacy auth");
 	// Call handleSyncSocketRoute directly with a valid legacy token.
 	// The warning fires inside the route after auth succeeds.
 	// The partyserver mock throws post-auth (expected); we catch it.
-	const env: Env = {
-		SYNC_TOKEN: ENV_AUTH.envToken,
-		YAOS_SYNC: {} as unknown as Env["YAOS_SYNC"],
-		YAOS_CONFIG: {} as unknown as Env["YAOS_CONFIG"],
-	};
+	const env: Env = makeEnv({ SYNC_TOKEN: ENV_AUTH.envToken });
 	const req = new Request(
 		`https://example.test/vault/sync/${VAULT_ID}?token=${encodeURIComponent(ENV_AUTH.envToken)}&schemaVersion=${PINNED_SCHEMA_VERSION}`,
 	);
@@ -643,7 +631,8 @@ s.section("500 from ticket endpoint: isTicketEndpointUnsupported is false → er
 
 s.section("capabilities: socketTicketAuth: true is advertised");
 {
-	const env = { YAOS_BUCKET: {} } as unknown as Env;
+	// A bucket must be present for the snapshot capability to be advertised.
+	const env: Env = makeEnv({ YAOS_BUCKET: new FakeR2Bucket() });
 	const auth: AuthState = { mode: "env", claimed: true, envToken: "token" };
 	const caps = getCapabilities(auth, env);
 	assertEqual(caps.socketTicketAuth, true, "capabilities include socketTicketAuth: true");
@@ -651,19 +640,10 @@ s.section("capabilities: socketTicketAuth: true is advertised");
 
 s.section("capabilities route: socketTicketAuth visible unauthenticated");
 {
-	const env: Env = {
+	const env: Env = makeEnv({
 		SYNC_TOKEN: "correct-token",
-		YAOS_SYNC: {} as unknown as Env["YAOS_SYNC"],
-		YAOS_CONFIG: {
-			idFromName: () => "id",
-			get: () => ({
-				fetch: async () => new Response(JSON.stringify({
-					claimed: true,
-					tokenHash: "hash",
-				}), { status: 200 }),
-			}),
-		} as unknown as Env["YAOS_CONFIG"],
-	};
+		YAOS_CONFIG: makeStoredConfigNamespace({ claimed: true, tokenHash: "hash" }),
+	});
 	const res = await worker.fetch(new Request("https://example.test/api/capabilities"), env);
 	const caps = await res.json() as Record<string, unknown>;
 	assertEqual(caps.socketTicketAuth, true, "public capabilities include socketTicketAuth");

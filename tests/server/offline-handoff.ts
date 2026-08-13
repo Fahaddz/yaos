@@ -25,8 +25,16 @@
 
 import { webcrypto } from "node:crypto";
 
+// Node 20+ (this repo's engines.node floor) already exposes a global `crypto`,
+// so this only fires on an older runtime.  It goes through defineProperty
+// rather than assignment because @types/node and @cloudflare/workers-types
+// declare mutually unassignable `Crypto` types — they disagree on
+// `subtle.generateKey`'s Ed25519 overload — so no assignment could typecheck.
+// The disagreement is between two .d.ts files, not about the value: node's
+// webcrypto is a real Web Crypto implementation, and defineProperty is how a
+// global polyfill is installed anyway.
 if (typeof globalThis.crypto === "undefined") {
-	globalThis.crypto = webcrypto as unknown as Crypto;
+	Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 }
 
 import * as Y from "yjs";
@@ -40,9 +48,7 @@ const s = suite("offline-handoff");
 
 /** A store over fresh fake DO SQLite storage — one "server" per test. */
 function makeStore(): SqlDocStore {
-	return new SqlDocStore(
-		new FakeDurableObjectStorage() as unknown as ConstructorParameters<typeof SqlDocStore>[0],
-	);
+	return new SqlDocStore(new FakeDurableObjectStorage());
 }
 
 // ── YAOS vault schema helpers ─────────────────────────────────────────────────

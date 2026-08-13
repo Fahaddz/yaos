@@ -69,8 +69,21 @@ export interface CoalesceResult {
 	stats: JournalStats;
 }
 
+/**
+ * The slice of DO SQLite this store depends on: one query method and a cursor
+ * that can be listed or iterated. Declaring the dependency narrowly (rather
+ * than taking the platform's `SqlStorage`) is what lets a test drive the store
+ * with an in-memory table set.
+ *
+ * The row-type constraint mirrors the platform signature exactly. It has to:
+ * with an unconstrained `T`, a real `DurableObjectStorage` was NOT assignable
+ * to this port — its `exec` cannot produce a cursor of an arbitrary row type —
+ * so the one production construction site had to launder it through `as any`.
+ * Every column this store reads is an ArrayBuffer or a number, so the
+ * constraint costs the callers nothing.
+ */
 interface SqlStorage {
-	exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): SqlStorageCursor<T>;
+	exec<T extends Record<string, SqlStorageValue>>(query: string, ...bindings: unknown[]): SqlStorageCursor<T>;
 }
 
 interface SqlStorageCursor<T> {

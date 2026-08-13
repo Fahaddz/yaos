@@ -135,8 +135,7 @@ export const s06aIssue25ForcedRecoveryCrdtOnly: QaScenario = {
 		}
 
 		// 8. File size must not have grown (no stable-delta loop).
-		const finalFile = ctx.app.vault.getAbstractFileByPath(path);
-		const finalSize = (finalFile as unknown as { stat?: { size?: number } })?.stat?.size ?? 0;
+		const finalSize = ctx.app.vault.getFileByPath(path)?.stat.size ?? 0;
 		const divergentSize = new TextEncoder().encode(divergent).length;
 		if (finalSize > divergentSize + 512) {
 			throw new Error(

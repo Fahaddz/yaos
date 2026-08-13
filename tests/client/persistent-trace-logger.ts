@@ -1,4 +1,6 @@
+import type { App } from "obsidian";
 import { PersistentTraceLogger } from "../../src/telemetry/debug/trace";
+import { partialOf } from "../mocks/productFixture.ts";
 import { suite } from "../harness.ts";
 
 const s = suite("persistent-trace-logger");
@@ -7,7 +9,7 @@ function makeFakeApp() {
 	const writes = new Map<string, string>();
 	return {
 		writes,
-		app: {
+		app: partialOf<App>({
 			vault: {
 				configDir: ".obsidian",
 				adapter: {
@@ -21,14 +23,14 @@ function makeFakeApp() {
 					},
 				},
 			},
-		},
+		}),
 	};
 }
 
 s.section("Test 1: persistent trace logger drops instead of growing unbounded");
 {
 	const fake = makeFakeApp();
-	const logger = new PersistentTraceLogger(fake.app as any, {
+	const logger = new PersistentTraceLogger(fake.app, {
 		enabled: true,
 		deviceName: "Device",
 		vaultId: "vault",

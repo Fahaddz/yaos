@@ -25,6 +25,8 @@ import * as Y from "yjs";
 import { gzipSync, gunzipSync } from "fflate";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import type { BlobRef } from "../../src/types.ts";
+import { readField as field } from "../mocks/readField.ts";
 
 // -------------------------------------------------------------------
 // Config
@@ -226,10 +228,10 @@ async function testCategory1(): Promise<void> {
 		const snapPTI = snapshotDoc.getMap<string>("pathToId");
 		const snapITT = snapshotDoc.getMap<Y.Text>("idToText");
 		const snapMeta = snapshotDoc.getMap("meta");
-		const snapPTB = snapshotDoc.getMap("pathToBlob");
+		const snapPTB = snapshotDoc.getMap<BlobRef>("pathToBlob");
 		const livePTI = original.getMap<string>("pathToId");
 		const liveITT = original.getMap<Y.Text>("idToText");
-		const livePTB = original.getMap("pathToBlob");
+		const livePTB = original.getMap<BlobRef>("pathToBlob");
 
 		// Manual diff (same logic as snapshotClient.diffSnapshot)
 		const deletedSinceSnapshot: string[] = [];
@@ -269,9 +271,9 @@ async function testCategory1(): Promise<void> {
 		}
 
 		const snapBlobs = new Map<string, string>();
-		snapPTB.forEach((ref: any, path: string) => snapBlobs.set(path, ref.hash));
+		snapPTB.forEach((ref, path) => snapBlobs.set(path, ref.hash));
 		const liveBlobs = new Map<string, string>();
-		livePTB.forEach((ref: any, path: string) => liveBlobs.set(path, ref.hash));
+		livePTB.forEach((ref, path) => liveBlobs.set(path, ref.hash));
 
 		for (const [path, snapHash] of snapBlobs) {
 			const liveHash = liveBlobs.get(path);
@@ -425,7 +427,13 @@ async function testCategory1(): Promise<void> {
 // Category 2: Live server endpoints
 // -------------------------------------------------------------------
 
-async function serverPost(endpoint: string, body?: Record<string, unknown>): Promise<{ status: number; data: any }> {
+/** The parsed body, or `null` when the response was not JSON. */
+type JsonBody = { status: number; data: unknown };
+
+async function serverPost(
+	endpoint: string,
+	body?: Record<string, unknown>,
+): Promise<JsonBody> {
 	const url = `${baseUrl()}/${endpoint}`;
 	const res = await fetch(url, {
 		method: "POST",
@@ -443,7 +451,7 @@ async function serverPutBytes(
 	endpoint: string,
 	body: Uint8Array,
 	contentType: string,
-): Promise<{ status: number; data: any }> {
+): Promise<JsonBody> {
 	const url = `${baseUrl()}/${endpoint}`;
 	const res = await fetch(url, {
 		method: "PUT",
@@ -457,7 +465,7 @@ async function serverPutBytes(
 	return { status: res.status, data };
 }
 
-async function serverGet(endpoint: string): Promise<{ status: number; data: any }> {
+async function serverGet(endpoint: string): Promise<JsonBody> {
 	const url = `${baseUrl()}/${endpoint}`;
 	const res = await fetch(url, {
 		method: "GET",
@@ -469,7 +477,7 @@ async function serverGet(endpoint: string): Promise<{ status: number; data: any 
 	return { status: res.status, data };
 }
 
-async function serverGetCapabilities(): Promise<{ status: number; data: any }> {
+async function serverGetCapabilities(): Promise<JsonBody> {
 	const url = `${HOST.replace(/\/$/, "")}/api/capabilities`;
 	const res = await fetch(url, {
 		method: "GET",
@@ -506,7 +514,7 @@ async function testCategory2(): Promise<void> {
 
 	const capabilities = await serverGetCapabilities();
 	assertEqual(capabilities.status, 200, "capabilities returns 200");
-	if (capabilities.data?.claimed === false) {
+	if (field(capabilities.data, "claimed") === false) {
 		console.log("  SKIPPED: server is unclaimed");
 		return;
 	}
@@ -525,7 +533,7 @@ async function testCategory2(): Promise<void> {
 		const res2 = await fetch(noTokenUrl, { method: "GET" });
 		assertEqual(res2.status, 401, "Missing token returns 401");
 	}
-	if (!capabilities.data?.snapshots || !capabilities.data?.attachments) {
+	if (!field(capabilities.data, "snapshots") || !field(capabilities.data, "attachments")) {
 		console.log("  SKIPPED: R2 binding is not configured for this server");
 		return;
 	}
@@ -544,16 +552,17 @@ async function testCategory2(): Promise<void> {
 	{
 		const { status, data } = await serverPost("snapshots", { device: "cli-test" });
 		assertEqual(status, 200, "snapshots returns 200");
-		assertEqual(data?.status, "created", "status is 'created'");
-		assert(typeof data?.snapshotId === "string", `snapshotId returned: ${data?.snapshotId}`);
-		assert(data?.index !== undefined, "index object returned");
-		if (data?.index) {
-			assertEqual(data.index.vaultId, TEST_VAULT_ID, `vaultId matches (${TEST_VAULT_ID})`);
-			assert(typeof data.index.crdtSizeBytes === "number", `crdtSizeBytes: ${data.index.crdtSizeBytes}`);
-			assert(typeof data.index.crdtRawSizeBytes === "number", `crdtRawSizeBytes: ${data.index.crdtRawSizeBytes}`);
-			assert(Array.isArray(data.index.referencedBlobHashes), "referencedBlobHashes is array");
+		assertEqual(field(data, "status"), "created", "status is 'created'");
+		assert(typeof field(data, "snapshotId") === "string", `snapshotId returned: ${field(data, "snapshotId")}`);
+		assert(field(data, "index") !== undefined, "index object returned");
+		if (field(data, "index") !== undefined) {
+			assertEqual(field(data, "index", "vaultId"), TEST_VAULT_ID, `vaultId matches (${TEST_VAULT_ID})`);
+			assert(typeof field(data, "index", "crdtSizeBytes") === "number", `crdtSizeBytes: ${field(data, "index", "crdtSizeBytes")}`);
+			assert(typeof field(data, "index", "crdtRawSizeBytes") === "number", `crdtRawSizeBytes: ${field(data, "index", "crdtRawSizeBytes")}`);
+			assert(Array.isArray(field(data, "index", "referencedBlobHashes")), "referencedBlobHashes is array");
 		}
-		snapshotId = data?.snapshotId;
+		const createdId = field(data, "snapshotId");
+		snapshotId = typeof createdId === "string" ? createdId : undefined;
 	}
 
 	// --- Test: /snapshots/maybe (should noop since we just took one) ---
@@ -561,8 +570,8 @@ async function testCategory2(): Promise<void> {
 	{
 		const { status, data } = await serverPost("snapshots/maybe", { device: "cli-test" });
 		assertEqual(status, 200, "snapshots/maybe returns 200");
-		assertEqual(data?.status, "noop", "status is 'noop' (already taken today)");
-		assert(typeof data?.reason === "string", `reason: ${data?.reason}`);
+		assertEqual(field(data, "status"), "noop", "status is 'noop' (already taken today)");
+		assert(typeof field(data, "reason") === "string", `reason: ${field(data, "reason")}`);
 	}
 
 	// --- Test: /snapshots ---
@@ -570,13 +579,15 @@ async function testCategory2(): Promise<void> {
 	{
 		const { status, data } = await serverGet("snapshots");
 		assertEqual(status, 200, "snapshots returns 200");
-		assert(Array.isArray(data?.snapshots), "snapshots is an array");
-		assert(data.snapshots.length >= 1, `at least 1 snapshot (got ${data.snapshots.length})`);
+		const snapshots = field(data, "snapshots");
+		assert(Array.isArray(snapshots), "snapshots is an array");
+		const list: readonly unknown[] = Array.isArray(snapshots) ? snapshots : [];
+		assert(list.length >= 1, `at least 1 snapshot (got ${list.length})`);
 
-		if (data.snapshots.length > 0) {
-			const latest = data.snapshots[0];
-			assertEqual(latest.snapshotId, snapshotId, "latest snapshot matches what we just created");
-			assertEqual(latest.vaultId, TEST_VAULT_ID, "vaultId matches");
+		if (list.length > 0) {
+			const latest = list[0];
+			assertEqual(field(latest, "snapshotId"), snapshotId, "latest snapshot matches what we just created");
+			assertEqual(field(latest, "vaultId"), TEST_VAULT_ID, "vaultId matches");
 		}
 	}
 
@@ -621,12 +632,13 @@ async function testCategory2(): Promise<void> {
 			hashes: [blobHash, "0".repeat(64)],
 		});
 		assertEqual(existsResult.status, 200, "blobs/exists returns 200");
+		const present = field(existsResult.data, "present");
 		assert(
-			Array.isArray(existsResult.data?.present) && existsResult.data.present.includes(blobHash),
+			Array.isArray(present) && present.includes(blobHash),
 			"uploaded blob found in exists check",
 		);
 		assert(
-			!existsResult.data?.present?.includes("0".repeat(64)),
+			!(Array.isArray(present) && present.includes("0".repeat(64))),
 			"non-existent blob not found (correct)",
 		);
 

@@ -22,6 +22,7 @@ import {
 	computeMetaSemanticChanges,
 	type DecodedFileMeta,
 } from "../../src/sync/fileMeta";
+import { findKind } from "../mocks/metaChange.ts";
 import { suite } from "../harness.ts";
 
 // ── Test runner ─────────────────────────────────────────────────────────────
@@ -392,15 +393,15 @@ s.section("computeMetaSemanticChanges");
 	s.check(kinds.includes("mtime-changed"), "b mtime changed");
 	s.check(kinds.includes("revived"), "c revived");
 
-	const removed = changes.find(c => c.kind === "removed");
-	assertEqual((removed as any).fileId, "d", "removed fileId is d");
+	const removed = findKind(changes, "removed");
+	assertEqual(removed?.fileId, "d", "removed fileId is d");
 
-	const added = changes.find(c => c.kind === "added");
-	assertEqual((added as any).fileId, "e", "added fileId is e");
+	const added = findKind(changes, "added");
+	assertEqual(added?.fileId, "e", "added fileId is e");
 
-	const pathChanged = changes.find(c => c.kind === "path-changed");
-	assertEqual((pathChanged as any).previousPath, "a.md", "previous path");
-	assertEqual((pathChanged as any).nextPath, "a-renamed.md", "next path");
+	const pathChanged = findKind(changes, "path-changed");
+	assertEqual(pathChanged?.previousPath, "a.md", "previous path");
+	assertEqual(pathChanged?.nextPath, "a-renamed.md", "next path");
 }
 
 // ── buildMetaSnapshot ───────────────────────────────────────────────────────

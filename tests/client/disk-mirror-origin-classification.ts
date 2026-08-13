@@ -120,7 +120,7 @@ s.section("Test 6: no raw string literals as applyDiffToYText origin in src/ (FU
 // bypass the registration requirement and silently create an unregistered
 // local-repair origin that the diskMirror observer might classify incorrectly.
 //
-// Pattern matched: applyDiffToYText(<any>, <any>, <any>, "some-string")
+// Pattern matched: applyDiffToYText(…, …, …, "some-string")
 // Constants are identifiers, not string literals — this regex only fires on raw strings.
 {
 	function collectTsFiles(dir: string): string[] {

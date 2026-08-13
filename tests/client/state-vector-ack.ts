@@ -37,7 +37,7 @@ function makeSv(entries: [number, number][]): Uint8Array {
 function makeSvFromDoc(clientId: number, clock: number): Uint8Array {
 	const doc = new Y.Doc({ gc: false });
 	// Force clientId — needed to build predictable SVs.
-	(doc as unknown as { clientID: number }).clientID = clientId;
+	doc.clientID = clientId;
 	const text = doc.getText("t");
 	for (let i = 0; i < clock; i++) {
 		text.insert(0, "x");
@@ -66,7 +66,7 @@ function buildMultiClientSv(clients: [number, number][]): Uint8Array {
 	const collector = new Y.Doc({ gc: false });
 	for (const [clientId, clock] of clients) {
 		const src = new Y.Doc({ gc: false });
-		(src as unknown as { clientID: number }).clientID = clientId;
+		src.clientID = clientId;
 		const text = src.getText("t");
 		for (let i = 0; i < clock; i++) text.insert(0, "a");
 		const update = Y.encodeStateAsUpdate(src);

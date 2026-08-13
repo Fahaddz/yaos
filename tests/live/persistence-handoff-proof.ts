@@ -17,11 +17,11 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { SCHEMA_VERSION } from "../../src/sync/schema.ts";
 
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "";
 const VAULT_ID = process.env.YAOS_TEST_VAULT_ID || `yaos-persistence-proof-${Date.now().toString(36)}`;
-const SCHEMA_VERSION = "2";
 const SYNC_PREFIX = `/vault/sync/${encodeURIComponent(VAULT_ID)}`;
 
 if (!TOKEN) {
@@ -133,7 +133,7 @@ async function fetchServerDocument(): Promise<ServerDocument> {
 
 		const provider = new YSyncProvider(HOST, VAULT_ID, doc, {
 			prefix: SYNC_PREFIX,
-			params: { token: TOKEN, schemaVersion: SCHEMA_VERSION },
+			params: { token: TOKEN, schemaVersion: String(SCHEMA_VERSION) },
 			WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 			connect: true,
 		});
@@ -168,7 +168,7 @@ function connectDevice(label: string): Promise<Device> {
 
 		const provider = new YSyncProvider(HOST, VAULT_ID, doc, {
 			prefix: SYNC_PREFIX,
-			params: { token: TOKEN, schemaVersion: SCHEMA_VERSION },
+			params: { token: TOKEN, schemaVersion: String(SCHEMA_VERSION) },
 			WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 			connect: true,
 		});

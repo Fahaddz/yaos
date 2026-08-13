@@ -263,8 +263,7 @@ function buildFixture(initial: {
 		setLastEditorActivity: (v) => { lastEditorActivity = v; },
 		setBindingHealthy: (h) => { bindingHealthy = h; },
 		clearBoundRecoveryLocks: () => {
-			(controller as unknown as { boundRecoveryLocks: Map<string, number> })
-				.boundRecoveryLocks.clear();
+			controller["boundRecoveryLocks"].clear();
 		},
 		ingestDiskFileNow: (reason: "create" | "modify" = "modify") => {
 			if (!diskIngestPort) throw new Error("diskIngestPort not registered");

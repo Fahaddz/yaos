@@ -18,6 +18,7 @@ import { Plugin, Notice } from "obsidian";
 import { buildQaConsoleApi } from "./api";
 import type { QaScenario } from "./types";
 import { buildQaDebugApi } from "../harness/qaDebugApi";
+import { getPluginRegistry, type ObsidianPluginInstance } from "../harness/ports/obsidianInternalsPort";
 import type { TelemetryRuntimeHandle } from "../../src/telemetry/installTelemetryRuntime";
 import type { VaultSync } from "../../src/sync/vaultSync";
 import type { ReconciliationController } from "../../src/runtime/reconciliationController";
@@ -34,8 +35,8 @@ import type { EngineControlPort } from "../../src/runtime/engineControlPort";
  * product is a compile error under tsconfig.qa.json rather than an `undefined`
  * surfacing mid-scenario.
  *
- * It does NOT make a *rename* a compile error — the cast that produces this
- * type is unchecked by construction. Guard 2 in mountYaosDebugApi() probes
+ * It does NOT make a *rename* a compile error — the assertion that produces
+ * this type is unchecked by construction. Guard 2 in mountYaosDebugApi() probes
  * every member at startup for exactly that reason. Keep the two in step.
  *
  * getEngineControlPort and setQaNetworkHold exist only in the QA product build
@@ -163,7 +164,7 @@ export default class YaosQaHarnessPlugin extends Plugin {
 
 		// Mount window.__YAOS_QA__ (harness console API)
 		const api = buildQaConsoleApi(this.app, this.scenarioRegistry);
-		(window as unknown as Record<string, unknown>).__YAOS_QA__ = api;
+		window.__YAOS_QA__ = api;
 
 		// Mount window.__YAOS_DEBUG__ (product QA debug API).
 		// The product plugin ships as a passive black box — it never mounts
@@ -184,8 +185,7 @@ export default class YaosQaHarnessPlugin extends Plugin {
 			id: "qa-help",
 			name: "Show QA harness help",
 			callback: () => {
-				(window as unknown as Record<string, unknown>).__YAOS_QA__ &&
-					(api as { help: () => void }).help();
+				if (window.__YAOS_QA__) api.help();
 			},
 		});
 
@@ -245,8 +245,8 @@ export default class YaosQaHarnessPlugin extends Plugin {
 	}
 
 	onunload(): void {
-		delete (window as unknown as Record<string, unknown>).__YAOS_QA__;
-		delete (window as unknown as Record<string, unknown>).__YAOS_DEBUG__;
+		delete window.__YAOS_QA__;
+		delete window.__YAOS_DEBUG__;
 		console.log("[YAOS QA] Harness unloaded.");
 	}
 
@@ -272,12 +272,11 @@ export default class YaosQaHarnessPlugin extends Plugin {
 	 */
 	private mountYaosDebugApi(): void {
 		// Obsidian's plugin registry is a private API absent from obsidian.d.ts.
-		// Cast the app once into a named local (per src/sync/diskMirror.ts), then
-		// read through it; every consumer below re-guards what it touches.
-		const appInternals = this.app as unknown as {
-			plugins?: { plugins?: Record<string, Record<string, unknown> | undefined> };
-		};
-		const productRecord = appInternals.plugins?.plugins?.["yaos"];
+		// getPluginRegistry() declares and checks that surface once (see
+		// qa/harness/ports/obsidianInternalsPort.ts); every consumer below
+		// re-guards what it touches.
+		const registry = getPluginRegistry(this.app);
+		const productRecord = registry?.plugins["yaos"];
 
 		// Guard 1: product plugin must be loaded
 		if (!productRecord) {
@@ -333,10 +332,11 @@ export default class YaosQaHarnessPlugin extends Plugin {
 
 		// The private surface of the product plugin that this harness reaches
 		// for. These members are not exported API — they are instance fields and
-		// prototype methods read through the plugin registry — so this shape is
-		// asserted, not inferred. Guard 2 above proves every one of them exists
-		// before we get here, and the accessors below are the only readers.
-		const product = productRecord as unknown as ProductInternals;
+		// prototype methods read through the plugin registry, which types them
+		// as `unknown` — so this shape is asserted, not inferred. Guard 2 above
+		// proves every one of them exists before we get here, and the accessors
+		// below are the only readers.
+		const product: ProductInternals = productRecord as ObsidianPluginInstance & ProductInternals;
 
 		// Guard 3: product.lab must exist (confirms qaDebugMode=true and the
 		// debug runtime installed). Typed as the real handle so a member that
@@ -406,7 +406,7 @@ export default class YaosQaHarnessPlugin extends Plugin {
 			getEngineControlPort: () => product.getEngineControlPort(),
 		});
 
-		(window as unknown as Record<string, unknown>).__YAOS_DEBUG__ = debugApi;
+		window.__YAOS_DEBUG__ = debugApi;
 		console.log("[YAOS QA] window.__YAOS_DEBUG__ mounted successfully.");
 		new Notice("YAOS QA: window.__YAOS_DEBUG__ is available.", 4000);
 	}

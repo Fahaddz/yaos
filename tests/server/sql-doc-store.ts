@@ -194,7 +194,7 @@ function makeDoc(fileCount: number): Y.Doc {
 s.section("Test 1: empty state");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 	const state = store.loadState();
 	s.check(state.snapshot === null, "no snapshot");
 	s.check(state.journalUpdates.length === 0, "no journal entries");
@@ -205,7 +205,7 @@ s.section("Test 1: empty state");
 s.section("Test 2: append and load");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	const doc = makeDoc(10);
 	const update = Y.encodeStateAsUpdate(doc);
@@ -231,7 +231,7 @@ s.section("Test 2: append and load");
 s.section("Test 3: rewriteCheckpoint clears journal");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	const doc = makeDoc(50);
 	// Append some entries
@@ -267,7 +267,7 @@ s.section("Test 3: rewriteCheckpoint clears journal");
 s.section("Test 4: snapshot chunking for large docs");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	// Create a doc large enough to need multiple chunks (>1MB)
 	const doc = new Y.Doc();
@@ -295,7 +295,7 @@ s.section("Test 4: snapshot chunking for large docs");
 s.section("Test 5: oversized delta returns null (not exception)");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	// Create a delta larger than 1.5MB
 	const bigDelta = new Uint8Array(2 * 1024 * 1024); // 2MB
@@ -312,7 +312,7 @@ s.section("Test 5: oversized delta returns null (not exception)");
 s.section("Test 6: snapshot + journal replay produces correct state");
 {
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	// Write initial checkpoint
 	const doc = makeDoc(100);
@@ -345,7 +345,7 @@ s.section("Test 7: empty store loads as empty, then a first checkpoint round-tri
 	// state must be readable in full.
 
 	const storage = new FakeDurableObjectStorage();
-	const store = new SqlDocStore(storage as any);
+	const store = new SqlDocStore(storage);
 
 	// Verify empty
 	const emptyState = store.loadState();
@@ -372,7 +372,7 @@ s.section("Test 8: snapshot size mismatch fails loudly");
 	// FakeDurableObjectStorage structurally implements the subset of the DO
 	// storage surface SqlDocStore uses; the worker-types interface is private.
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 
 	const doc = makeDoc(20);
@@ -413,7 +413,7 @@ s.section("Test 9: journal stats never drift from storage");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 
 	// getJournalStats() is now answered from in-memory counters.  They are the
@@ -464,7 +464,7 @@ s.section("Test 10: getJournalStats is O(1)");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 
 	const APPENDS = 60;
@@ -498,7 +498,7 @@ s.section("Test 11: oversized update leaves stats untouched");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 
 	store.appendUpdate(new Uint8Array(100));
@@ -527,7 +527,7 @@ s.section("Test 12: rewriteCheckpoint resets the counters");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 
 	for (let i = 0; i < 5; i++) store.appendUpdate(new Uint8Array(128));
@@ -547,7 +547,7 @@ s.section("Test 13: stats seed lazily from an existing journal");
 	const storage = new FakeDurableObjectStorage();
 	storage.sql.seedJournalRows([10, 20, 30]);
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 
 	// A fresh instance over a warm journal (the cold-start case) must not
@@ -573,7 +573,7 @@ s.section("Test 9: coalesceJournal collapses entries without changing state");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 
 	const doc = makeDoc(5);
@@ -620,7 +620,7 @@ s.section("Test 10: coalesceJournal is a no-op below two entries");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 	s.check(store.coalesceJournal().status === "noop", "empty journal coalesces to noop");
 
@@ -634,7 +634,7 @@ s.section("Test 11: snapshot size is tracked for the compaction trigger");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 	s.check(store.getSnapshotBytes() === 0, "unknown before anything is written");
 
@@ -645,7 +645,7 @@ s.section("Test 11: snapshot size is tracked for the compaction trigger");
 
 	// A fresh instance over the same storage must recover it from the load.
 	const reopened = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 	reopened.loadState();
 	s.check(reopened.getSnapshotBytes() === update.byteLength, `load recovers snapshot bytes (got ${reopened.getSnapshotBytes()})`);
@@ -656,7 +656,7 @@ s.section("Test 12: loadState returns journal rows unmerged");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(
-		storage as unknown as ConstructorParameters<typeof SqlDocStore>[0],
+		storage,
 	);
 	const doc = makeDoc(3);
 	store.rewriteCheckpoint(Y.encodeStateAsUpdate(doc));

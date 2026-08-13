@@ -35,6 +35,7 @@
 import { rejectUnauthorizedVaultRequest } from "../../server/src/routes/auth";
 import { handleSyncSocketRoute } from "../../server/src/routes/syncSocket";
 import type { AuthState, Env } from "../../server/src/routes/types";
+import { makeEnv, makeTrapNamespace } from "../mocks/workerEnv.ts";
 import { suite } from "../harness.ts";
 
 const s = suite("server-pre-auth-runtime");
@@ -43,22 +44,11 @@ const s = suite("server-pre-auth-runtime");
 
 const DO_TOUCHED = "Durable Object namespace accessed before authentication (INV-SEC-01)";
 
-function makeTrapNamespace(): Env["YAOS_SYNC"] {
-	const trap = {
-		idFromName(_name: string): never { throw new Error(DO_TOUCHED); },
-		idFromString(_id: string): never { throw new Error(DO_TOUCHED); },
-		get(_id: unknown): never { throw new Error(DO_TOUCHED); },
-		newUniqueId(): never { throw new Error(DO_TOUCHED); },
-		jurisdiction(_j: string): never { throw new Error(DO_TOUCHED); },
-	};
-	return trap as unknown as Env["YAOS_SYNC"];
-}
-
-const fakeEnv: Env = {
-	YAOS_SYNC: makeTrapNamespace(),
-	YAOS_CONFIG: makeTrapNamespace() as unknown as Env["YAOS_CONFIG"],
+const fakeEnv: Env = makeEnv({
+	YAOS_SYNC: makeTrapNamespace(DO_TOUCHED),
+	YAOS_CONFIG: makeTrapNamespace(DO_TOUCHED),
 	SYNC_TOKEN: undefined,
-};
+});
 
 // ── Auth state fixtures ───────────────────────────────────────────────────────
 

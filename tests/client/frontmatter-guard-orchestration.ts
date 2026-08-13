@@ -364,8 +364,7 @@ function buildFrontmatterFixture(options: FixtureOptions): FrontmatterFixture {
 		setEditorContent: (c) => { editorContent = c; },
 		setShouldBlock: (p) => { blockPredicate = p; },
 		clearBoundRecoveryLock: () => {
-			(controller as unknown as { boundRecoveryLocks: Map<string, number> })
-				.boundRecoveryLocks.clear();
+			controller["boundRecoveryLocks"].clear();
 		},
 		ingestDiskFileNow: (reason: "create" | "modify" = "modify") => {
 			if (!diskIngestPort) throw new Error("diskIngestPort not registered");

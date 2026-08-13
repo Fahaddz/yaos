@@ -14,10 +14,10 @@
  * (suppression maps, preserved-unresolved registry, open-path set, debounce
  * timers, observer cleanups, write queue).
  *
- *   Scenario A: trashFile available, trash preferred, called with system === true
+ *   Scenario A: trashFile available, trash preferred, no trash-mode flag passed
  *   Scenario B: trashFile missing, hard-delete fallback
- *   Scenario C: trashFile throws, trashFile attempted FIRST (system === true),
- *               hard-delete fallback, ordering trash-attempted-before-delete
+ *   Scenario C: trashFile throws, trashFile attempted FIRST, hard-delete
+ *               fallback, ordering trash-attempted-before-delete
  *   Scenario D: preserve-revive — no trash, no delete; ensureFile(..., reviveTombstone:true)
  *   Scenario E: preserve-unresolved — no trash, no delete, no ensureFile;
  *               path enters preservedUnresolved registry
@@ -245,7 +245,7 @@ function buildFixture(opts: FixtureOptions): Fixture {
 }
 
 // -------------------------------------------------------------------
-// Scenario A — trashFile available, trash preferred, system === true
+// Scenario A — trashFile available, trash preferred, no trash-mode flag passed
 // -------------------------------------------------------------------
 
 s.section("Scenario A: markdown remote delete prefers trashFile");
@@ -254,13 +254,16 @@ s.section("Scenario A: markdown remote delete prefers trashFile");
 	const baseline = "scenario-a clean baseline";
 	const fix = buildFixture({ path, diskContent: baseline, trashAdapter: "available" });
 
-	await (fix.mirror as unknown as {
-		handleRemoteDelete: (p: string, opts?: { baselineText?: string | null }) => Promise<void>;
-	}).handleRemoteDelete(path, { baselineText: baseline });
+	await fix.mirror["handleRemoteDelete"](path, { baselineText: baseline });
 
 	assertEq(fix.trashCalls.length, 1, "markdown remote delete attempts trashFile exactly once");
 	assertEq(fix.trashCalls[0]?.path, path, "trashFile called with correct path");
-	assertEq(fix.trashCalls[0]?.system, true, "trashFile called with system === true");
+	// Obsidian's FileManager.trashFile(file) takes ONE parameter and already
+	// honours the user's configured trash option. This used to assert a second
+	// `system === true` argument, which real Obsidian silently drops — so the
+	// assertion was verifying a flag that never had any effect. Pinning it to
+	// undefined keeps the phantom argument from being reintroduced.
+	assertEq(fix.trashCalls[0]?.system, undefined, "trashFile called with no trash-mode flag, deferring to the user's preference");
 	assertEq(fix.deleteCalls.length, 0, "markdown remote delete does not use hard delete when trash is available");
 
 	const observedEvents = fix.flightEvents.filter((e) => e.kind === "delete.remote.observed");
@@ -294,9 +297,7 @@ s.section("Scenario B: markdown remote delete falls back when trash unavailable"
 	// in DiskMirror.deleteLocalReplica reads `fileManager?.trashFile`).
 	const fix = buildFixture({ path, diskContent: baseline, trashAdapter: "missing" });
 
-	await (fix.mirror as unknown as {
-		handleRemoteDelete: (p: string, opts?: { baselineText?: string | null }) => Promise<void>;
-	}).handleRemoteDelete(path, { baselineText: baseline });
+	await fix.mirror["handleRemoteDelete"](path, { baselineText: baseline });
 
 	assertEq(fix.trashCalls.length, 0, "trashFile not called when adapter missing");
 	assertEq(fix.deleteCalls.length, 1, "markdown remote delete falls back to vault.delete");
@@ -324,13 +325,11 @@ s.section("Scenario C: markdown remote delete falls back when trashFile throws")
 	// Thrown error literal: "trash not supported" (see fileManagerByForm).
 	const fix = buildFixture({ path, diskContent: baseline, trashAdapter: "throws" });
 
-	await (fix.mirror as unknown as {
-		handleRemoteDelete: (p: string, opts?: { baselineText?: string | null }) => Promise<void>;
-	}).handleRemoteDelete(path, { baselineText: baseline });
+	await fix.mirror["handleRemoteDelete"](path, { baselineText: baseline });
 
 	assertEq(fix.trashCalls.length, 1, "markdown remote delete attempts trashFile before fallback");
 	assertEq(fix.trashCalls[0]?.path, path, "trashFile attempted for scenario C path");
-	assertEq(fix.trashCalls[0]?.system, true, "trashFile attempt uses system === true even when it throws");
+	assertEq(fix.trashCalls[0]?.system, undefined, "trashFile attempt passes no trash-mode flag even when it throws");
 	assertEq(fix.deleteCalls.length, 1, "vault.delete called as fallback after trashFile throw");
 	assertEq(fix.deleteCalls[0], path, "fallback vault.delete called with correct path");
 
@@ -370,9 +369,7 @@ s.section("Scenario D: preserve-revive does not invoke trash or delete; revives 
 	// regression that incorrectly enters apply-delete is caught visibly.
 	const fix = buildFixture({ path, diskContent, trashAdapter: "preserve" });
 
-	await (fix.mirror as unknown as {
-		handleRemoteDelete: (p: string, opts?: { baselineText?: string | null }) => Promise<void>;
-	}).handleRemoteDelete(path, { baselineText });
+	await fix.mirror["handleRemoteDelete"](path, { baselineText });
 
 	assertEq(fix.trashCalls.length, 0, "preserve-revive does not call trashFile");
 	assertEq(fix.deleteCalls.length, 0, "preserve-revive does not call vault.delete");
@@ -413,9 +410,7 @@ s.section("Scenario E: preserve-unresolved does not invoke trash, delete, or ens
 	// emit reason "remote-delete-read-failed"; we exercise only one form.
 	const fix = buildFixture({ path, diskContent, trashAdapter: "preserve" });
 
-	await (fix.mirror as unknown as {
-		handleRemoteDelete: (p: string, opts?: { baselineText?: string | null }) => Promise<void>;
-	}).handleRemoteDelete(path, { baselineText: null });
+	await fix.mirror["handleRemoteDelete"](path, { baselineText: null });
 
 	assertEq(fix.trashCalls.length, 0, "preserve-unresolved does not call trashFile");
 	assertEq(fix.deleteCalls.length, 0, "preserve-unresolved does not call vault.delete");

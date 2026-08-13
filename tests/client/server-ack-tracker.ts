@@ -29,7 +29,7 @@ const BASE_SCOPE: ScopeKey & ScopeMetadata = {
 function makeDoc(clientId?: number): Y.Doc {
 	const doc = new Y.Doc({ gc: false });
 	if (clientId !== undefined) {
-		(doc as unknown as { clientID: number }).clientID = clientId;
+		doc.clientID = clientId;
 	}
 	return doc;
 }
@@ -244,7 +244,7 @@ s.section("Test 8: offline-edit confirmed after plugin restart");
 	// Session 2: plugin restarts. Doc is rebuilt from IDB (same state as session 1 ended).
 	{
 		const doc = makeDoc(108); // same clientId
-		(doc as unknown as { clientID: number }).clientID = 108;
+		doc.clientID = 108;
 		const text = doc.getText("t");
 		text.insert(0, "offline edit session 1"); // same content reconstructed
 

@@ -23,6 +23,7 @@
  *   We add a 3s sleep before size/hash checks to let that complete.
  */
 
+import { MarkdownView, type App, type Editor } from "obsidian";
 import type { QaScenario } from "../types";
 import { buildIssue25Fixture, issue25UniquePath, ISSUE_25_TASKS_ANCHOR_1 } from "./issue-25-fixture";
 
@@ -31,9 +32,23 @@ const SOAK_MS = 180_000;          // 3 minutes — original report loop duration
 const SOAK_SAMPLE_INTERVAL_MS = 30_000; // size sample every 30s during soak
 const MAX_ALLOWED_GROWTH_BYTES = 1024;  // 1 KB tolerance
 
-async function getFileSize(ctx: { app: { vault: { getAbstractFileByPath(p: string): unknown } } }, path: string): Promise<number> {
-	const f = ctx.app.vault.getAbstractFileByPath(path);
-	return f ? ((f as unknown as { stat?: { size?: number } }).stat?.size ?? 0) : 0;
+/**
+ * The Editor of the open MarkdownView for `path`, or null when none is open.
+ *
+ * Returning from a helper rather than assigning a `let` in the caller is what
+ * keeps the result typed: TypeScript cannot see that iterateAllLeaves() invokes
+ * its callback, so a variable assigned inside it stays narrowed to its
+ * initialiser (null) at every later use.
+ */
+function findEditorForPath(app: App, path: string): Editor | null {
+	let found: Editor | null = null;
+	app.workspace.iterateAllLeaves((leaf) => {
+		if (found) return;
+		if (leaf.view instanceof MarkdownView && leaf.view.file?.path === path) {
+			found = leaf.view.editor;
+		}
+	});
+	return found;
 }
 
 export const s06bIssue25Natural: QaScenario = {
@@ -69,21 +84,10 @@ export const s06bIssue25Natural: QaScenario = {
 
 		// 4. Selection delete crossing from checkbox list into first tasks block.
 		//    This is the exact trigger from the reporter's description.
-		let editor: {
-			getValue(): string;
-			setSelection(a: unknown, b: unknown): void;
-			replaceSelection(s: string): void;
-		} | null = null;
-		ctx.app.workspace.iterateAllLeaves((leaf) => {
-			if (editor) return;
-			const v = leaf.view as unknown as { file?: { path?: string }; editor?: typeof editor };
-			if (v?.file?.path === path && v.editor) {
-				editor = v.editor;
-			}
-		});
+		const editor = findEditorForPath(ctx.app, path);
 
 		if (editor) {
-			const full: string = (editor as { getValue(): string }).getValue();
+			const full = editor.getValue();
 			// Select from first checkbox addition through the sort-by-priority anchor
 			// in the first tasks block — this is the boundary the reporter crossed.
 			const selStart = full.indexOf("- [ ] alpha");
@@ -96,11 +100,8 @@ export const s06bIssue25Natural: QaScenario = {
 					const lastLine = lines[lines.length - 1] ?? "";
 					return { line: lines.length - 1, ch: lastLine.length };
 				};
-				(editor as { setSelection(a: unknown, b: unknown): void }).setSelection(
-					toPos(full, selStart),
-					toPos(full, selEnd),
-				);
-				(editor as { replaceSelection(s: string): void }).replaceSelection("");
+				editor.setSelection(toPos(full, selStart), toPos(full, selEnd));
+				editor.replaceSelection("");
 			}
 		}
 
@@ -111,7 +112,7 @@ export const s06bIssue25Natural: QaScenario = {
 		await ctx.waitForIdle(10000);
 
 		// 6. Record starting size for the stable-delta detector.
-		const sizeAtSoakStart = await getFileSize(ctx, path);
+		const sizeAtSoakStart = ctx.app.vault.getFileByPath(path)?.stat.size ?? 0;
 		const sizeSamples: number[] = [sizeAtSoakStart];
 
 		// 7. Soak loop — sample size periodically, fail fast on growth.
@@ -119,7 +120,7 @@ export const s06bIssue25Natural: QaScenario = {
 		const soakSteps = Math.floor(SOAK_MS / SOAK_SAMPLE_INTERVAL_MS);
 		for (let i = 0; i < soakSteps; i++) {
 			await ctx.sleep(SOAK_SAMPLE_INTERVAL_MS);
-			const sampleSize = await getFileSize(ctx, path);
+			const sampleSize = ctx.app.vault.getFileByPath(path)?.stat.size ?? 0;
 			sizeSamples.push(sampleSize);
 			const growth = sampleSize - sizeAtSoakStart;
 			console.log(`[S06b] soak sample ${i + 1}/${soakSteps}: size=${sampleSize}, growth=${growth >= 0 ? "+" : ""}${growth}`);

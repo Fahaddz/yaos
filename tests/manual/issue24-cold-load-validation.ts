@@ -39,6 +39,7 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { readField } from "../mocks/readField.ts";
 
 // The three env vars are read into `*_ENV` locals and re-bound as `string`
 // after the guard: `process.exit` narrows the module-level flow, but hoisted
@@ -88,7 +89,7 @@ function connectDevice(label: string): Promise<{
 		const provider = new YSyncProvider(HOST, VAULT_ID, doc, {
 			prefix: `/vault/sync/${encodeURIComponent(VAULT_ID)}`,
 			params: { token: TOKEN, schemaVersion: "8" },
-			WebSocketPolyfill: (globalThis as any).WebSocket ?? WebSocket,
+			WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 			connect: true,
 			maxBackoffTime: 2000,
 		});
@@ -122,7 +123,7 @@ function connectDevice(label: string): Promise<{
 	});
 }
 
-async function fetchDebug(): Promise<any> {
+async function fetchDebug(): Promise<unknown> {
 	const res = await fetch(
 		`${HOST}/vault/${encodeURIComponent(VAULT_ID)}/debug/recent`,
 		{ headers: { Authorization: `Bearer ${TOKEN}` } },
@@ -155,9 +156,9 @@ if (PHASE === "seed") {
 	device.disconnect();
 
 	const debug = await fetchDebug();
-	assert(debug.persistence.status === "healthy", `persistence healthy (got ${debug.persistence.status})`);
-	assert(debug.documentSummary.activePathCount === FILE_COUNT, `activePathCount === ${FILE_COUNT} (got ${debug.documentSummary.activePathCount})`);
-	assert(debug.persistence.pendingPersistence === false, `pendingPersistence false`);
+	assert(readField(debug, "persistence", "status") === "healthy", `persistence healthy (got ${readField(debug, "persistence", "status")})`);
+	assert(readField(debug, "documentSummary", "activePathCount") === FILE_COUNT, `activePathCount === ${FILE_COUNT} (got ${readField(debug, "documentSummary", "activePathCount")})`);
+	assert(readField(debug, "persistence", "pendingPersistence") === false, `pendingPersistence false`);
 
 	console.log(`\n  Seed complete. Vault: ${VAULT_ID}`);
 	console.log(`  Now redeploy the staging Worker, then run PHASE=validate with the same VAULT_ID.\n`);
@@ -176,15 +177,15 @@ if (PHASE === "validate") {
 	console.log("--- Check 1: Debug endpoint (forces cold load from durable storage) ---");
 	const debug = await fetchDebug();
 
-	assert(debug.documentLoaded === true, "document loaded from durable storage");
-	assert(debug.persistence.status === "healthy", `persistence healthy (got ${debug.persistence.status})`);
-	assert(debug.documentSummary.activePathCount === FILE_COUNT, `activePathCount === ${FILE_COUNT} (got ${debug.documentSummary.activePathCount})`);
-	assert(debug.documentSummary.activePathsWithText === FILE_COUNT, `activePathsWithText === ${FILE_COUNT} (got ${debug.documentSummary.activePathsWithText})`);
-	assert(debug.documentSummary.activePathsMissingFromPathToId === 0, `no paths missing from pathToId`);
-	assert(debug.documentSummary.activePathsMissingText === 0, `no paths missing text`);
-	assert(debug.documentSummary.pathToIdWithoutActiveMeta === 0, `no orphaned pathToId entries`);
+	assert(readField(debug, "documentLoaded") === true, "document loaded from durable storage");
+	assert(readField(debug, "persistence", "status") === "healthy", `persistence healthy (got ${readField(debug, "persistence", "status")})`);
+	assert(readField(debug, "documentSummary", "activePathCount") === FILE_COUNT, `activePathCount === ${FILE_COUNT} (got ${readField(debug, "documentSummary", "activePathCount")})`);
+	assert(readField(debug, "documentSummary", "activePathsWithText") === FILE_COUNT, `activePathsWithText === ${FILE_COUNT} (got ${readField(debug, "documentSummary", "activePathsWithText")})`);
+	assert(readField(debug, "documentSummary", "activePathsMissingFromPathToId") === 0, `no paths missing from pathToId`);
+	assert(readField(debug, "documentSummary", "activePathsMissingText") === 0, `no paths missing text`);
+	assert(readField(debug, "documentSummary", "pathToIdWithoutActiveMeta") === 0, `no orphaned pathToId entries`);
 
-	console.log(`\n  Cold-loaded journal: ${debug.persistence.journalEntryCount} entries, ${debug.persistence.journalBytes} bytes`);
+	console.log(`\n  Cold-loaded journal: ${readField(debug, "persistence", "journalEntryCount")} entries, ${readField(debug, "persistence", "journalBytes")} bytes`);
 
 	console.log("\n--- Check 2: Device B connects alone (post cold-load handoff) ---");
 	const deviceB = await connectDevice("Device B");

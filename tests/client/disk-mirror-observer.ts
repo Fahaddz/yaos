@@ -33,7 +33,11 @@
  */
 
 import * as Y from "yjs";
+import type { App } from "obsidian";
 import { DiskMirror } from "../../src/sync/diskMirror";
+import type { EditorBindingManager } from "../../src/sync/editorBinding";
+import type { VaultSync } from "../../src/sync/vaultSync";
+import { partialOf } from "../mocks/productFixture.ts";
 import {
 	ORIGIN_DISK_SYNC,
 	ORIGIN_DISK_SYNC_RECOVER_BOUND,
@@ -63,19 +67,23 @@ function makeHarness() {
 	const doc = new Y.Doc();
 	const meta = doc.getMap<{ path: string; deleted?: boolean }>("meta");
 	const ytext = doc.getText("content");
-	const fakeProvider = { __kind: "fake-provider" };
+	// Only ever compared by identity (isLocalOrigin) and used as a transaction
+	// origin, so `roomname` carries the marker purely to name it in a debugger.
+	const fakeProvider = partialOf<VaultSync["provider"]>({ roomname: "fake-provider" });
 
 	// Seed meta so afterTxnHandler can resolve fileId → path
 	doc.transact(() => {
 		meta.set(FILE_ID, { path: FILE_PATH, deleted: false });
 	});
 
-	const fakeVaultSync = {
+	const fakeVaultSync = partialOf<VaultSync>({
 		provider: fakeProvider,
 		ydoc: doc,
 		meta,
 		getTextForPath: (path: string) => (path === FILE_PATH ? ytext : null),
-		getFileIdForText: (text: Y.Text) => (text === ytext ? FILE_ID : null),
+		// `undefined`, not `null`: that is what VaultSync.getFileIdForText returns
+		// on a miss, and DiskMirror's caller tests it for truthiness either way.
+		getFileIdForText: (text: Y.Text) => (text === ytext ? FILE_ID : undefined),
 		idToText: { entries: () => new Map([[FILE_ID, ytext]]).entries() },
 		isFileMetaDeleted: (m: unknown) => isFileMetaDeletedValue(m),
 		// The harness uses the production-style deep semantic observer so nested
@@ -98,43 +106,39 @@ function makeHarness() {
 				return () => { listeners.delete(cb); };
 			};
 		})(),
-	};
+	});
 
-	const fakeEditorBindings = {
+	const fakeEditorBindings = partialOf<EditorBindingManager>({
 		getLastEditorActivityForPath: () => null,
-	};
+	});
 
-	const fakeApp = {
+	const fakeApp = partialOf<App>({
 		workspace: { getActiveViewOfType: () => null },
-	};
+	});
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const mirror = new DiskMirror(fakeApp as any, fakeVaultSync as any, fakeEditorBindings as any, false);
+	const mirror = new DiskMirror(fakeApp, fakeVaultSync, fakeEditorBindings, false);
 
 	return { doc, ytext, fakeProvider, meta, mirror };
 }
 
-// Private-field accessors — DiskMirror internals are not exposed publicly
+// Private-field accessors — DiskMirror internals are not exposed publicly.
+// Element access reaches a private member without a cast, and unlike a cast it
+// is checked: the field must exist and its real type is what comes back.
 function debounceTimerCount(m: DiskMirror): number {
-	return (m as unknown as { debounceTimers: Map<unknown, unknown> }).debounceTimers.size;
+	return m["debounceTimers"].size;
 }
 function pendingOpenWriteCount(m: DiskMirror): number {
-	return (m as unknown as { pendingOpenWrites: Set<unknown> }).pendingOpenWrites.size;
+	return m["pendingOpenWrites"].size;
 }
 function writeQueueSize(m: DiskMirror): number {
-	return (m as unknown as { writeQueue: Set<unknown> }).writeQueue.size;
+	return m["writeQueue"].size;
 }
 function clearTimers(m: DiskMirror): void {
-	const dm = m as unknown as {
-		debounceTimers: Map<string, ReturnType<typeof setTimeout>>;
-		openWriteTimers: Map<string, ReturnType<typeof setTimeout>>;
-		pendingOpenWrites: Set<string>;
-	};
-	for (const t of dm.debounceTimers.values()) clearTimeout(t);
-	dm.debounceTimers.clear();
-	for (const t of dm.openWriteTimers.values()) clearTimeout(t);
-	dm.openWriteTimers.clear();
-	dm.pendingOpenWrites.clear();
+	for (const t of m["debounceTimers"].values()) clearTimeout(t);
+	m["debounceTimers"].clear();
+	for (const t of m["openWriteTimers"].values()) clearTimeout(t);
+	m["openWriteTimers"].clear();
+	m["pendingOpenWrites"].clear();
 }
 
 // ── Test 1: afterTransaction (closed file) — recovery origins skip write ──────

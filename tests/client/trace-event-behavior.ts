@@ -1,9 +1,23 @@
 import * as Y from "yjs";
-import { TFile, type FileStats } from "obsidian";
+import {
+	TFile,
+	type App,
+	type DataAdapter,
+	type FileManager,
+	type FileStats,
+	type Stat,
+	type TAbstractFile,
+	type Vault,
+	type Workspace,
+} from "obsidian";
 import { DiskMirror } from "../../src/sync/diskMirror";
 import { ServerAckTracker } from "../../src/sync/serverAckTracker";
 import { InMemoryCandidateStore, type ScopeKey, type ScopeMetadata } from "../../src/sync/candidateStore";
-import type { TraceEventDetails } from "../../src/telemetry/debug/trace";
+import type { VaultSync } from "../../src/sync/vaultSync";
+import type { EditorBindingManager } from "../../src/sync/editorBinding";
+import type { VaultSyncSettings } from "../../src/settings/settingsStore";
+import type { RuntimeConfig } from "../../src/runtime/runtimeConfig";
+import type { TraceEventDetails, TraceRecord } from "../../src/telemetry/debug/trace";
 import { suite } from "../harness.ts";
 
 const s = suite("trace-event-behavior");
@@ -14,8 +28,10 @@ interface CapturedTrace {
 	details?: TraceEventDetails;
 }
 
-function captureTrace(events: CapturedTrace[]) {
-	return (source: string, msg: string, details?: TraceEventDetails) => {
+// Declared as the product's own TraceRecord: if the trace callback signature
+// changes, this fixture stops compiling instead of quietly diverging.
+function captureTrace(events: CapturedTrace[]): TraceRecord {
+	return (source, msg, details) => {
 		events.push({ source, msg, details });
 	};
 }
@@ -29,6 +45,69 @@ function makeFile(path: string, stat: FileStats): TFile {
 	file.path = path;
 	file.stat = stat;
 	return file;
+}
+
+/**
+ * Fixture doubles are typed against the REAL product types instead of `any`.
+ * Every `parts` argument is a `Partial<…>` of the genuine interface, so each
+ * mocked member is checked against the product's declared signature and this
+ * suite fails to compile — rather than silently passing — if that signature
+ * changes. The single widening cast inside each helper is the one place where
+ * "the members this test exercises" becomes "the whole interface".
+ */
+type VaultParts = Partial<Omit<Vault, "adapter">> & { adapter?: Partial<DataAdapter> };
+
+/**
+ * Obsidian declares `trashFile(file)` with one parameter; DiskMirror calls it
+ * as `trashFile(file, true)`. The fixture mirrors the product's call shape.
+ */
+type FileManagerParts = Partial<Omit<FileManager, "trashFile">> & {
+	trashFile?: (file: TAbstractFile, system?: boolean) => Promise<void>;
+};
+
+function makeApp(parts: {
+	vault: VaultParts;
+	workspace?: Partial<Workspace>;
+	/** Omitted entirely by tests that need the no-trash-channel fallback. */
+	fileManager?: FileManagerParts;
+}): App {
+	return {
+		vault: parts.vault as Vault,
+		workspace: (parts.workspace ?? {}) as Workspace,
+		fileManager: parts.fileManager as FileManager | undefined,
+	} as App;
+}
+
+/**
+ * The CRDT surface these paths read is `getTextForPath` / `ensureFile`. The
+ * structural fields DiskMirror only touches from `attach()` are backed by a
+ * real Y.Doc, so they carry the product's declared Y types.
+ */
+function makeVaultSync(parts: Partial<VaultSync>): VaultSync {
+	const doc = new Y.Doc();
+	return {
+		ydoc: doc,
+		meta: doc.getMap<unknown>("meta"),
+		idToText: doc.getMap<Y.Text>("idToText"),
+		getFileIdForText: () => undefined,
+		isFileMetaDeleted: () => false,
+		...parts,
+	} as VaultSync;
+}
+
+function makeEditorBindings(parts: Partial<EditorBindingManager>): EditorBindingManager {
+	return parts as EditorBindingManager;
+}
+
+/**
+ * A real Y.Text carrying `content`. handleRemoteDelete compares
+ * `getTextForPath(path)?.toString()` against disk, so the CRDT baseline has to
+ * be a genuine Y.Text and not a `{ toString }` shim the compiler cannot check.
+ */
+function makeCrdtText(content: string): Y.Text {
+	const text = new Y.Doc().getText("content");
+	if (content) text.insert(0, content);
+	return text;
 }
 
 const BASE_SCOPE: ScopeKey & ScopeMetadata = {
@@ -84,7 +163,7 @@ function makeSuppressionMirror(
 	readContent: () => string,
 	events: CapturedTrace[],
 ): DiskMirror {
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => readContent(),
 			adapter: {},
@@ -93,19 +172,13 @@ function makeSuppressionMirror(
 			getActiveViewOfType: () => null,
 		},
 		fileManager: {},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	});
+	const vaultSync = makeVaultSync({
 		getTextForPath: () => null,
-		isFileMetaDeleted: () => false,
-	} as any;
-	const editorBindings = {
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
-	} as any;
+	});
 	return new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 }
 
@@ -113,7 +186,7 @@ s.section("Test 3: suppression acknowledgement trace fires from observed file st
 {
 	const events: CapturedTrace[] = [];
 	const mirror = makeSuppressionMirror(() => "expected", events);
-	await (mirror as any).suppressWrite("Notes/suppressed.md", "expected");
+	await mirror["suppressWrite"]("Notes/suppressed.md", "expected");
 	const file = makeFile("Notes/suppressed.md", {
 		ctime: 1,
 		mtime: 1,
@@ -131,7 +204,7 @@ s.section("Test 4: suppression mismatch trace fires from changed file state");
 {
 	const events: CapturedTrace[] = [];
 	const mirror = makeSuppressionMirror(() => "changed", events);
-	await (mirror as any).suppressWrite("Notes/suppressed.md", "expected");
+	await mirror["suppressWrite"]("Notes/suppressed.md", "expected");
 	const file = makeFile("Notes/suppressed.md", {
 		ctime: 1,
 		mtime: 1,
@@ -154,38 +227,33 @@ s.section("Test 5: diskMirror remote delete emits trace with deleteMode");
 	const file = makeFile("Notes/remote-deleted.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const fileContent = "content";
-	const app = {
+	const crdtText = makeCrdtText(fileContent);
+	const app = makeApp({
 		vault: {
 			read: async () => fileContent,
 			getAbstractFileByPath: (path: string) => (path === "Notes/remote-deleted.md" ? file : null),
-			delete: async (f: TFile) => { deletedPaths.push(f.path); },
+			delete: async (f: TAbstractFile) => { deletedPaths.push(f.path); },
 			adapter: {},
 		},
 		workspace: {
 			getActiveViewOfType: () => null,
 		},
 		fileManager: {
-			trashFile: async (f: TFile & { path: string }) => { trashedPaths.push(f.path); },
+			trashFile: async (f: TAbstractFile) => { trashedPaths.push(f.path); },
 		},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	});
+	const vaultSync = makeVaultSync({
 		// CRDT matches disk content — file is clean, delete should proceed
-		getTextForPath: () => ({ toString: () => fileContent }),
-		isFileMetaDeleted: () => false,
-	} as any;
-	const editorBindings = {
+		getTextForPath: () => crdtText,
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 
-	await (mirror as any).handleRemoteDelete("Notes/remote-deleted.md");
+	await mirror["handleRemoteDelete"]("Notes/remote-deleted.md");
 
 	const deleteApplied = findEvent(events, "disk", "remote-delete-applied");
 	s.check(!!deleteApplied, "diskMirror remote delete emits remote-delete-applied trace");
@@ -202,36 +270,31 @@ s.section("Test 6: diskMirror remote delete falls back to hard delete");
 	const file = makeFile("Notes/fallback-deleted.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const fileContent = "content";
-	const app = {
+	const crdtText = makeCrdtText(fileContent);
+	const app = makeApp({
 		vault: {
 			read: async () => fileContent,
 			getAbstractFileByPath: (path: string) => (path === "Notes/fallback-deleted.md" ? file : null),
-			delete: async (f: TFile & { path: string }) => { deletedPaths.push(f.path); },
+			delete: async (f: TAbstractFile) => { deletedPaths.push(f.path); },
 			adapter: {},
 		},
 		workspace: {
 			getActiveViewOfType: () => null,
 		},
 		// No fileManager — trash unavailable
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	});
+	const vaultSync = makeVaultSync({
 		// CRDT matches disk content — file is clean, delete should proceed
-		getTextForPath: () => ({ toString: () => fileContent }),
-		isFileMetaDeleted: () => false,
-	} as any;
-	const editorBindings = {
+		getTextForPath: () => crdtText,
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 
-	await (mirror as any).handleRemoteDelete("Notes/fallback-deleted.md");
+	await mirror["handleRemoteDelete"]("Notes/fallback-deleted.md");
 
 	const deleteApplied = findEvent(events, "disk", "remote-delete-applied");
 	s.check(!!deleteApplied, "diskMirror fallback delete emits remote-delete-applied trace");
@@ -245,8 +308,9 @@ s.section("Test 7: diskMirror remote delete preserves locally modified markdown"
 	const trashedPaths: string[] = [];
 
 	const file = makeFile("Notes/locally-modified.md", { ctime: 1, mtime: 1, size: 20 });
+	const crdtText = makeCrdtText("old CRDT version");
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => "locally edited version",
 			getAbstractFileByPath: (path: string) => (path === "Notes/locally-modified.md" ? file : null),
@@ -259,25 +323,19 @@ s.section("Test 7: diskMirror remote delete preserves locally modified markdown"
 		fileManager: {
 			trashFile: async () => { throw new Error("should not trash locally modified file"); },
 		},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	});
+	const vaultSync = makeVaultSync({
 		// Return CRDT content that DIFFERS from disk content
-		getTextForPath: () => ({ toString: () => "old CRDT version" }),
-		isFileMetaDeleted: () => false,
-	} as any;
-	const editorBindings = {
+		getTextForPath: () => crdtText,
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 
-	await (mirror as any).handleRemoteDelete("Notes/locally-modified.md");
+	await mirror["handleRemoteDelete"]("Notes/locally-modified.md");
 
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
@@ -294,7 +352,8 @@ s.section("Test 8: diskMirror remote delete proceeds when content matches CRDT")
 	const file = makeFile("Notes/unchanged.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const matchingContent = "content matches CRDT";
-	const app = {
+	const crdtText = makeCrdtText(matchingContent);
+	const app = makeApp({
 		vault: {
 			read: async () => matchingContent,
 			getAbstractFileByPath: (path: string) => (path === "Notes/unchanged.md" ? file : null),
@@ -305,27 +364,21 @@ s.section("Test 8: diskMirror remote delete proceeds when content matches CRDT")
 			getActiveViewOfType: () => null,
 		},
 		fileManager: {
-			trashFile: async (f: TFile & { path: string }) => { trashedPaths.push(f.path); },
+			trashFile: async (f: TAbstractFile) => { trashedPaths.push(f.path); },
 		},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	});
+	const vaultSync = makeVaultSync({
 		// Return CRDT content that MATCHES disk content
-		getTextForPath: () => ({ toString: () => matchingContent }),
-		isFileMetaDeleted: () => false,
-	} as any;
-	const editorBindings = {
+		getTextForPath: () => crdtText,
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 
-	await (mirror as any).handleRemoteDelete("Notes/unchanged.md");
+	await mirror["handleRemoteDelete"]("Notes/unchanged.md");
 
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
@@ -340,7 +393,7 @@ s.section("Test 9: diskMirror remote delete preserves when CRDT unavailable");
 
 	const file = makeFile("Notes/no-crdt-baseline.md", { ctime: 1, mtime: 1, size: 10 });
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => "some local content",
 			getAbstractFileByPath: (path: string) => (path === "Notes/no-crdt-baseline.md" ? file : null),
@@ -353,25 +406,19 @@ s.section("Test 9: diskMirror remote delete preserves when CRDT unavailable");
 		fileManager: {
 			trashFile: async () => { throw new Error("should not trash when CRDT unavailable"); },
 		},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	});
+	const vaultSync = makeVaultSync({
 		// Return null — no CRDT text available
 		getTextForPath: () => null,
-		isFileMetaDeleted: () => false,
-	} as any;
-	const editorBindings = {
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 
-	await (mirror as any).handleRemoteDelete("Notes/no-crdt-baseline.md");
+	await mirror["handleRemoteDelete"]("Notes/no-crdt-baseline.md");
 
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
@@ -389,7 +436,8 @@ s.section("Test 10: diskMirror remote delete suppression fires before delete");
 	const file = makeFile("Notes/suppression-test.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const matchingContent = "same content";
-	const app = {
+	const crdtText = makeCrdtText(matchingContent);
+	const app = makeApp({
 		vault: {
 			read: async () => matchingContent,
 			getAbstractFileByPath: (path: string) => (path === "Notes/suppression-test.md" ? file : null),
@@ -400,33 +448,27 @@ s.section("Test 10: diskMirror remote delete suppression fires before delete");
 			getActiveViewOfType: () => null,
 		},
 		fileManager: {
-			trashFile: async (f: TFile & { path: string }) => { trashedPaths.push(f.path); },
+			trashFile: async (f: TAbstractFile) => { trashedPaths.push(f.path); },
 		},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
-		getTextForPath: () => ({ toString: () => matchingContent }),
-		isFileMetaDeleted: () => false,
-	} as any;
-	const editorBindings = {
+	});
+	const vaultSync = makeVaultSync({
+		getTextForPath: () => crdtText,
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 
 	// Intercept suppressDelete to verify it fires before delete
-	const originalSuppressDelete = (mirror as any).suppressDelete.bind(mirror);
-	(mirror as any).suppressDelete = (p: string) => {
+	const originalSuppressDelete = mirror["suppressDelete"].bind(mirror);
+	mirror["suppressDelete"] = (p: string) => {
 		suppressedPaths.push(p);
 		return originalSuppressDelete(p);
 	};
 
-	await (mirror as any).handleRemoteDelete("Notes/suppression-test.md");
+	await mirror["handleRemoteDelete"]("Notes/suppression-test.md");
 
 	s.check(suppressedPaths.length === 1, "suppressDelete called once");
 	s.check(suppressedPaths[0] === "Notes/suppression-test.md", "suppressDelete called with correct path");
@@ -441,11 +483,12 @@ s.section("Test 11: diskMirror remote delete falls back when trash throws");
 	const file = makeFile("Notes/trash-throws.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const matchingContent = "same content";
-	const app = {
+	const crdtText = makeCrdtText(matchingContent);
+	const app = makeApp({
 		vault: {
 			read: async () => matchingContent,
 			getAbstractFileByPath: (path: string) => (path === "Notes/trash-throws.md" ? file : null),
-			delete: async (f: TFile & { path: string }) => { deletedPaths.push(f.path); },
+			delete: async (f: TAbstractFile) => { deletedPaths.push(f.path); },
 			adapter: {},
 		},
 		workspace: {
@@ -455,24 +498,18 @@ s.section("Test 11: diskMirror remote delete falls back when trash throws");
 			// Trash throws — simulating adapter that doesn't support system trash
 			trashFile: async () => { throw new Error("trash not supported"); },
 		},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
-		getTextForPath: () => ({ toString: () => matchingContent }),
-		isFileMetaDeleted: () => false,
-	} as any;
-	const editorBindings = {
+	});
+	const vaultSync = makeVaultSync({
+		getTextForPath: () => crdtText,
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 
-	await (mirror as any).handleRemoteDelete("Notes/trash-throws.md");
+	await mirror["handleRemoteDelete"]("Notes/trash-throws.md");
 
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
 	s.check(!!deleted, "delete still applied after trash failure");
@@ -484,13 +521,17 @@ s.section("Test 12: known-dirty remote delete revives tombstone (no loop)");
 {
 	const events: CapturedTrace[] = [];
 	let ensureFileCalled = false;
+	// ensureFile's declared return type is Y.Text | null. A real, truthy Y.Text
+	// keeps every caller branch identical to the previous `{}` stub.
+	const revivedText = makeCrdtText("revived");
 	const ensureFileCalls: Array<{ path: string; content: string; reviveTombstone: boolean }> = [];
 
 	const file = makeFile("Notes/dirty-revive.md", { ctime: 1, mtime: 1, size: 20 });
 
 	const diskContent = "locally edited version";
 	const crdtContent = "old CRDT baseline";
-	const app = {
+	const crdtText = makeCrdtText(crdtContent);
+	const app = makeApp({
 		vault: {
 			read: async () => diskContent,
 			getAbstractFileByPath: (path: string) => (path === "Notes/dirty-revive.md" ? file : null),
@@ -503,33 +544,27 @@ s.section("Test 12: known-dirty remote delete revives tombstone (no loop)");
 		fileManager: {
 			trashFile: async () => { throw new Error("should not trash"); },
 		},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	});
+	const vaultSync = makeVaultSync({
 		// CRDT differs from disk — known dirty
-		getTextForPath: () => ({ toString: () => crdtContent }),
-		isFileMetaDeleted: () => false,
-		ensureFile: (path: string, content: string, _device: string, opts?: { reviveTombstone?: boolean }) => {
+		getTextForPath: () => crdtText,
+		ensureFile: (path: string, content: string, _device?: string, opts?: { reviveTombstone?: boolean }) => {
 			ensureFileCalled = true;
 			ensureFileCalls.push({ path, content, reviveTombstone: opts?.reviveTombstone ?? false });
-			return {}; // mock Y.Text
+			return revivedText;
 		},
-	} as any;
-	const editorBindings = {
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(
 		app, vaultSync, editorBindings, false, captureTrace(events),
 		() => true, undefined, () => "TestDevice",
 	);
 
-	await (mirror as any).handleRemoteDelete("Notes/dirty-revive.md");
+	await mirror["handleRemoteDelete"]("Notes/dirty-revive.md");
 
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
 	const revived = findEvent(events, "disk", "remote-delete-preserved-revived");
@@ -545,10 +580,13 @@ s.section("Test 13: unknown-baseline remote delete does NOT revive tombstone");
 {
 	const events: CapturedTrace[] = [];
 	let ensureFileCalled = false;
+	// ensureFile's declared return type is Y.Text | null. A real, truthy Y.Text
+	// keeps every caller branch identical to the previous `{}` stub.
+	const revivedText = makeCrdtText("revived");
 
 	const file = makeFile("Notes/unknown-baseline.md", { ctime: 1, mtime: 1, size: 10 });
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => "some content on disk",
 			getAbstractFileByPath: (path: string) => (path === "Notes/unknown-baseline.md" ? file : null),
@@ -561,32 +599,26 @@ s.section("Test 13: unknown-baseline remote delete does NOT revive tombstone");
 		fileManager: {
 			trashFile: async () => { throw new Error("should not trash"); },
 		},
-	} as any;
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	});
+	const vaultSync = makeVaultSync({
 		// CRDT unavailable — unknown baseline
 		getTextForPath: () => null,
-		isFileMetaDeleted: () => false,
 		ensureFile: () => {
 			ensureFileCalled = true;
-			return {};
+			return revivedText;
 		},
-	} as any;
-	const editorBindings = {
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(
 		app, vaultSync, editorBindings, false, captureTrace(events),
 		() => true, undefined, () => "TestDevice",
 	);
 
-	await (mirror as any).handleRemoteDelete("Notes/unknown-baseline.md");
+	await mirror["handleRemoteDelete"]("Notes/unknown-baseline.md");
 
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
 	const revived = findEvent(events, "disk", "remote-delete-preserved-revived");
@@ -611,16 +643,19 @@ s.section("Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by
 	const { ReconciliationController } = await import("../../src/runtime/reconciliationController");
 	const events: CapturedTrace[] = [];
 	let ensureFileCalled = false;
+	// ensureFile's declared return type is Y.Text | null. A real, truthy Y.Text
+	// keeps every caller branch identical to the previous `{}` stub.
+	const revivedText = makeCrdtText("revived");
 
 	const file = makeFile("Notes/unknown-baseline.md", { ctime: 1, mtime: 1, size: 10 });
 
 	// --- Step 1: Set up DiskMirror and trigger preserve-unresolved ---
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => "some content on disk",
 			getAbstractFileByPath: (path: string) => (path === "Notes/unknown-baseline.md" ? file : null),
 			delete: async () => { throw new Error("should not delete"); },
-			adapter: { stat: async () => ({ mtime: 1, size: 10 }) },
+			adapter: { stat: async (): Promise<Stat> => ({ type: "file", ctime: 1, mtime: 1, size: 10 }) },
 		},
 		workspace: {
 			getActiveViewOfType: () => null,
@@ -629,31 +664,25 @@ s.section("Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by
 		fileManager: {
 			trashFile: async () => { throw new Error("should not trash"); },
 		},
-	} as any;
+	});
 
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	const vaultSync = makeVaultSync({
 		// CRDT unavailable — unknown baseline
 		getTextForPath: () => null,
-		isFileMetaDeleted: () => false,
 		isInitialized: true,
 		markInitialized: () => {},
 		ensureFile: () => {
 			ensureFileCalled = true;
-			return {};
+			return revivedText;
 		},
 		getActiveMarkdownPaths: () => [],
-	} as any;
+	});
 
-	const editorBindings = {
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 
 	const mirror = new DiskMirror(
 		app, vaultSync, editorBindings, false, captureTrace(events),
@@ -661,7 +690,7 @@ s.section("Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by
 	);
 
 	// Step 2: Remote tombstone arrives — no CRDT baseline
-	await (mirror as any).handleRemoteDelete("Notes/unknown-baseline.md");
+	await mirror["handleRemoteDelete"]("Notes/unknown-baseline.md");
 
 	// Verify: path is now in preserved-unresolved set
 	s.check(
@@ -673,13 +702,13 @@ s.section("Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by
 	// --- Step 3: Set up ReconciliationController and run importUntrackedFiles ---
 	const controller = new ReconciliationController({
 		app,
-		getSettings: () => ({ deviceName: "TestDevice" }) as any,
+		getSettings: () => ({ deviceName: "TestDevice" }) as VaultSyncSettings,
 		getRuntimeConfig: () => ({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
-			excludePatterns: [],
+			excludePatterns: [] as string[],
 			externalEditPolicy: "always",
-		}) as any,
+		}) as RuntimeConfig,
 		getVaultSync: () => vaultSync,
 		getDiskMirror: () => mirror,
 		getBlobSync: () => null,
@@ -702,10 +731,10 @@ s.section("Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by
 
 	// Inject the preserved file as "untracked" — simulates reconciliation
 	// discovering the file on disk with no CRDT entry
-	(controller as any).untrackedFiles = ["Notes/unknown-baseline.md"];
+	controller["untrackedFiles"] = ["Notes/unknown-baseline.md"];
 
 	// Step 4: Run importUntrackedFiles — the next reconciliation pass
-	await (controller as any).importUntrackedFiles();
+	await controller.importUntrackedFiles();
 
 	// Step 5: Assert no resurrection
 	s.check(!ensureFileCalled, "ensureFile NOT called by importUntrackedFiles (preserved-unresolved guard)");
@@ -726,8 +755,8 @@ s.section("Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by
 	);
 
 	// Now importUntrackedFiles WOULD call ensureFile (proving the guard was the only blocker)
-	(controller as any).untrackedFiles = ["Notes/unknown-baseline.md"];
-	await (controller as any).importUntrackedFiles();
+	controller["untrackedFiles"] = ["Notes/unknown-baseline.md"];
+	await controller.importUntrackedFiles();
 	s.check(ensureFileCalled, "ensureFile IS called after preserved-unresolved guard is cleared");
 }
 
@@ -739,7 +768,7 @@ s.section("Test 6: Multi-pass: read-failure during remote-delete becomes preserv
 
 	const file = makeFile("Notes/read-fails.md", { ctime: 1, mtime: 1, size: 10 });
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			// Read throws — simulates locked/busy file
 			read: async () => { throw new Error("EBUSY: file is locked"); },
@@ -753,31 +782,25 @@ s.section("Test 6: Multi-pass: read-failure during remote-delete becomes preserv
 		fileManager: {
 			trashFile: async () => { fileTrashed = true; },
 		},
-	} as any;
+	});
 
-	const ytext = { toString: () => "known baseline content" };
-	const vaultSync = {
-		provider: {},
-		meta: { observe() {}, unobserve() {} },
-		ydoc: { on() {}, off() {} },
-		getFileIdForText: () => null,
-		idToText: new Map(),
+	const ytext = makeCrdtText("known baseline content");
+	const vaultSync = makeVaultSync({
 		// CRDT HAS a baseline — but read will fail
 		getTextForPath: () => ytext,
-		isFileMetaDeleted: () => false,
 		ensureFile: () => null,
-	} as any;
-	const editorBindings = {
+	});
+	const editorBindings = makeEditorBindings({
 		getLastEditorActivityForPath: () => null,
 		isBound: () => false,
 		unbindByPath: () => {},
-	} as any;
+	});
 	const mirror = new DiskMirror(
 		app, vaultSync, editorBindings, false, captureTrace(events),
 		() => true, undefined, () => "TestDevice",
 	);
 
-	await (mirror as any).handleRemoteDelete("Notes/read-fails.md");
+	await mirror["handleRemoteDelete"]("Notes/read-fails.md");
 
 	// File should NOT be deleted or trashed
 	s.check(!fileDeleted, "file NOT deleted when read fails");

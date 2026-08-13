@@ -13,7 +13,7 @@
  *   - YaosUnsafeQaPort: scenario control and unsafe mutation
  */
 
-import type { App, MarkdownView } from "obsidian";
+import { MarkdownView, type App } from "obsidian";
 import type { VaultSync } from "../../src/sync/vaultSync";
 import type { ReconciliationController } from "../../src/runtime/reconciliationController";
 import type { ConnectionController } from "../../src/runtime/connectionController";
@@ -481,8 +481,8 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 			let content: string | null = null;
 			app.workspace.iterateAllLeaves((leaf) => {
 				if (content !== null) return;
-				const view = leaf.view as unknown as { file?: { path?: string }; editor?: { getValue?: () => string } };
-				if (view?.file?.path === path && typeof view.editor?.getValue === "function") {
+				const view = leaf.view;
+				if (view instanceof MarkdownView && view.file?.path === path) {
 					content = view.editor.getValue();
 				}
 			});
@@ -513,13 +513,15 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 			const beforeHash = beforeContent !== null ? await sha256(beforeContent) : null;
 
 			// "local" origin = in LOCAL_STRING_ORIGIN_SET → DiskMirror ignores it.
-			// "remote" origin = provider-like string not in set → DiskMirror writes to disk.
-			// We use the provider object itself for remote to guarantee correct routing.
+			// "remote" origin = an origin not in that set → DiskMirror writes to disk.
+			// We use the provider object itself for remote to guarantee correct
+			// routing. forceReplaceYText takes `origin: unknown` because a Yjs
+			// transaction origin is compared by identity, never parsed.
 			const origin = opts.originClass === "local"
 				? "disk-sync"          // a known local origin
-				: (vaultSync.provider as unknown); // provider object = remote origin
+				: vaultSync.provider;  // provider object = remote origin
 
-			forceReplaceYText(ytext, content, origin as string);
+			forceReplaceYText(ytext, content, origin);
 
 			const afterContent = yTextToString(ytext);
 			const afterHash = afterContent !== null ? await sha256(afterContent) : null;
@@ -543,9 +545,9 @@ export function buildQaDebugApi(plugin: PluginHandle): YaosQaDebugApi {
 			let targetView: MarkdownView | null = null;
 			app.workspace.iterateAllLeaves((leaf) => {
 				if (targetView) return;
-				const view = leaf.view as unknown as { file?: { path?: string } };
-				if (view?.file?.path === path) {
-					targetView = leaf.view as unknown as MarkdownView;
+				const view = leaf.view;
+				if (view instanceof MarkdownView && view.file?.path === path) {
+					targetView = view;
 				}
 			});
 

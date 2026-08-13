@@ -1,7 +1,21 @@
-import { MarkdownView, TFile } from "obsidian";
+import {
+	MarkdownView,
+	TFile,
+	type App,
+	type DataAdapter,
+	type Stat,
+	type Vault,
+	type Workspace,
+	type WorkspaceLeaf,
+} from "obsidian";
 import * as Y from "yjs";
 import { updateIndex, type DiskIndex } from "../../src/sync/diskIndex";
 import { ReconciliationController } from "../../src/runtime/reconciliationController";
+import type { RuntimeConfig } from "../../src/runtime/runtimeConfig";
+import type { VaultSyncSettings } from "../../src/settings";
+import type { DiskMirror } from "../../src/sync/diskMirror";
+import type { EditorBindingManager } from "../../src/sync/editorBinding";
+import type { VaultSync } from "../../src/sync/vaultSync";
 import {
 	ORIGIN_DISK_SYNC_RECOVER_BOUND,
 } from "../../src/sync/origins";
@@ -9,10 +23,65 @@ import { suite } from "../harness.ts";
 
 const s = suite("reconciliation-safety-brake");
 
+/**
+ * Partial stand-in for a product object this suite cannot construct.
+ *
+ * obsidian's `App`/`Vault`/`Workspace` ship as declarations with no runtime,
+ * and the `VaultSync`/`DiskMirror`/`EditorBindingManager` constructors wire a
+ * y-partyserver provider, IndexedDB persistence, a debounced write queue and a
+ * CodeMirror compartment. Every fixture below therefore carries only the
+ * members the code under test actually reaches.
+ *
+ * The point of routing all of them through here is the `Partial<T>` parameter:
+ * it is a mapped type over the real declaration, so each stub member is
+ * checked against the product signature it stands in for. A renamed product
+ * method, a dropped parameter or a changed return type now breaks this file at
+ * compile time — which is what the blanket casts this replaced were hiding.
+ * What the helper cannot promise is completeness, so the fabrication stays
+ * confined to this one function instead of being spread over every call site.
+ */
+function fixture<T extends object>(parts: Partial<T>): T {
+	return parts as T;
+}
+
 function makeTFile(path: string): TFile {
 	const file = new TFile() as TFile & { path: string };
 	file.path = path;
 	return file;
+}
+
+/** `stat()` result; only `mtime`/`size` are read by the code under test. */
+function makeStat(mtime: number, size: number): Stat {
+	return { type: "file", ctime: 0, mtime, size };
+}
+
+/** Leaf carrying just the `view` that `iterateAllLeaves` consumers read. */
+function makeLeaf(view: MarkdownView): WorkspaceLeaf {
+	return fixture<WorkspaceLeaf>({ view });
+}
+
+/**
+ * `App` fixture. `adapter` is a separate argument because `Vault.adapter` is a
+ * required `DataAdapter`, so it needs its own partial fixture rather than an
+ * inline literal inside the vault one.
+ */
+function makeApp(parts: {
+	vault?: Omit<Partial<Vault>, "adapter">;
+	adapter?: Partial<DataAdapter>;
+	workspace?: Partial<Workspace>;
+}): App {
+	return fixture<App>({
+		vault: fixture<Vault>({
+			...parts.vault,
+			adapter: fixture<DataAdapter>(parts.adapter ?? {}),
+		}),
+		workspace: fixture<Workspace>(parts.workspace ?? {}),
+	});
+}
+
+/** Only `deviceName` is read from settings by the controller. */
+function makeSettings(deviceName: string): VaultSyncSettings {
+	return fixture<VaultSyncSettings>({ deviceName });
 }
 
 type BoundMarkdownView = MarkdownView & { file: TFile; editor: { getValue(): string } };
@@ -22,7 +91,7 @@ type BoundMarkdownView = MarkdownView & { file: TFile; editor: { getValue(): str
 // `view.editor.getValue()` — so the view is a prototype instance (instanceof
 // still holds for the runtime mock) carrying exactly those two members.
 function makeBoundView(file: TFile, getValue: () => string): BoundMarkdownView {
-	return Object.assign(Object.create(MarkdownView.prototype), {
+	return Object.assign(Object.create(MarkdownView.prototype) as MarkdownView, {
 		file,
 		editor: { getValue },
 	});
@@ -68,9 +137,9 @@ s.section("Test 3: reconciliation safety brake leaves blocked overwrites unindex
 		diskIndex[path] = { mtime: 1, size: 1 };
 	}
 
-	const stats = new Map<string, { mtime: number; size: number }>();
+	const stats = new Map<string, Stat>();
 	for (const path of paths) {
-		stats.set(path, { mtime: 2, size: 2 });
+		stats.set(path, makeStat(2, 2));
 	}
 
 	const reads: string[] = [];
@@ -78,25 +147,31 @@ s.section("Test 3: reconciliation safety brake leaves blocked overwrites unindex
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let saveDiskIndexCalls = 0;
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			getMarkdownFiles: () => files,
-			read: async (file: TFile & { path: string }) => {
+			read: async (file: TFile) => {
 				reads.push(file.path);
 				return `local ${file.path}`;
 			},
-			adapter: {
-				stat: async (path: string) => stats.get(path) ?? null,
-			},
 			getAbstractFileByPath: () => null,
+		},
+		adapter: {
+			stat: async (path: string) => stats.get(path) ?? null,
 		},
 		workspace: {
 			iterateAllLeaves: () => {},
 		},
-	};
+	});
 
-	const vaultSync = {
-		getTextForPath: () => ({ toJSON: () => "remote content" }),
+	// A real Y.Text: `VaultSync.getTextForPath` returns `Y.Text | null`, and the
+	// safety brake makes the reconcile loop that would read it unreachable, so
+	// the fixture holds the content the CRDT side would have carried.
+	const remoteDoc = new Y.Doc();
+	const remoteText = remoteDoc.getText("content");
+	remoteText.insert(0, "remote content");
+	const vaultSync = fixture<VaultSync>({
+		getTextForPath: () => remoteText,
 		getActiveMarkdownPaths: () => paths,
 		reconcileVault: () => ({
 			mode: "authoritative",
@@ -104,21 +179,22 @@ s.section("Test 3: reconciliation safety brake leaves blocked overwrites unindex
 			updatedOnDisk: paths,
 			seededToCrdt: [],
 			untracked: [],
+			tombstonedDiskConflicts: [],
 			skipped: 0,
 		}),
 		runIntegrityChecks: () => ({ duplicateIds: 0, orphansCleaned: 0 }),
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
-		}) as any,
-		getVaultSync: () => vaultSync as any,
-		getDiskMirror: () => ({ flushWrite: async (path: string) => { flushed.push(path); } }) as any,
+		}),
+		getVaultSync: () => vaultSync,
+		getDiskMirror: () => fixture<DiskMirror>({ flushWrite: async (path: string) => { flushed.push(path); } }),
 		getBlobSync: () => null,
 		getEditorBindings: () => null,
 		getDiskIndex: () => diskIndex,
@@ -166,34 +242,40 @@ s.section("Test 4: second reconcile reads blocked paths again");
 		diskIndex[path] = { mtime: 1, size: 1 };
 	}
 
-	const stats = new Map<string, { mtime: number; size: number }>();
+	const stats = new Map<string, Stat>();
 	for (const path of paths) {
-		stats.set(path, { mtime: 1, size: 1 });
+		stats.set(path, makeStat(1, 1));
 	}
 
 	const reads: string[] = [];
 	const flushed: string[] = [];
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			getMarkdownFiles: () => files,
-			read: async (file: TFile & { path: string }) => {
+			read: async (file: TFile) => {
 				reads.push(file.path);
 				return `local ${file.path}`;
 			},
-			adapter: {
-				stat: async (path: string) => stats.get(path) ?? null,
-			},
 			getAbstractFileByPath: () => null,
+		},
+		adapter: {
+			stat: async (path: string) => stats.get(path) ?? null,
 		},
 		workspace: {
 			iterateAllLeaves: () => {},
 		},
-	};
+	});
 
-	const vaultSync = {
-		getTextForPath: () => ({ toJSON: () => "remote content" }),
+	// A real Y.Text: `VaultSync.getTextForPath` returns `Y.Text | null`, and the
+	// safety brake makes the reconcile loop that would read it unreachable, so
+	// the fixture holds the content the CRDT side would have carried.
+	const remoteDoc = new Y.Doc();
+	const remoteText = remoteDoc.getText("content");
+	remoteText.insert(0, "remote content");
+	const vaultSync = fixture<VaultSync>({
+		getTextForPath: () => remoteText,
 		getActiveMarkdownPaths: () => paths,
 		reconcileVault: () => ({
 			mode: "authoritative",
@@ -201,21 +283,22 @@ s.section("Test 4: second reconcile reads blocked paths again");
 			updatedOnDisk: paths,
 			seededToCrdt: [],
 			untracked: [],
+			tombstonedDiskConflicts: [],
 			skipped: 0,
 		}),
 		runIntegrityChecks: () => ({ duplicateIds: 0, orphansCleaned: 0 }),
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
-		}) as any,
-		getVaultSync: () => vaultSync as any,
-		getDiskMirror: () => ({ flushWrite: async (path: string) => { flushed.push(path); } }) as any,
+		}),
+		getVaultSync: () => vaultSync,
+		getDiskMirror: () => fixture<DiskMirror>({ flushWrite: async (path: string) => { flushed.push(path); } }),
 		getBlobSync: () => null,
 		getEditorBindings: () => null,
 		getDiskIndex: () => diskIndex,
@@ -238,7 +321,7 @@ s.section("Test 4: second reconcile reads blocked paths again");
 
 	await controller.runReconciliation("authoritative");
 	const firstReadCount = reads.length;
-	(controller as any).lastReconcileTime = 0;
+	controller["lastReconcileTime"] = 0;
 	await controller.runReconciliation("authoritative");
 
 	s.check(firstReadCount === 30, "first reconcile reads all blocked paths");
@@ -270,25 +353,25 @@ s.section("Test 5: bound recovery force-replaces when CRDT changes after authori
 	let mutatedDuringGuard = false;
 	let diskIndex: DiskIndex = {};
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => diskContent,
-			adapter: {
-				stat: async () => ({ mtime: 10, size: diskContent.length }),
-			},
+		},
+		adapter: {
+			stat: async () => makeStat(10, diskContent.length),
 		},
 		workspace: {
-			iterateAllLeaves: (cb: (leaf: { view: MarkdownView }) => void) => {
-				cb({ view });
+			iterateAllLeaves: (cb: (leaf: WorkspaceLeaf) => void) => {
+				cb(makeLeaf(view));
 			},
 		},
-	};
+	});
 
-	const vaultSync = {
+	const vaultSync = fixture<VaultSync>({
 		getTextForPath: () => ytext,
-	};
+	});
 
-	const editorBindings = {
+	const editorBindings = fixture<EditorBindingManager>({
 		isBound: () => true,
 		getBindingDebugInfoForView: () => null,
 		getCollabDebugInfoForView: () => null,
@@ -296,21 +379,21 @@ s.section("Test 5: bound recovery force-replaces when CRDT changes after authori
 		rebind: () => {},
 		unbindByPath: () => {},
 		getLastEditorActivityForPath: () => null,
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
-		getVaultSync: () => vaultSync as any,
+		}),
+		getVaultSync: () => vaultSync,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
-		getEditorBindings: () => editorBindings as any,
+		getEditorBindings: () => editorBindings,
 		getDiskIndex: () => diskIndex,
 		setDiskIndex: (next: DiskIndex) => { diskIndex = next; },
 		isMarkdownPathSyncable: () => true,
@@ -336,7 +419,7 @@ s.section("Test 5: bound recovery force-replaces when CRDT changes after authori
 		log: () => {},
 	});
 
-	await (controller as any).syncFileFromDisk(file, "modify");
+	await controller["syncFileFromDisk"](file, "modify");
 
 	const forceTrace = traces.find((event) => event.msg === "recovery-force-replace-applied");
 	const postconditionTrace = traces.find((event) => event.msg === "recovery-postcondition-observed");
@@ -368,30 +451,33 @@ s.section("Test 6: bound ambiguous divergence creates a conflict artifact");
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let diskIndex: DiskIndex = {};
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => diskContent,
+			// `Vault.create` resolves with the created TFile; the controller awaits
+			// it without reading the result.
 			create: async (createdPath: string, content: string) => {
 				if (createdFiles.has(createdPath)) throw new Error("exists");
 				createdFiles.set(createdPath, content);
+				return makeTFile(createdPath);
 			},
-			getAbstractFileByPath: (candidate: string) => createdFiles.has(candidate) ? ({ path: candidate }) : null,
-			adapter: {
-				stat: async () => ({ mtime: 11, size: diskContent.length }),
-			},
+			getAbstractFileByPath: (candidate: string) => createdFiles.has(candidate) ? makeTFile(candidate) : null,
+		},
+		adapter: {
+			stat: async () => makeStat(11, diskContent.length),
 		},
 		workspace: {
-			iterateAllLeaves: (cb: (leaf: { view: MarkdownView }) => void) => {
-				cb({ view });
+			iterateAllLeaves: (cb: (leaf: WorkspaceLeaf) => void) => {
+				cb(makeLeaf(view));
 			},
 		},
-	};
+	});
 
-	const vaultSync = {
+	const vaultSync = fixture<VaultSync>({
 		getTextForPath: () => ytext,
-	};
+	});
 
-	const editorBindings = {
+	const editorBindings = fixture<EditorBindingManager>({
 		isBound: () => true,
 		getBindingDebugInfoForView: () => null,
 		getCollabDebugInfoForView: () => null,
@@ -399,21 +485,21 @@ s.section("Test 6: bound ambiguous divergence creates a conflict artifact");
 		rebind: () => {},
 		unbindByPath: () => {},
 		getLastEditorActivityForPath: () => null,
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "Test Device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("Test Device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
-		getVaultSync: () => vaultSync as any,
+		}),
+		getVaultSync: () => vaultSync,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
-		getEditorBindings: () => editorBindings as any,
+		getEditorBindings: () => editorBindings,
 		getDiskIndex: () => diskIndex,
 		setDiskIndex: (next: DiskIndex) => { diskIndex = next; },
 		isMarkdownPathSyncable: () => true,
@@ -432,7 +518,7 @@ s.section("Test 6: bound ambiguous divergence creates a conflict artifact");
 		log: () => {},
 	});
 
-	await (controller as any).syncFileFromDisk(file, "modify");
+	await controller["syncFileFromDisk"](file, "modify");
 
 	const createdPath = Array.from(createdFiles.keys()).find((candidate) =>
 		candidate.startsWith("ambiguous (YAOS conflict - crdt from Test Device ") &&
@@ -472,25 +558,25 @@ s.section("Test 7: repeated identical recovery fingerprint is quarantined");
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let diskIndex: DiskIndex = {};
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => diskContent,
-			adapter: {
-				stat: async () => ({ mtime: 12, size: diskContent.length }),
-			},
+		},
+		adapter: {
+			stat: async () => makeStat(12, diskContent.length),
 		},
 		workspace: {
-			iterateAllLeaves: (cb: (leaf: { view: MarkdownView }) => void) => {
-				cb({ view });
+			iterateAllLeaves: (cb: (leaf: WorkspaceLeaf) => void) => {
+				cb(makeLeaf(view));
 			},
 		},
-	};
+	});
 
-	const vaultSync = {
+	const vaultSync = fixture<VaultSync>({
 		getTextForPath: () => ytext,
-	};
+	});
 
-	const editorBindings = {
+	const editorBindings = fixture<EditorBindingManager>({
 		isBound: () => true,
 		getBindingDebugInfoForView: () => null,
 		getCollabDebugInfoForView: () => null,
@@ -498,21 +584,21 @@ s.section("Test 7: repeated identical recovery fingerprint is quarantined");
 		rebind: () => {},
 		unbindByPath: () => {},
 		getLastEditorActivityForPath: () => null,
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
-		getVaultSync: () => vaultSync as any,
+		}),
+		getVaultSync: () => vaultSync,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
-		getEditorBindings: () => editorBindings as any,
+		getEditorBindings: () => editorBindings,
 		getDiskIndex: () => diskIndex,
 		setDiskIndex: (next: DiskIndex) => { diskIndex = next; },
 		isMarkdownPathSyncable: () => true,
@@ -534,8 +620,8 @@ s.section("Test 7: repeated identical recovery fingerprint is quarantined");
 	for (let i = 0; i < 3; i++) {
 		ytext.delete(0, ytext.length);
 		ytext.insert(0, crdtContent);
-		(controller as any).boundRecoveryLocks.clear();
-		await (controller as any).syncFileFromDisk(file, "modify");
+		controller["boundRecoveryLocks"].clear();
+		await controller["syncFileFromDisk"](file, "modify");
 	}
 
 	s.check(
@@ -547,8 +633,7 @@ s.section("Test 7: repeated identical recovery fingerprint is quarantined");
 	);
 	s.check(ytext.toString() === crdtContent, "quarantined recovery does not keep hammering the file");
 	// Verify recovery fingerprint map does not store raw content
-	const fingerprints: Map<string, { fingerprint: string; count: number; lastAt: number }> =
-		(controller as any).recoveryFingerprints;
+	const fingerprints = controller["recoveryFingerprints"];
 	const entry = fingerprints.get(path);
 	s.check(!!entry, "fingerprint entry exists for quarantined path");
 	s.check(!entry!.fingerprint.includes(diskContent), "fingerprint does not contain raw disk content");
@@ -572,25 +657,25 @@ s.section("Test 8: successful recovery clears quarantine fingerprint");
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let diskIndex: DiskIndex = {};
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => "disk version A",
-			adapter: {
-				stat: async () => ({ mtime: 13, size: 14 }),
-			},
+		},
+		adapter: {
+			stat: async () => makeStat(13, 14),
 		},
 		workspace: {
-			iterateAllLeaves: (cb: (leaf: { view: MarkdownView }) => void) => {
-				cb({ view });
+			iterateAllLeaves: (cb: (leaf: WorkspaceLeaf) => void) => {
+				cb(makeLeaf(view));
 			},
 		},
-	};
+	});
 
-	const vaultSync = {
+	const vaultSync = fixture<VaultSync>({
 		getTextForPath: () => ytext,
-	};
+	});
 
-	const editorBindings = {
+	const editorBindings = fixture<EditorBindingManager>({
 		isBound: () => true,
 		getBindingDebugInfoForView: () => null,
 		getCollabDebugInfoForView: () => null,
@@ -598,21 +683,21 @@ s.section("Test 8: successful recovery clears quarantine fingerprint");
 		rebind: () => {},
 		unbindByPath: () => {},
 		getLastEditorActivityForPath: () => null,
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
-		getVaultSync: () => vaultSync as any,
+		}),
+		getVaultSync: () => vaultSync,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
-		getEditorBindings: () => editorBindings as any,
+		getEditorBindings: () => editorBindings,
 		getDiskIndex: () => diskIndex,
 		setDiskIndex: (next: DiskIndex) => { diskIndex = next; },
 		isMarkdownPathSyncable: () => true,
@@ -632,12 +717,12 @@ s.section("Test 8: successful recovery clears quarantine fingerprint");
 	});
 
 	// First recovery — should succeed
-	await (controller as any).syncFileFromDisk(file, "modify");
+	await controller["syncFileFromDisk"](file, "modify");
 	s.check(ytext.toString() === "disk version A", "first recovery succeeds");
 
 	// A different fingerprint (different content) should reset the count,
 	// so future legitimate recovery for this path is not blocked.
-	const fingerprints: Map<string, any> = (controller as any).recoveryFingerprints;
+	const fingerprints = controller["recoveryFingerprints"];
 	const entry = fingerprints.get(path);
 	// The path has a fingerprint entry from the recovery attempt
 	s.check(entry?.count === 1, "recovery attempt increments count to 1");
@@ -645,8 +730,8 @@ s.section("Test 8: successful recovery clears quarantine fingerprint");
 	// Now change CRDT to something new and recover again — different fingerprint
 	ytext.delete(0, ytext.length);
 	ytext.insert(0, "new-stale");
-	(controller as any).boundRecoveryLocks.clear();
-	await (controller as any).syncFileFromDisk(file, "modify");
+	controller["boundRecoveryLocks"].clear();
+	await controller["syncFileFromDisk"](file, "modify");
 	s.check(ytext.toString() === "disk version A", "different-fingerprint recovery still succeeds");
 
 	const entry2 = fingerprints.get(path);
@@ -675,26 +760,29 @@ s.section("Test 9: convergence failure does not create infinite conflict artifac
 	// Simulate convergence failure: getTextForPath returns null on the
 	// second call (the convergence re-lookup after artifact creation).
 	let getTextForPathCallCount = 0;
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => diskContent,
+			// `Vault.create` resolves with the created TFile; the controller awaits
+			// it without reading the result.
 			create: async (createdPath: string, content: string) => {
 				if (createdFiles.has(createdPath)) throw new Error("exists");
 				createdFiles.set(createdPath, content);
+				return makeTFile(createdPath);
 			},
-			getAbstractFileByPath: (candidate: string) => createdFiles.has(candidate) ? ({ path: candidate }) : null,
-			adapter: {
-				stat: async () => ({ mtime: 14, size: diskContent.length }),
-			},
+			getAbstractFileByPath: (candidate: string) => createdFiles.has(candidate) ? makeTFile(candidate) : null,
+		},
+		adapter: {
+			stat: async () => makeStat(14, diskContent.length),
 		},
 		workspace: {
-			iterateAllLeaves: (cb: (leaf: { view: MarkdownView }) => void) => {
-				cb({ view });
+			iterateAllLeaves: (cb: (leaf: WorkspaceLeaf) => void) => {
+				cb(makeLeaf(view));
 			},
 		},
-	};
+	});
 
-	const vaultSync = {
+	const vaultSync = fixture<VaultSync>({
 		getTextForPath: () => {
 			getTextForPathCallCount++;
 			// Return ytext for the first call (syncFileFromDisk's initial check)
@@ -703,9 +791,9 @@ s.section("Test 9: convergence failure does not create infinite conflict artifac
 			if (getTextForPathCallCount % 2 === 1) return ytext;
 			return null;
 		},
-	};
+	});
 
-	const editorBindings = {
+	const editorBindings = fixture<EditorBindingManager>({
 		isBound: () => true,
 		getBindingDebugInfoForView: () => null,
 		getCollabDebugInfoForView: () => null,
@@ -713,21 +801,21 @@ s.section("Test 9: convergence failure does not create infinite conflict artifac
 		rebind: () => {},
 		unbindByPath: () => {},
 		getLastEditorActivityForPath: () => null,
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "Test Device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("Test Device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
-		getVaultSync: () => vaultSync as any,
+		}),
+		getVaultSync: () => vaultSync,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
-		getEditorBindings: () => editorBindings as any,
+		getEditorBindings: () => editorBindings,
 		getDiskIndex: () => diskIndex,
 		setDiskIndex: (next: DiskIndex) => { diskIndex = next; },
 		isMarkdownPathSyncable: () => true,
@@ -747,7 +835,7 @@ s.section("Test 9: convergence failure does not create infinite conflict artifac
 	});
 
 	// First call: creates artifact, convergence fails because getTextForPath returns null
-	await (controller as any).syncFileFromDisk(file, "modify");
+	await controller["syncFileFromDisk"](file, "modify");
 	s.check(createdFiles.size === 2, "first pass creates CRDT and disk conflict artifacts");
 
 	const firstTraces = traces.filter((t) => t.msg === "conflict-artifact-needed");
@@ -757,7 +845,7 @@ s.section("Test 9: convergence failure does not create infinite conflict artifac
 	s.check(firstTraces[0]?.details?.convergenceApplied === false, "first pass convergence was not applied");
 
 	// Second call with same divergence: dedupe prevents second artifact
-	await (controller as any).syncFileFromDisk(file, "modify");
+	await controller["syncFileFromDisk"](file, "modify");
 	s.check(createdFiles.size === 2, "second pass does NOT create more conflict artifacts (dedupe)");
 
 	const secondTraces = traces.filter((t) => t.msg === "conflict-artifact-needed");
@@ -784,30 +872,33 @@ s.section("Test 10: second reconcile after successful convergence does not creat
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let diskIndex: DiskIndex = {};
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => diskContent,
+			// `Vault.create` resolves with the created TFile; the controller awaits
+			// it without reading the result.
 			create: async (createdPath: string, content: string) => {
 				if (createdFiles.has(createdPath)) throw new Error("exists");
 				createdFiles.set(createdPath, content);
+				return makeTFile(createdPath);
 			},
-			getAbstractFileByPath: (candidate: string) => createdFiles.has(candidate) ? ({ path: candidate }) : null,
-			adapter: {
-				stat: async () => ({ mtime: 15, size: diskContent.length }),
-			},
+			getAbstractFileByPath: (candidate: string) => createdFiles.has(candidate) ? makeTFile(candidate) : null,
+		},
+		adapter: {
+			stat: async () => makeStat(15, diskContent.length),
 		},
 		workspace: {
-			iterateAllLeaves: (cb: (leaf: { view: MarkdownView }) => void) => {
-				cb({ view });
+			iterateAllLeaves: (cb: (leaf: WorkspaceLeaf) => void) => {
+				cb(makeLeaf(view));
 			},
 		},
-	};
+	});
 
-	const vaultSync = {
+	const vaultSync = fixture<VaultSync>({
 		getTextForPath: () => ytext,
-	};
+	});
 
-	const editorBindings = {
+	const editorBindings = fixture<EditorBindingManager>({
 		isBound: () => true,
 		getBindingDebugInfoForView: () => null,
 		getCollabDebugInfoForView: () => null,
@@ -815,21 +906,21 @@ s.section("Test 10: second reconcile after successful convergence does not creat
 		rebind: () => {},
 		unbindByPath: () => {},
 		getLastEditorActivityForPath: () => null,
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "Test Device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("Test Device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
-		getVaultSync: () => vaultSync as any,
+		}),
+		getVaultSync: () => vaultSync,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
-		getEditorBindings: () => editorBindings as any,
+		getEditorBindings: () => editorBindings,
 		getDiskIndex: () => diskIndex,
 		setDiskIndex: (next: DiskIndex) => { diskIndex = next; },
 		isMarkdownPathSyncable: () => true,
@@ -849,7 +940,7 @@ s.section("Test 10: second reconcile after successful convergence does not creat
 	});
 
 	// First call: artifact created, convergence succeeds
-	await (controller as any).syncFileFromDisk(file, "modify");
+	await controller["syncFileFromDisk"](file, "modify");
 	s.check(createdFiles.size === 2, "first pass creates CRDT and disk conflict artifacts");
 	s.check(ytext.toString() === editorContent, "first pass converges CRDT to editor");
 
@@ -858,7 +949,7 @@ s.section("Test 10: second reconcile after successful convergence does not creat
 	// Reset CRDT to create ambiguity again and verify dedupe is cleared after convergence
 	ytext.delete(0, ytext.length);
 	ytext.insert(0, "new-crdt-version");
-	await (controller as any).syncFileFromDisk(file, "modify");
+	await controller["syncFileFromDisk"](file, "modify");
 
 	// This is a genuinely new divergence (different CRDT content), so a
 	// new artifact should be created.
@@ -883,28 +974,28 @@ s.section("Test 11: artifact creation failure does NOT trigger convergence");
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let diskIndex: DiskIndex = {};
 
-	const app = {
+	const app = makeApp({
 		vault: {
 			read: async () => diskContent,
 			// vault.create always throws — simulating disk-full / permissions error
 			create: async () => { throw new Error("disk full"); },
 			getAbstractFileByPath: () => null,
-			adapter: {
-				stat: async () => ({ mtime: 16, size: diskContent.length }),
-			},
+		},
+		adapter: {
+			stat: async () => makeStat(16, diskContent.length),
 		},
 		workspace: {
-			iterateAllLeaves: (cb: (leaf: { view: MarkdownView }) => void) => {
-				cb({ view });
+			iterateAllLeaves: (cb: (leaf: WorkspaceLeaf) => void) => {
+				cb(makeLeaf(view));
 			},
 		},
-	};
+	});
 
-	const vaultSync = {
+	const vaultSync = fixture<VaultSync>({
 		getTextForPath: () => ytext,
-	};
+	});
 
-	const editorBindings = {
+	const editorBindings = fixture<EditorBindingManager>({
 		isBound: () => true,
 		getBindingDebugInfoForView: () => null,
 		getCollabDebugInfoForView: () => null,
@@ -912,21 +1003,21 @@ s.section("Test 11: artifact creation failure does NOT trigger convergence");
 		rebind: () => {},
 		unbindByPath: () => {},
 		getLastEditorActivityForPath: () => null,
-	};
+	});
 
 	const controller = new ReconciliationController({
-		app: app as any,
-		getSettings: () => ({ deviceName: "Test Device" }) as any,
-		getRuntimeConfig: () => ({
+		app,
+		getSettings: () => makeSettings("Test Device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
-		getVaultSync: () => vaultSync as any,
+		}),
+		getVaultSync: () => vaultSync,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
-		getEditorBindings: () => editorBindings as any,
+		getEditorBindings: () => editorBindings,
 		getDiskIndex: () => diskIndex,
 		setDiskIndex: (next: DiskIndex) => { diskIndex = next; },
 		isMarkdownPathSyncable: () => true,
@@ -945,7 +1036,7 @@ s.section("Test 11: artifact creation failure does NOT trigger convergence");
 		log: () => {},
 	});
 
-	await (controller as any).syncFileFromDisk(file, "modify");
+	await controller["syncFileFromDisk"](file, "modify");
 
 	// CRDT must be UNTOUCHED — still contains original content
 	s.check(ytext.toString() === crdtContent, "CRDT is untouched after artifact creation failure");
@@ -963,14 +1054,14 @@ s.section("Test 12: recovery fingerprint TTL prevents stale accumulation");
 {
 	const path = "ttl-test.md";
 	const controller = new ReconciliationController({
-		app: { vault: {}, workspace: {} } as any,
-		getSettings: () => ({ deviceName: "Test Device" }) as any,
-		getRuntimeConfig: () => ({
+		app: makeApp({}),
+		getSettings: () => makeSettings("Test Device"),
+		getRuntimeConfig: () => fixture<RuntimeConfig>({
 			maxFileSizeBytes: 0,
 			maxFileSizeKB: 0,
 			excludePatterns: [],
 			externalEditPolicy: "always",
-		}) as any,
+		}),
 		getVaultSync: () => null,
 		getDiskMirror: () => null,
 		getBlobSync: () => null,
@@ -991,15 +1082,19 @@ s.section("Test 12: recovery fingerprint TTL prevents stale accumulation");
 		log: () => {},
 	});
 
-	const shouldQuarantine = (controller as any).shouldQuarantineRepeatedRecovery.bind(controller);
+	const shouldQuarantine = controller["shouldQuarantineRepeatedRecovery"].bind(controller);
 
 	// Accumulate to count 2 (just below threshold of 3)
 	s.check(shouldQuarantine(path, "r", "a", "b") === false, "count 1: no quarantine");
 	s.check(shouldQuarantine(path, "r", "a", "b") === false, "count 2: no quarantine");
 
-	// Manually set lastAt far in the past to simulate TTL expiry
-	const fp = (controller as any).recoveryFingerprints.get(path);
-	fp.lastAt = Date.now() - 15 * 60_000; // 15 minutes ago
+	// Manually set lastAt far in the past to simulate TTL expiry. FingerprintEntry
+	// fields are readonly, so the entry is replaced rather than mutated in place:
+	// same map contents, same policy input. The two calls above guarantee the
+	// entry exists, hence the non-null assertion.
+	const fingerprints = controller["recoveryFingerprints"];
+	const fp = fingerprints.get(path)!;
+	fingerprints.set(path, { ...fp, lastAt: Date.now() - 15 * 60_000 }); // 15 minutes ago
 
 	// Same fingerprint but beyond TTL — count resets to 1
 	s.check(shouldQuarantine(path, "r", "a", "b") === false, "count reset to 1 after TTL expiry");

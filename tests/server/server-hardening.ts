@@ -3,6 +3,7 @@ import { MAX_BLOB_UPLOAD_BYTES } from "../../server/src/contracts";
 import worker from "../../server/src/index";
 import { getCapabilities } from "../../server/src/routes/auth";
 import { handleBlobRoute } from "../../server/src/routes/blobs";
+import { FakeR2Bucket, makeEnv, makeStoredConfigNamespace } from "../mocks/workerEnv.ts";
 import { sleep, suite } from "../harness.ts";
 
 const s = suite("server-hardening");
@@ -12,18 +13,6 @@ function json(body: unknown, status = 200): Response {
 		status,
 		headers: { "Content-Type": "application/json" },
 	});
-}
-
-function makeConfigNamespace(config: Record<string, unknown>) {
-	return {
-		idFromName: () => "global-config",
-		get: () => ({
-			fetch: async () => new Response(JSON.stringify(config), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
-		}),
-	};
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -131,12 +120,8 @@ s.section("Test 3: runSerialized keeps snapshot maybe logic single-filed under c
 s.section("Test 4: blob uploads reject poisoned content-addressed keys");
 {
 	let putCalls = 0;
-	const bucket = {
-		put: async () => {
-			putCalls++;
-		},
-	};
-	const env = { YAOS_BUCKET: bucket } as any;
+	const bucket = new FakeR2Bucket({ onPut: () => { putCalls++; } });
+	const env = makeEnv({ YAOS_BUCKET: bucket });
 	const body = new TextEncoder().encode("not the bytes for this hash");
 	const wrongHash = "0".repeat(64);
 	const res = await handleBlobRoute(
@@ -156,12 +141,8 @@ s.section("Test 4: blob uploads reject poisoned content-addressed keys");
 s.section("Test 5: blob uploads reject oversized Content-Length before R2 writes");
 {
 	let putCalls = 0;
-	const bucket = {
-		put: async () => {
-			putCalls++;
-		},
-	};
-	const env = { YAOS_BUCKET: bucket } as any;
+	const bucket = new FakeR2Bucket({ onPut: () => { putCalls++; } });
+	const env = makeEnv({ YAOS_BUCKET: bucket });
 	const body = new TextEncoder().encode("small body");
 	const hash = await sha256Hex(body);
 	const res = await handleBlobRoute(
@@ -183,13 +164,13 @@ s.section("Test 6: blob uploads accept bytes whose body matches the address");
 {
 	let putCalls = 0;
 	let writtenKey = "";
-	const bucket = {
-		put: async (key: string) => {
+	const bucket = new FakeR2Bucket({
+		onPut: (key) => {
 			putCalls++;
 			writtenKey = key;
 		},
-	};
-	const env = { YAOS_BUCKET: bucket } as any;
+	});
+	const env = makeEnv({ YAOS_BUCKET: bucket });
 	const body = new TextEncoder().encode("correct content-addressed bytes");
 	const hash = await sha256Hex(body);
 	const res = await handleBlobRoute(
@@ -210,12 +191,8 @@ s.section("Test 6: blob uploads accept bytes whose body matches the address");
 s.section("Test 7: blob uploads reject malformed Content-Length");
 {
 	let putCalls = 0;
-	const bucket = {
-		put: async () => {
-			putCalls++;
-		},
-	};
-	const env = { YAOS_BUCKET: bucket } as any;
+	const bucket = new FakeR2Bucket({ onPut: () => { putCalls++; } });
+	const env = makeEnv({ YAOS_BUCKET: bucket });
 	const body = new TextEncoder().encode("small body");
 	const hash = await sha256Hex(body);
 	const res = await handleBlobRoute(
@@ -247,12 +224,8 @@ s.section("Test 7b: blob uploads reject oversized body when Content-Length heade
 	// buffering.  A client that omits Content-Length causes the Worker to pay
 	// the full memory cost of the request body before the rejection occurs.
 	let putCalls = 0;
-	const bucket = {
-		put: async () => {
-			putCalls++;
-		},
-	};
-	const env = { YAOS_BUCKET: bucket } as any;
+	const bucket = new FakeR2Bucket({ onPut: () => { putCalls++; } });
+	const env = makeEnv({ YAOS_BUCKET: bucket });
 	// Body exceeds MAX_BLOB_UPLOAD_BYTES by one byte.  All bytes are zero so
 	// construction is fast; the exact content does not matter because the test
 	// fails at the size check, never reaching the hash-integrity check.
@@ -280,7 +253,7 @@ s.section("Test 7b: blob uploads reject oversized body when Content-Length heade
 
 s.section("Test 8: public capabilities do not expose private update metadata");
 {
-	const env = { YAOS_BUCKET: {} } as any;
+	const env = makeEnv({ YAOS_BUCKET: new FakeR2Bucket() });
 	const auth = { mode: "claim", claimed: true, tokenHash: "hash" } as const;
 	const config = {
 		claimed: true,
@@ -304,18 +277,17 @@ s.section("Test 8: public capabilities do not expose private update metadata");
 s.section("Test 9: /api/capabilities route splits public and authenticated metadata");
 {
 	const token = "correct-token";
-	const env = {
+	const env = makeEnv({
 		SYNC_TOKEN: token,
-		YAOS_BUCKET: {},
-		YAOS_CONFIG: makeConfigNamespace({
+		YAOS_BUCKET: new FakeR2Bucket(),
+		YAOS_CONFIG: makeStoredConfigNamespace({
 			claimed: true,
 			tokenHash: "unused-env-token-mode",
 			updateProvider: "github",
 			updateRepoUrl: "https://github.com/private/fork",
 			updateRepoBranch: "secret-branch",
 		}),
-		YAOS_SYNC: {},
-	} as any;
+	});
 
 	const publicRes = await worker.fetch(new Request("https://example.test/api/capabilities"), env);
 	const publicCaps = await publicRes.json() as Record<string, unknown>;

@@ -191,8 +191,7 @@ export const s09bRenameFromExcluded: QaScenario = {
 		//    vault.rename requires the file to be indexed by Obsidian, which excluded
 		//    paths are not. Use adapter.rename directly to move the file.
 		//    The key question is whether this fires a vault `create` event at syncDest.
-		await (ctx.app.vault.adapter as unknown as { rename(src: string, dst: string): Promise<void> })
-			.rename(excludedSrc, syncDest);
+		await ctx.app.vault.adapter.rename(excludedSrc, syncDest);
 
 		// Wait for Obsidian to settle. Whether syncDest gets admitted depends on
 		// whether Obsidian fires a vault `create` event at the destination.

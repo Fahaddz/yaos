@@ -15,6 +15,7 @@ import type {
 	ManifestDiff,
 } from "./types";
 import { analyzeTrace } from "../analyzers/analyzer";
+import { getPluginRegistry } from "../harness/ports/obsidianInternalsPort";
 import { sleep, waitForIdle, waitForMemoryReceipt, waitForFile, waitForCrdtFile, waitForDiskCrdtConverge, waitForActiveMarkdownLeaf, waitForCrdtBinding } from "./wait";
 import {
 	createFile,
@@ -47,7 +48,7 @@ const DEFAULT_RECEIPT_TIMEOUT = 30_000;
 const DEFAULT_FILE_TIMEOUT = 15_000;
 
 function getYaos(): YaosQaDebugApi {
-	const api = (window as unknown as Record<string, unknown>).__YAOS_DEBUG__ as YaosQaDebugApi | undefined;
+	const api = window.__YAOS_DEBUG__;
 	if (!api) throw new Error("window.__YAOS_DEBUG__ not found — is YAOS loaded with qaDebugMode enabled?");
 	return api;
 }
@@ -320,12 +321,15 @@ export function buildQaConsoleApi(app: App, scenarioRegistry: Map<string, QaScen
 
 		// Plugin state
 		plugins() {
-			const installedPlugins = (app as unknown as {
-				plugins: { plugins: Record<string, { manifest: { version: string } }> };
-			}).plugins.plugins;
-			return Object.entries(installedPlugins).map(([id, p]) => ({
+			const registry = getPluginRegistry(app);
+			if (!registry) {
+				throw new Error(
+					"[YAOS QA] app.plugins is not available — cannot list installed plugins.",
+				);
+			}
+			return Object.entries(registry.plugins).map(([id, plugin]) => ({
 				id,
-				version: p.manifest.version,
+				version: plugin.manifest.version,
 				enabled: true,
 			}));
 		},

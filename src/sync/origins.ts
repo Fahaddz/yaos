@@ -22,7 +22,7 @@ export const ORIGIN_EDITOR_HEALTH_HEAL = "editor-health-heal" as const;
  * Use isLocalOrigin() for gate decisions or LOCAL_REPAIR_ORIGINS for
  * enumeration in tests.
  *
- * Convention: any new local-repair origin emitted elsewhere in the codebase
+ * Convention: every new local-repair origin emitted elsewhere in the codebase
  * must be added here in the same change as the call site.
  */
 const LOCAL_STRING_ORIGIN_SET = new Set<string>([

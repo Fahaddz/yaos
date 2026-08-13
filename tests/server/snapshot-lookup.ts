@@ -14,6 +14,7 @@ import {
 	listSnapshots,
 	type SnapshotIndex,
 } from "../../server/src/snapshot";
+import { FakeR2Bucket } from "../mocks/workerEnv.ts";
 import { suite } from "../harness.ts";
 
 // ---------------------------------------------------------------------------
@@ -26,12 +27,36 @@ function assertEqual(actual: unknown, expected: unknown, msg: string): void {
 	s.check(actual === expected, `${msg} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`);
 }
 
-/** Build a minimal R2Object-like mock. */
-function mockR2Object(textPayload: string): R2ObjectBody {
-	return {
-		text: async () => textPayload,
-		arrayBuffer: async () => new TextEncoder().encode(textPayload).buffer,
-	} as unknown as R2ObjectBody;
+/**
+ * The two keys `getSnapshotPayload` fetches for a snapshot.
+ *
+ * The day segment comes from the product's own `dayFromSnapshotId`, the same
+ * way `makeIndex` below derives it, so seeding a bucket does not restate the
+ * schema — only the two file names, which the key-schema section at the bottom
+ * of this file asserts literally.
+ */
+function payloadKeys(vaultId: string, snapshotId: string): { index: string; crdt: string } {
+	const day = dayFromSnapshotId(snapshotId) ?? "1970-01-01";
+	const prefix = `v1/${vaultId}/snapshots/${day}/${snapshotId}`;
+	return { index: `${prefix}/index.json`, crdt: `${prefix}/crdt.bin.gz` };
+}
+
+/** UTF-8 bytes, for seeding a bucket with a JSON or text object. */
+function bytes(text: string): Uint8Array {
+	return new TextEncoder().encode(text);
+}
+
+/**
+ * A bucket whose `list` is a tripwire.
+ *
+ * `getSnapshotPayload` must reach a snapshot by direct key, never by scanning,
+ * so in the sections below that exercise a *valid* snapshotId any list call is
+ * a bug rather than a number to assert on.
+ */
+class NoListR2Bucket extends FakeR2Bucket {
+	override list(): never {
+		throw new Error("list must not be called");
+	}
 }
 
 /**
@@ -161,32 +186,23 @@ s.section("dayFromSnapshotId: overflowing timestamp returns null");
 
 s.section("getSnapshotPayload: exactly 2 bucket.get() calls, 0 list calls");
 {
-	let getCalls = 0;
-	let listCalls = 0;
-
 	const vaultId = "vault-op-count";
 	const snapshotId = snapshotIdForDate(new Date("2026-05-27T10:00:00.000Z"));
 	const index = makeIndex(snapshotId, vaultId);
-	const indexText = JSON.stringify(index);
+	const keys = payloadKeys(vaultId, snapshotId);
 
-	const bucket = {
-		get: async (_key: string) => {
-			getCalls++;
-			if (_key.endsWith("/index.json")) return mockR2Object(indexText);
-			if (_key.endsWith("/crdt.bin.gz")) return mockR2Object("compressed-bytes");
-			return null;
-		},
-		list: async () => {
-			listCalls++;
-			return { objects: [], truncated: false };
-		},
-	} as unknown as R2Bucket;
+	const bucket = new FakeR2Bucket({
+		objects: new Map([
+			[keys.index, bytes(JSON.stringify(index))],
+			[keys.crdt, bytes("compressed-bytes")],
+		]),
+	});
 
 	const result = await getSnapshotPayload(vaultId, snapshotId, bucket);
 
 	s.check(result !== null, "result is not null for valid snapshot");
-	assertEqual(getCalls, 2, "exactly 2 bucket.get() calls");
-	assertEqual(listCalls, 0, "zero bucket.list() calls");
+	assertEqual(bucket.gets.length, 2, "exactly 2 bucket.get() calls");
+	assertEqual(bucket.listCalls, 0, "zero bucket.list() calls");
 }
 
 // ---------------------------------------------------------------------------
@@ -198,22 +214,15 @@ s.section("getSnapshotPayload: returns correct index and payload");
 	const vaultId = "vault-hit";
 	const snapshotId = snapshotIdForDate(new Date("2026-01-15T08:00:00.000Z"));
 	const index = makeIndex(snapshotId, vaultId);
-	const indexText = JSON.stringify(index);
 	const payloadBytes = new Uint8Array([0x1f, 0x8b, 0x08, 0x00]); // gzip magic bytes
+	const keys = payloadKeys(vaultId, snapshotId);
 
-	const bucket = {
-		get: async (key: string) => {
-			if (key.endsWith("/index.json")) return mockR2Object(indexText);
-			if (key.endsWith("/crdt.bin.gz")) {
-				return {
-					text: async () => new TextDecoder().decode(payloadBytes),
-					arrayBuffer: async () => payloadBytes.buffer,
-				} as unknown as R2ObjectBody;
-			}
-			return null;
-		},
-		list: async () => { throw new Error("list must not be called"); },
-	} as unknown as R2Bucket;
+	const bucket = new NoListR2Bucket({
+		objects: new Map([
+			[keys.index, bytes(JSON.stringify(index))],
+			[keys.crdt, payloadBytes],
+		]),
+	});
 
 	const result = await getSnapshotPayload(vaultId, snapshotId, bucket);
 
@@ -225,45 +234,35 @@ s.section("getSnapshotPayload: returns correct index and payload");
 
 s.section("getSnapshotPayload: missing index.json returns null");
 {
-	let getCalls = 0;
 	const vaultId = "vault-miss-index";
 	const snapshotId = snapshotIdForDate(new Date("2026-03-01T00:00:00.000Z"));
 
-	const bucket = {
-		get: async (key: string) => {
-			getCalls++;
-			if (key.endsWith("/crdt.bin.gz")) return mockR2Object("payload");
-			return null; // index.json missing
-		},
-		list: async () => { throw new Error("list must not be called"); },
-	} as unknown as R2Bucket;
+	// index.json missing: only the payload key is seeded.
+	const bucket = new NoListR2Bucket({
+		objects: new Map([[payloadKeys(vaultId, snapshotId).crdt, bytes("payload")]]),
+	});
 
 	const result = await getSnapshotPayload(vaultId, snapshotId, bucket);
 
 	s.check(result === null, "null when index.json is absent");
-	assertEqual(getCalls, 2, "still fetches both keys in parallel before checking");
+	assertEqual(bucket.gets.length, 2, "still fetches both keys in parallel before checking");
 }
 
 s.section("getSnapshotPayload: missing crdt.bin.gz returns null");
 {
-	let getCalls = 0;
 	const vaultId = "vault-miss-payload";
 	const snapshotId = snapshotIdForDate(new Date("2026-04-10T06:00:00.000Z"));
 	const index = makeIndex(snapshotId, vaultId);
 
-	const bucket = {
-		get: async (key: string) => {
-			getCalls++;
-			if (key.endsWith("/index.json")) return mockR2Object(JSON.stringify(index));
-			return null; // crdt.bin.gz missing
-		},
-		list: async () => { throw new Error("list must not be called"); },
-	} as unknown as R2Bucket;
+	// crdt.bin.gz missing: only the index key is seeded.
+	const bucket = new NoListR2Bucket({
+		objects: new Map([[payloadKeys(vaultId, snapshotId).index, bytes(JSON.stringify(index))]]),
+	});
 
 	const result = await getSnapshotPayload(vaultId, snapshotId, bucket);
 
 	s.check(result === null, "null when crdt.bin.gz is absent");
-	assertEqual(getCalls, 2, "still fetches both keys in parallel before checking");
+	assertEqual(bucket.gets.length, 2, "still fetches both keys in parallel before checking");
 }
 
 // ---------------------------------------------------------------------------
@@ -272,18 +271,13 @@ s.section("getSnapshotPayload: missing crdt.bin.gz returns null");
 
 s.section("getSnapshotPayload: invalid base36 timestamp does not list bucket");
 {
-	let listCalls = 0;
-
-	const bucket = {
-		get: async () => null,
-		list: async () => { listCalls++; return { objects: [], truncated: false }; },
-	} as unknown as R2Bucket;
+	const bucket = new FakeR2Bucket();
 
 	await getSnapshotPayload("vault", "0-abcdef01", bucket); // ts=0 → null, no list
-	assertEqual(listCalls, 0, "zero list calls for ts=0 snapshotId");
+	assertEqual(bucket.listCalls, 0, "zero list calls for ts=0 snapshotId");
 
 	await getSnapshotPayload("vault", "", bucket); // empty → null, no list
-	assertEqual(listCalls, 0, "zero list calls for empty snapshotId");
+	assertEqual(bucket.listCalls, 0, "zero list calls for empty snapshotId");
 }
 
 // ---------------------------------------------------------------------------
@@ -292,17 +286,12 @@ s.section("getSnapshotPayload: invalid base36 timestamp does not list bucket");
 
 s.section("getSnapshotPayload: uppercase prefix performs no bucket I/O");
 {
-	let getCalls = 0;
-	let listCalls = 0;
-	const bucket = {
-		get: async () => { getCalls++; return null; },
-		list: async () => { listCalls++; return { objects: [], truncated: false }; },
-	} as unknown as R2Bucket;
+	const bucket = new FakeR2Bucket();
 
 	const result = await getSnapshotPayload("vault", "UPPER-abcdef01", bucket);
 	s.check(result === null, "uppercase prefix → null");
-	assertEqual(getCalls, 0, "uppercase prefix: 0 bucket.get() calls");
-	assertEqual(listCalls, 0, "uppercase prefix: 0 bucket.list() calls");
+	assertEqual(bucket.gets.length, 0, "uppercase prefix: 0 bucket.get() calls");
+	assertEqual(bucket.listCalls, 0, "uppercase prefix: 0 bucket.list() calls");
 }
 
 s.section("getSnapshotPayload: malformed snapshotId performs no bucket I/O");
@@ -316,16 +305,11 @@ s.section("getSnapshotPayload: malformed snapshotId performs no bucket I/O");
 		["abc-abc", "suffix too short (3 chars)"],
 	];
 	for (const [id, label] of cases) {
-		let getCalls = 0;
-		let listCalls = 0;
-		const bucket = {
-			get: async () => { getCalls++; return null; },
-			list: async () => { listCalls++; return { objects: [], truncated: false }; },
-		} as unknown as R2Bucket;
+		const bucket = new FakeR2Bucket();
 		const result = await getSnapshotPayload("vault", id, bucket);
 		s.check(result === null, `${label} → null`);
-		assertEqual(getCalls, 0, `${label}: 0 bucket.get() calls`);
-		assertEqual(listCalls, 0, `${label}: 0 bucket.list() calls`);
+		assertEqual(bucket.gets.length, 0, `${label}: 0 bucket.get() calls`);
+		assertEqual(bucket.listCalls, 0, `${label}: 0 bucket.list() calls`);
 	}
 }
 
@@ -339,27 +323,26 @@ s.section("getSnapshotPayload: fetches exactly index.json and crdt.bin.gz keys")
 	const snapshotId = snapshotIdForDate(new Date("2026-06-01T09:00:00.000Z"));
 	const expectedDay = "2026-06-01";
 	const index = makeIndex(snapshotId, vaultId);
-	const fetchedKeys: string[] = [];
+	const keys = payloadKeys(vaultId, snapshotId);
 
-	const bucket = {
-		get: async (key: string) => {
-			fetchedKeys.push(key);
-			if (key.endsWith("/index.json")) return mockR2Object(JSON.stringify(index));
-			if (key.endsWith("/crdt.bin.gz")) return mockR2Object("payload");
-			return null;
-		},
-		list: async () => { throw new Error("list must not be called"); },
-	} as unknown as R2Bucket;
+	const bucket = new NoListR2Bucket({
+		objects: new Map([
+			[keys.index, bytes(JSON.stringify(index))],
+			[keys.crdt, bytes("payload")],
+		]),
+	});
 
 	await getSnapshotPayload(vaultId, snapshotId, bucket);
 
-	assertEqual(fetchedKeys.length, 2, "exactly 2 keys fetched");
+	// `bucket.gets` records what the product asked for, not what was seeded, so
+	// these three assertions still pin the key schema itself.
+	assertEqual(bucket.gets.length, 2, "exactly 2 keys fetched");
 	s.check(
-		fetchedKeys.some((k) => k === `v1/${vaultId}/snapshots/${expectedDay}/${snapshotId}/index.json`),
+		bucket.gets.some((k) => k === `v1/${vaultId}/snapshots/${expectedDay}/${snapshotId}/index.json`),
 		"index.json key has correct full path",
 	);
 	s.check(
-		fetchedKeys.some((k) => k === `v1/${vaultId}/snapshots/${expectedDay}/${snapshotId}/crdt.bin.gz`),
+		bucket.gets.some((k) => k === `v1/${vaultId}/snapshots/${expectedDay}/${snapshotId}/crdt.bin.gz`),
 		"crdt.bin.gz key has correct full path (schema-fixed; not derived from index)",
 	);
 }
@@ -370,17 +353,9 @@ s.section("getSnapshotPayload: fetches exactly index.json and crdt.bin.gz keys")
 
 s.section("listSnapshots: still calls bucket.list (unchanged contract)");
 {
-	let listCalls = 0;
-
-	const bucket = {
-		list: async () => {
-			listCalls++;
-			return { objects: [], truncated: false };
-		},
-		get: async () => null,
-	} as unknown as R2Bucket;
+	const bucket = new FakeR2Bucket();
 
 	await listSnapshots("vault-list-test", bucket);
-	s.check(listCalls >= 1, "listSnapshots still calls bucket.list at least once");
+	s.check(bucket.listCalls >= 1, "listSnapshots still calls bucket.list at least once");
 }
 await s.done();

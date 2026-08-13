@@ -1,6 +1,8 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
+import { SCHEMA_VERSION } from "../../src/sync/schema.ts";
+import { describeFatalFrame, onFatalFrame } from "./fatalFrame.ts";
 
 const host = process.env.YAOS_TEST_HOST;
 const token = process.env.SYNC_TOKEN;
@@ -14,7 +16,7 @@ if (!host || !token || !room) {
 const ydoc = new Y.Doc();
 const provider = new YSyncProvider(host, room, ydoc, {
 	prefix: `/vault/sync/${encodeURIComponent(room)}`,
-	params: { token, schemaVersion: "2" },
+	params: { token, schemaVersion: String(SCHEMA_VERSION) },
 	WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
 	connect: true,
 });
@@ -34,16 +36,11 @@ function fail(msg: string, details?: unknown): void {
 	process.exit(1);
 }
 
-provider.on("message", (event: { data: unknown }) => {
-	if (typeof event.data !== "string") return;
-	try {
-		const msg = JSON.parse(event.data) as { type?: string } | null;
-		if (msg?.type === "error") {
-			fail("Server returned error", msg);
-		}
-	} catch {
-		// Ignore non-JSON frames.
-	}
+// The Worker sends its fatal rejection frame on the "__YPS:" channel, which the
+// provider re-emits as "custom-message" (see ./fatalFrame.ts). Registered
+// before the first await so it cannot miss a frame sent during admission.
+onFatalFrame(provider, (frame) => {
+	fail(`Server rejected the connection: ${describeFatalFrame(frame)}`, frame);
 });
 
 provider.on("sync", (synced: boolean) => {
@@ -57,7 +54,7 @@ provider.on("sync", (synced: boolean) => {
 	if (mode === "seed") {
 		ydoc.transact(() => {
 			sys.set("initialized", true);
-			sys.set("schemaVersion", 2);
+			sys.set("schemaVersion", SCHEMA_VERSION);
 			let fileId = pathToId.get("redeploy-test.md");
 			if (!fileId) {
 				fileId = "redeploy-test-file";

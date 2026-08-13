@@ -16,6 +16,7 @@ import {
 	getStoredServerConfigCached,
 	invalidateStoredServerConfigCache,
 } from "../../server/src/routes/auth";
+import { makeConfigNamespace, makeEnv, makeStoredConfigNamespace, makeTrapNamespace } from "../mocks/workerEnv.ts";
 import { suite } from "../harness.ts";
 
 const s = suite("server-route-classification-runtime");
@@ -24,21 +25,11 @@ const s = suite("server-route-classification-runtime");
 
 const DO_TOUCHED = "Durable Object namespace accessed for unknown route (issue #40 regression — INV-ROUTE-01)";
 
-function makeTrapNamespace() {
-	return {
-		idFromName(_name: string): never { throw new Error(DO_TOUCHED); },
-		idFromString(_id: string): never { throw new Error(DO_TOUCHED); },
-		get(_id: unknown): never { throw new Error(DO_TOUCHED); },
-		newUniqueId(): never { throw new Error(DO_TOUCHED); },
-		jurisdiction(_j: string): never { throw new Error(DO_TOUCHED); },
-	};
-}
-
-const trapEnv: Env = {
-	YAOS_SYNC: makeTrapNamespace() as unknown as Env["YAOS_SYNC"],
-	YAOS_CONFIG: makeTrapNamespace() as unknown as Env["YAOS_CONFIG"],
+const trapEnv: Env = makeEnv({
+	YAOS_SYNC: makeTrapNamespace(DO_TOUCHED),
+	YAOS_CONFIG: makeTrapNamespace(DO_TOUCHED),
 	SYNC_TOKEN: undefined,
-};
+});
 
 // ── Test 1: junk paths return 404 without touching any DO ─────────────────────
 s.section("Test 1: junk paths return 404 without touching YAOS_CONFIG or YAOS_SYNC");
@@ -133,26 +124,17 @@ s.section("Test 3: two claim-mode requests within TTL share one YAOS_CONFIG fetc
 		updateRepoBranch: null,
 	};
 
-	const countingEnv: Env = {
-		YAOS_SYNC: makeTrapNamespace() as unknown as Env["YAOS_SYNC"],
-		YAOS_CONFIG: {
-			idFromName: () => "global-config" as unknown as DurableObjectId,
-			idFromString: (_id: string) => _id as unknown as DurableObjectId,
-			get: (_id: unknown) => ({
-				fetch: async () => {
-					fetchCount++;
-					return new Response(JSON.stringify(claimConfig), {
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					});
-				},
-				// Minimal stub — only fetch is exercised
-			}) as unknown as DurableObjectStub,
-			newUniqueId: () => { throw new Error("unexpected"); },
-			jurisdiction: (_j: string) => { throw new Error("unexpected"); },
-		} as unknown as Env["YAOS_CONFIG"],
+	const countingEnv: Env = makeEnv({
+		YAOS_SYNC: makeTrapNamespace(DO_TOUCHED),
+		YAOS_CONFIG: makeConfigNamespace(async () => {
+			fetchCount++;
+			return new Response(JSON.stringify(claimConfig), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}),
 		SYNC_TOKEN: undefined,
-	};
+	});
 
 	const resp = await worker.fetch(
 		new Request("https://example.com/api/capabilities"),
@@ -181,41 +163,27 @@ s.section("Test 4: unclaimed mode — vault routes rejected without YAOS_SYNC ac
 {
 	invalidateStoredServerConfigCache();
 
-	let syncTouched = false;
-	const trapSyncEnv: Env = {
-		YAOS_SYNC: {
-			idFromName: (_name: string) => {
-				syncTouched = true;
-				throw new Error("YAOS_SYNC accessed before auth succeeded");
-			},
-		} as unknown as Env["YAOS_SYNC"],
-		YAOS_CONFIG: {
-			idFromName: () => "global-config" as unknown as DurableObjectId,
-			idFromString: (_id: string) => _id as unknown as DurableObjectId,
-			get: (_id: unknown) => ({
-				fetch: async () => new Response(JSON.stringify({
-					claimed: false,
-					tokenHash: null,
-					updateProvider: null,
-					updateRepoUrl: null,
-					updateRepoBranch: null,
-				}), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				}),
-			}) as unknown as DurableObjectStub,
-			newUniqueId: () => { throw new Error("unexpected"); },
-			jurisdiction: (_j: string) => { throw new Error("unexpected"); },
-		} as unknown as Env["YAOS_CONFIG"],
+	// The trap records every member reached, so "was not touched" is a positive
+	// observable rather than the mere absence of a thrown error.
+	const syncTrap = makeTrapNamespace("YAOS_SYNC accessed before auth succeeded");
+	const trapSyncEnv: Env = makeEnv({
+		YAOS_SYNC: syncTrap,
+		YAOS_CONFIG: makeStoredConfigNamespace({
+			claimed: false,
+			tokenHash: null,
+			updateProvider: null,
+			updateRepoUrl: null,
+			updateRepoBranch: null,
+		}),
 		SYNC_TOKEN: undefined,
-	};
+	});
 
 	const resp = await worker.fetch(
 		new Request("https://example.com/vault/some-vault/debug/recent"),
 		trapSyncEnv,
 	);
 	s.check(resp.status === 503, "unclaimed mode: vault route returns 503");
-	s.check(!syncTouched, "unclaimed mode: YAOS_SYNC was not touched");
+	s.check(syncTrap.touched.length === 0, "unclaimed mode: YAOS_SYNC was not touched");
 
 	invalidateStoredServerConfigCache();
 }
@@ -271,30 +239,26 @@ s.section("Test 6: /vault/sync/:vaultId is classified as sync-socket, not vault"
 	// We test the side-effect: a WS-upgrade request to the sync path must not
 	// return 404 (which would happen if parseSyncPath were skipped).
 	//
-	// Use an env with a working YAOS_SYNC stub that rejects the non-WS request
-	// with a 426 so we can distinguish "classified as sync" from "classified as
-	// not-found (404)".  Auth is via SYNC_TOKEN so YAOS_CONFIG is not needed.
-	const syncTestEnv: Env = {
+	// Both namespaces are traps: this request never reaches a Durable Object.
+	// It carries no token, so the sync handler's auth gate rejects it with 401 —
+	// already enough to distinguish "classified as sync" (401, from the sync
+	// handler) from "classified as not-found" (404, from the resource
+	// whitelist) — and the traps prove no DO was woken on the way.
+	//
+	// An earlier version of this block wired a YAOS_SYNC stub whose fetch
+	// returned 426.  That stub was unreachable twice over: auth rejects before
+	// routing, and the sync handler obtains its stub via getServerByName(),
+	// which tests/mocks/partyserver.ts replaces with a thrower.  The 426 branch
+	// below is kept in the accepted set because it is the status a real
+	// deployment returns here.
+	const syncTestEnv: Env = makeEnv({
 		SYNC_TOKEN: "test-token-for-sync-ordering-check",
-		YAOS_SYNC: {
-			idFromName: (_name: string) => _name as unknown as DurableObjectId,
-			get: (_id: unknown) => ({
-				fetch: async (_url: string, _init?: RequestInit) => {
-					// Simulate the real server returning 426 for a non-WS sync request
-					return new Response(JSON.stringify({ error: "update_required" }), {
-						status: 426,
-						headers: { "Content-Type": "application/json" },
-					});
-				},
-			}) as unknown as DurableObjectStub,
-			newUniqueId: () => { throw new Error("unexpected"); },
-			jurisdiction: (_j: string) => { throw new Error("unexpected"); },
-		} as unknown as Env["YAOS_SYNC"],
-		YAOS_CONFIG: makeTrapNamespace() as unknown as Env["YAOS_CONFIG"],
-	};
+		YAOS_SYNC: makeTrapNamespace(DO_TOUCHED),
+		YAOS_CONFIG: makeTrapNamespace(DO_TOUCHED),
+	});
 
-	// Non-WS request to sync path — classified as sync-socket, routed to the
-	// sync handler which rejects with 426 (not-WS upgrade rejection from rejectSocket).
+	// Non-WS request to the sync path — classified as sync-socket, then refused
+	// by the sync handler's auth gate rather than by the not-found path.
 	const resp = await worker.fetch(
 		new Request("https://example.com/vault/sync/my-vault"),
 		syncTestEnv,

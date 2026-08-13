@@ -405,8 +405,7 @@ s.section("Test 3: second pass on converged file emits only recovery.skipped");
 	s.check(firstPassCount > 0, "first pass produced events");
 
 	// Clear the bound recovery lock so the lock-active bail does not fire.
-	(fix.controller as unknown as { boundRecoveryLocks: Map<string, number> })
-		.boundRecoveryLocks.clear();
+	fix.controller["boundRecoveryLocks"].clear();
 
 	// Now editor and disk and CRDT all agree on "SAME". Drive a second pass.
 	await fix.ingestDiskFileNow("modify");
@@ -487,9 +486,10 @@ s.section("Test 5: crdtOnly idle-grace bail emits recovery.skipped");
 
 	// Override editorBindings to report recent activity (within
 	// OPEN_FILE_EXTERNAL_EDIT_IDLE_GRACE_MS = 1200ms).
-	const eb = (fix.controller as unknown as {
-		deps: { getEditorBindings(): { getLastEditorActivityForPath: (p: string) => number | null } };
-	}).deps.getEditorBindings();
+	// Private `deps` read by element access; the real EditorBindingManager type
+	// survives, so the nullable return has to be narrowed rather than assumed.
+	const eb = fix.controller["deps"].getEditorBindings();
+	if (!eb) throw new Error("fixture must wire editorBindings");
 	const original = eb.getLastEditorActivityForPath.bind(eb);
 	eb.getLastEditorActivityForPath = () => Date.now() - 200; // 200ms ago
 
@@ -538,8 +538,7 @@ s.section("Test 6: third identical recovery is quarantined");
 			fix.ytext.insert(0, "BBB");
 		}
 		// Clear the lock so each attempt re-enters the recovery branch.
-		(fix.controller as unknown as { boundRecoveryLocks: Map<string, number> })
-			.boundRecoveryLocks.clear();
+		fix.controller["boundRecoveryLocks"].clear();
 		await fix.ingestDiskFileNow("modify");
 	}
 

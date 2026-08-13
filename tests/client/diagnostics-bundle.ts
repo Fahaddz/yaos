@@ -33,8 +33,25 @@
  */
 
 import { webcrypto } from "node:crypto";
+
+/**
+ * lib.dom's `Crypto` and @types/node's `webcrypto.Crypto` contradict each other
+ * on `SubtleCrypto` (the same clash tsconfig.tests.json documents), so Node's
+ * implementation is not assignable to the DOM-typed global. Check the whole of
+ * `Crypto` — its three members — at runtime instead of asserting it.
+ */
+function isDomCrypto(value: unknown): value is Crypto {
+	if (typeof value !== "object" || value === null) return false;
+	if (!("subtle" in value) || typeof value.subtle !== "object" || value.subtle === null) return false;
+	if (!("digest" in value.subtle) || typeof value.subtle.digest !== "function") return false;
+	if (!("getRandomValues" in value) || typeof value.getRandomValues !== "function") return false;
+	return "randomUUID" in value && typeof value.randomUUID === "function";
+}
+
 if (typeof globalThis.crypto === "undefined") {
-	globalThis.crypto = webcrypto as unknown as Crypto;
+	const nodeCrypto: unknown = webcrypto;
+	if (!isDomCrypto(nodeCrypto)) throw new Error("node:crypto webcrypto lacks the Crypto surface these tests need");
+	globalThis.crypto = nodeCrypto;
 }
 
 // Import from the pure module directly — no Obsidian imports, no ConfirmModal.

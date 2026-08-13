@@ -24,6 +24,7 @@ import {
 	type MetaChangeBatch,
 } from "../../src/sync/fileMeta";
 import { isLocalOrigin, ORIGIN_SEED } from "../../src/sync/origins";
+import { findKind, isKind } from "../mocks/metaChange.ts";
 import { suite } from "../harness.ts";
 
 // ── Test runner ─────────────────────────────────────────────────────────────
@@ -110,14 +111,14 @@ s.section("Observer: flat object replacement fires on shallow observe");
 
 	assertEqual(changes.length, 1, "flat add fires one change");
 	assertEqual(changes[0]!.kind, "added", "flat add kind is 'added'");
-	assertEqual((changes[0] as any).next.path, "notes/a.md", "flat add path correct");
+	assertEqual(isKind(changes[0], "added") ? changes[0].next.path : undefined, "notes/a.md", "flat add path correct");
 
 	// Replace with tombstone
 	doc.transact(() => {
 		meta.set("id1", { path: "notes/a.md", deletedAt: 9999 } as unknown);
 	});
 
-	const deleted = changes.find(c => c.kind === "deleted");
+	const deleted = findKind(changes, "deleted");
 	s.check(deleted !== undefined, "flat tombstone replacement fires 'deleted'");
 
 	unsubscribe();
@@ -150,9 +151,9 @@ s.section("Observer: nested deletedAt fires 'deleted' (THE critical path)");
 	});
 
 	s.check(changes.length > 0, "nested deletedAt mutation fires at least one change");
-	const deleted = changes.find(c => c.kind === "deleted");
+	const deleted = findKind(changes, "deleted");
 	s.check(deleted !== undefined, "nested deletedAt fires 'deleted' semantic change");
-	assertEqual((deleted as any).path, "notes/b.md", "deleted path correct");
+	assertEqual(deleted?.path, "notes/b.md", "deleted path correct");
 
 	unsubscribe();
 }
@@ -179,9 +180,9 @@ s.section("Observer: nested deletedAt removal fires 'revived'");
 		entry.set("device", "dev");
 	});
 
-	const revived = changes.find(c => c.kind === "revived");
+	const revived = findKind(changes, "revived");
 	s.check(revived !== undefined, "nested deletedAt deletion fires 'revived'");
-	assertEqual((revived as any).path, "notes/c.md", "revived path correct");
+	assertEqual(revived?.path, "notes/c.md", "revived path correct");
 
 	unsubscribe();
 }
@@ -205,10 +206,10 @@ s.section("Observer: nested path change fires 'path-changed'");
 		entry.set("path", "notes/renamed.md");
 	});
 
-	const pathChanged = changes.find(c => c.kind === "path-changed");
+	const pathChanged = findKind(changes, "path-changed");
 	s.check(pathChanged !== undefined, "nested path mutation fires 'path-changed'");
-	assertEqual((pathChanged as any).previousPath, "notes/original.md", "previous path correct");
-	assertEqual((pathChanged as any).nextPath, "notes/renamed.md", "next path correct");
+	assertEqual(pathChanged?.previousPath, "notes/original.md", "previous path correct");
+	assertEqual(pathChanged?.nextPath, "notes/renamed.md", "next path correct");
 
 	unsubscribe();
 }
@@ -333,9 +334,9 @@ s.section("Cross-doc: remote nested delete fires 'deleted' on receiving doc");
 	// Sync to B
 	Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
 
-	const deleted = changes.find(c => c.kind === "deleted");
+	const deleted = findKind(changes, "deleted");
 	s.check(deleted !== undefined, "remote nested delete fires 'deleted' on receiving doc");
-	assertEqual((deleted as any).path, "sync/file.md", "correct path in deleted event");
+	assertEqual(deleted?.path, "sync/file.md", "correct path in deleted event");
 
 	unsubscribe();
 }
@@ -360,10 +361,10 @@ s.section("Cross-doc: remote nested rename fires 'path-changed' on receiving doc
 
 	Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
 
-	const pathChanged = changes.find(c => c.kind === "path-changed");
+	const pathChanged = findKind(changes, "path-changed");
 	s.check(pathChanged !== undefined, "remote nested rename fires 'path-changed' on receiving doc");
-	assertEqual((pathChanged as any).previousPath, "sync/before.md", "previous path correct");
-	assertEqual((pathChanged as any).nextPath, "sync/after.md", "next path correct");
+	assertEqual(pathChanged?.previousPath, "sync/before.md", "previous path correct");
+	assertEqual(pathChanged?.nextPath, "sync/after.md", "next path correct");
 
 	unsubscribe();
 }
@@ -391,9 +392,9 @@ s.section("Cross-doc: remote nested revive fires 'revived' on receiving doc");
 
 	Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
 
-	const revived = changes.find(c => c.kind === "revived");
+	const revived = findKind(changes, "revived");
 	s.check(revived !== undefined, "remote nested revive fires 'revived' on receiving doc");
-	assertEqual((revived as any).path, "sync/revived.md", "revived path correct");
+	assertEqual(revived?.path, "sync/revived.md", "revived path correct");
 
 	unsubscribe();
 }

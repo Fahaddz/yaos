@@ -165,6 +165,21 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		/** QA offline hold: when true, all reconnect paths are blocked. */
 		offlineHold: boolean;
 	} | null = null;
+
+	// ---------------------------------------------------------------------------
+	// QA control seams. Attached as instance properties inside the
+	// __YAOS_QA_HARNESS_ENABLED__ block in onload(), so the names never reach
+	// the class prototype and vanish from main.js along with that block —
+	// guard-production-bundles.mjs bans both names in the shipped bundle.
+	//
+	// `declare` is what keeps that true while still giving the assignments and
+	// the (QA-only) callers a checked type: an ambient field emits no property
+	// definition at all, so nothing is added to the production output. They are
+	// optional because production builds never assign them.
+	// ---------------------------------------------------------------------------
+	declare getEngineControlPort?: () => EngineControlPort;
+	declare setQaNetworkHold?: (mode: "offline" | "online") => void;
+
 	/** Domain-level trace sink. Routes to the debug runtime when active, noop otherwise. */
 	private traceSink: TraceSink = new NoopTraceSink();
 	private statusBarEl: HTMLElement | null = null;
@@ -328,15 +343,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			};
 			// Attach the accessor as an instance property so the method name
 			// never appears on the class prototype in production bundles.
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			(this as any).getEngineControlPort = (): EngineControlPort => {
+			this.getEngineControlPort = (): EngineControlPort => {
 				if (!this._qaState) throw new Error("QA harness state not initialised");
 				return this._qaState.controlPort;
 			};
 			// QA offline hold: blocks all reconnect paths in ConnectionController.
-			// The harness calls this via (product as any).setQaNetworkHold("offline"|"online").
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			(this as any).setQaNetworkHold = (mode: "offline" | "online"): void => {
+			// The harness calls this as product.setQaNetworkHold("offline"|"online"),
+			// which is absent (undefined) in production builds.
+			this.setQaNetworkHold = (mode: "offline" | "online"): void => {
 				if (!this._qaState) return;
 				this._qaState.offlineHold = mode === "offline";
 				const sync = this.vaultSync;
@@ -1936,7 +1950,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 			probes.push({
 				path,
-				leafId: binding?.leafId ?? ((view.leaf as unknown as { id?: string }).id ?? path),
+				leafId: binding?.leafId ?? view.leaf.id ?? path,
 				binding,
 				collab,
 				hashes: {
@@ -2005,9 +2019,16 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		document.body.removeClass("vault-crdt-show-cursors");
 		// Remove plugin-owned debug global to prevent stale API references
 		// from confusing test harnesses after plugin reload.
-		const win = window as unknown as Record<string, unknown>;
-		if (win.__YAOS_DEBUG__) {
-			delete win.__YAOS_DEBUG__;
+		//
+		// Reached reflectively on purpose: the global belongs to the QA harness
+		// plugin (qa/, never shipped), which src/ may not import, so the product
+		// has no type for its shape and must not declare one on Window — that
+		// declaration lives in qa/types/yaos-window-globals.d.ts, where the
+		// harness's own callers get the precise API type. `unknown` is the whole
+		// truth available here, and truthiness is all this check needs.
+		const staleDebugApi: unknown = Reflect.get(window, "__YAOS_DEBUG__");
+		if (staleDebugApi) {
+			Reflect.deleteProperty(window, "__YAOS_DEBUG__");
 		}
 
 		// This starts and retains the shared teardown promise, but synchronous

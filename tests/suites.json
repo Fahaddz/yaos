@@ -1,5 +1,6 @@
 {
 	"notSuites": {
+		"tests/live/fatalFrame.ts": "Shared helper, not a suite. Typed reader for the Worker's fatal socket-rejection frame (parseFatalFrame + onFatalFrame); imported by the live suites, runs no assertions of its own.",
 		"tests/live/run-live.ts": "Integration driver, not a suite. Boots `wrangler dev` and spawns the live-worker suites against it. Owned by `npm run test:integration:worker`."
 	},
 	"skip": {

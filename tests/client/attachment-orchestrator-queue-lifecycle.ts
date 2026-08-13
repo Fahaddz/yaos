@@ -1,6 +1,10 @@
+import type { App, Stat, TFolder } from "obsidian";
 import { TFile } from "obsidian";
 import { AttachmentOrchestrator } from "../../src/runtime/attachmentOrchestrator";
+import type { RuntimeConfig } from "../../src/runtime/runtimeConfig";
 import type { BlobQueueSnapshot } from "../../src/sync/blobSync";
+import type { VaultSync } from "../../src/sync/vaultSync";
+import { partialOf } from "../mocks/productFixture.ts";
 import { suite, until } from "../harness.ts";
 
 const s = suite("attachment-orchestrator-queue-lifecycle");
@@ -49,7 +53,7 @@ function makeFixture(initialPersistedQueue: BlobQueueSnapshot | null): Fixture {
 	const files = new Map<string, { file: TFile & { path: string; stat: { mtime: number; size: number } }; data: ArrayBuffer }>();
 	let clock = 1;
 
-	const app = {
+	const app = partialOf<App>({
 		workspace: {
 			layoutReady: false,
 			onLayoutReady: (callback: () => void) => {
@@ -60,22 +64,28 @@ function makeFixture(initialPersistedQueue: BlobQueueSnapshot | null): Fixture {
 			configDir: ".obsidian",
 			getAbstractFileByPath: (path: string) => files.get(path)?.file ?? null,
 			getFiles: () => Array.from(files.values(), ({ file }) => file),
-			createFolder: async () => {},
+			createFolder: async (path: string) => partialOf<TFolder>({ path }),
 			createBinary: async (path: string, data: ArrayBuffer) => {
 				const file = new TFile() as TFile & {
 					path: string;
-					stat: { mtime: number; size: number };
+					stat: { ctime: number; mtime: number; size: number };
 				};
 				const writtenAt = clock++;
 				file.path = path;
 				file.stat = { ctime: writtenAt, mtime: writtenAt, size: data.byteLength };
 				files.set(path, { file, data });
+				return file;
 			},
 			adapter: {
-				stat: async (path: string) => files.get(path)?.file.stat ?? null,
+				// `type` is part of Stat but not of TFile.stat (FileStats), so it has
+				// to be supplied here.  Every path this harness writes is a file.
+				stat: async (path: string): Promise<Stat | null> => {
+					const stat = files.get(path)?.file.stat;
+					return stat === undefined ? null : { type: "file", ...stat };
+				},
 			},
 		},
-	} as any;
+	});
 
 	const observedMap = {
 		observe: () => {},
@@ -83,16 +93,16 @@ function makeFixture(initialPersistedQueue: BlobQueueSnapshot | null): Fixture {
 		get: () => undefined,
 		forEach: () => {},
 	};
-	const vaultSync = {
+	const vaultSync = partialOf<VaultSync>({
 		pathToBlob: observedMap,
 		blobTombstones: observedMap,
 		isBlobTombstoned: () => false,
-	} as any;
+	});
 
 	const orchestrator = new AttachmentOrchestrator({
 		app,
 		getVaultSync: () => vaultSync,
-		getRuntimeConfig: () => ({
+		getRuntimeConfig: () => partialOf<RuntimeConfig>({
 			enableAttachmentSync: true,
 			host: "https://worker.example",
 			token: "token",
@@ -100,7 +110,7 @@ function makeFixture(initialPersistedQueue: BlobQueueSnapshot | null): Fixture {
 			maxAttachmentSizeKB: 1024,
 			attachmentConcurrency: 1,
 			debug: false,
-		}) as any,
+		}),
 		getServerSupportsAttachments: () => true,
 		getTraceHttpContext: () => undefined,
 		getBlobHashCache: () => ({}),
@@ -142,9 +152,12 @@ async function drainRestoredDownload(
 	fixture: Fixture,
 	data: ArrayBuffer,
 ): Promise<void> {
-	(fixture.orchestrator.manager as any).blobClient = {
-		download: async () => data,
-	};
+	// `manager` is non-null here: the orchestrator builds it in its constructor.
+	// Object.assign overrides just `download` on the real BlobHttpClient — whose
+	// class is not exported, so its type cannot be named — leaving the rest intact.
+	Object.assign(fixture.orchestrator.manager!["blobClient"], {
+		download: async (_hash: string, _timeoutMs: number): Promise<ArrayBuffer> => data,
+	});
 	fixture.orchestrator.markStartupReady("test");
 	fixture.fireLayoutReady();
 	await waitFor(

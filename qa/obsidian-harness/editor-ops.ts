@@ -6,6 +6,7 @@
  */
 
 import { MarkdownView, normalizePath, type App } from "obsidian";
+import { getCommandRegistry, markdownViewPath } from "../harness/ports/obsidianInternalsPort";
 import { sleep, waitForCondition } from "./wait";
 
 export async function openFile(app: App, path: string): Promise<void> {
@@ -28,7 +29,7 @@ export async function closeFile(app: App, path: string): Promise<void> {
 		// Match by path, also detach leaves whose file was deleted (file=null)
 		// but whose last path matched — avoids stale binding-health-failed loops.
 		const leafPath = leaf.view instanceof MarkdownView
-			? (leaf.view.file?.path ?? (leaf.view as unknown as { _filePath?: string })._filePath)
+			? markdownViewPath(leaf.view)
 			: null;
 		if (leaf.view instanceof MarkdownView && leafPath === normalized) {
 			toDetach.push(leaf);
@@ -102,15 +103,10 @@ export async function replaceFileContent(app: App, path: string, content: string
 }
 
 export async function runCommand(app: App, commandId: string): Promise<void> {
-	await (app as unknown as {
-		commands: { executeCommandById: (id: string) => boolean | Promise<boolean>;
-	};
-	}).commands.executeCommandById(commandId);
+	await getCommandRegistry(app).executeCommandById(commandId);
 }
 
 export function listCommands(app: App, filter?: string): string[] {
-	const all = Object.keys(
-		(app as unknown as { commands: { commands: Record<string, unknown> } }).commands.commands,
-	);
+	const all = Object.keys(getCommandRegistry(app).commands);
 	return filter ? all.filter((id) => id.includes(filter)) : all;
 }

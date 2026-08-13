@@ -267,8 +267,7 @@ export const s07cOpenEditorTemplateMutation: QaScenario = {
 		}
 
 		// 5. File must not have grown unboundedly (no loop).
-		const finalFile = ctx.app.vault.getAbstractFileByPath(path);
-		const finalSize = (finalFile as unknown as { stat?: { size?: number } })?.stat?.size ?? 0;
+		const finalSize = ctx.app.vault.getFileByPath(path)?.stat.size ?? 0;
 		const expectedSize = new TextEncoder().encode(afterTemplate).length;
 		if (finalSize > expectedSize + 512) {
 			throw new Error(`S07c: file size grew beyond expected (${finalSize} > ${expectedSize} + 512) — possible loop`);

@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
 import { SCHEMA_VERSION } from "../../src/sync/schema.ts";
+import { describeFatalFrame, onFatalFrame } from "./fatalFrame.ts";
 
 const HOST = process.env.YAOS_TEST_HOST || "http://127.0.0.1:8787";
 const TOKEN = process.env.SYNC_TOKEN || "";
@@ -208,18 +209,13 @@ async function waitForSync(provider: YSyncProvider, label: string): Promise<void
 			reject(new Error(`${label}: timed out waiting for sync`));
 		}, 10_000);
 
-		provider.on("message", (event: { data: unknown }) => {
-			if (typeof event.data !== "string") return;
-			try {
-				const msg = JSON.parse(event.data) as { type?: string; code?: string } | null;
-				if (msg?.type === "error") {
-					settled = true;
-					clearTimeout(timeout);
-					reject(new Error(`${label}: server error ${msg.code}`));
-				}
-			} catch {
-				// Ignore non-JSON Yjs frames.
-			}
+		// Fatal rejections arrive as "custom-message", not "message" — the
+		// provider has no "message" event at all (see ./fatalFrame.ts).
+		onFatalFrame(provider, (frame) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			reject(new Error(`${label}: server rejected the connection: ${describeFatalFrame(frame)}`));
 		});
 
 		provider.on("sync", (synced: boolean) => {

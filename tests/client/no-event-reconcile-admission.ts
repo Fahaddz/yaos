@@ -62,7 +62,8 @@
  * ============================================================================
  *
  *   The test reaches into `ReconciliationController` private state via
- *   `(controller as unknown as { untrackedFiles: string[]; lastReconcileTime: number }).<member>`
+ *   element access (`controller["untrackedFiles"]`, `controller["lastReconcileTime"]`),
+ *   which TypeScript permits for private members without a cast,
  *   to (a) read `untrackedFiles` for the conservative-lane precondition
  *   asserted by Scenarios B/C/D/E, and (b) zero `lastReconcileTime`
  *   between successive `runReconciliation` calls so the 10-second cooldown
@@ -636,9 +637,7 @@ s.section("Scenario B: conservative-mode reconcile emits skip-untracked");
 	assertEq(createdInB.length, 0, "Scenario B: zero crdt.file.created for test path");
 
 	// 4.6 — controller.untrackedFiles contains test path
-	const untracked = (
-		fx.controller as unknown as { untrackedFiles: string[] }
-	).untrackedFiles;
+	const untracked = fx.controller["untrackedFiles"];
 	s.check(
 		untracked.includes(fx.path),
 		`Scenario B: controller.untrackedFiles contains test path (got: ${JSON.stringify(untracked)})`,
@@ -704,9 +703,7 @@ s.section("Scenario B: conservative-mode reconcile emits skip-untracked");
 	}
 
 	// 5.5 — controller.untrackedFiles drained
-	const untrackedAfter = (
-		fx.controller as unknown as { untrackedFiles: string[] }
-	).untrackedFiles;
+	const untrackedAfter = fx.controller["untrackedFiles"];
 	s.check(
 		!untrackedAfter.includes(fx.path),
 		`Scenario C: controller.untrackedFiles no longer contains test path (got: ${JSON.stringify(untrackedAfter)})`,
@@ -746,9 +743,7 @@ s.section("Scenario D: preserved-unresolved guard blocks admission");
 	// 6.2 — drive runReconciliation("conservative") to populate untrackedFiles
 	// naturally (NOT pre-seeded), THEN invoke importUntrackedFiles().
 	await fx.controller.runReconciliation("conservative");
-	const untracked = (
-		fx.controller as unknown as { untrackedFiles: string[] }
-	).untrackedFiles;
+	const untracked = fx.controller["untrackedFiles"];
 	s.check(
 		untracked.includes(fx.path),
 		`Scenario D: runReconciliation populated untrackedFiles naturally (not pre-seeded; got: ${JSON.stringify(untracked)})`,
@@ -806,13 +801,11 @@ s.section("Scenario D: preserved-unresolved guard blocks admission");
 
 	// 7.2 — re-run conservative reconcile (zeroing the cooldown so the
 	// 10-second gate does not block the second pass), then importUntrackedFiles.
-	(fx.controller as unknown as { lastReconcileTime: number }).lastReconcileTime = 0;
+	fx.controller["lastReconcileTime"] = 0;
 	await fx.controller.runReconciliation("conservative");
 
 	// untrackedFiles must be re-populated by the natural flow.
-	const untrackedAfterRescan = (
-		fx.controller as unknown as { untrackedFiles: string[] }
-	).untrackedFiles;
+	const untrackedAfterRescan = fx.controller["untrackedFiles"];
 	s.check(
 		untrackedAfterRescan.includes(fx.path),
 		`Scenario E: runReconciliation re-populated untrackedFiles after clear (got: ${JSON.stringify(untrackedAfterRescan)})`,
