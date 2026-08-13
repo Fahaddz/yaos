@@ -19,6 +19,39 @@ import { buildQaConsoleApi } from "./api";
 import type { QaScenario } from "./types";
 import { buildQaDebugApi } from "../harness/qaDebugApi";
 import type { TelemetryRuntimeHandle } from "../../src/telemetry/installTelemetryRuntime";
+import type { VaultSync } from "../../src/sync/vaultSync";
+import type { ReconciliationController } from "../../src/runtime/reconciliationController";
+import type { ConnectionController } from "../../src/runtime/connectionController";
+import type { EditorBindingManager } from "../../src/sync/editorBinding";
+import type { EngineControlPort } from "../../src/runtime/engineControlPort";
+
+/**
+ * The private surface of the product plugin that this harness reaches for.
+ *
+ * None of it is exported API: these are instance fields and prototype methods
+ * read out of Obsidian's plugin registry. Declaring the shape in one place
+ * means the reads below are typed, and a member that changes type in the
+ * product is a compile error under tsconfig.qa.json rather than an `undefined`
+ * surfacing mid-scenario.
+ *
+ * It does NOT make a *rename* a compile error — the cast that produces this
+ * type is unchecked by construction. Guard 2 in mountYaosDebugApi() probes
+ * every member at startup for exactly that reason. Keep the two in step.
+ *
+ * getEngineControlPort and setQaNetworkHold exist only in the QA product build
+ * (`__YAOS_QA_HARNESS_ENABLED__`); src/main.ts attaches them as instance
+ * properties so their names never reach the production bundle.
+ */
+interface ProductInternals {
+	readonly vaultSync: VaultSync | null;
+	readonly reconciliationController: ReconciliationController | undefined;
+	readonly connectionController: ConnectionController | null;
+	readonly editorBindings: EditorBindingManager | null;
+	readonly lab: TelemetryRuntimeHandle | null | undefined;
+	sha256Hex(text: string): Promise<string>;
+	getEngineControlPort(): EngineControlPort;
+	setQaNetworkHold(mode: "offline" | "online"): void;
+}
 
 // Scenario imports
 import { s00SmokeTraceExport } from "./scenarios/s00-smoke-trace-export";
@@ -234,7 +267,8 @@ export default class YaosQaHarnessPlugin extends Plugin {
 	 * The product plugin ID is "yaos".  Enforce load order: "yaos" must appear
 	 * before "yaos-qa-harness" in the vault's community-plugins.json.
 	 *
-	 * Private fields are accessed via `as any` — acceptable in a QA-only file.
+	 * The product's private surface is read through a single declared shape,
+	 * ProductInternals, rather than scattered casts — see the note on that type.
 	 */
 	private mountYaosDebugApi(): void {
 		// Obsidian's plugin registry is a private API absent from obsidian.d.ts.
@@ -243,10 +277,10 @@ export default class YaosQaHarnessPlugin extends Plugin {
 		const appInternals = this.app as unknown as {
 			plugins?: { plugins?: Record<string, Record<string, unknown> | undefined> };
 		};
-		const product = appInternals.plugins?.plugins?.["yaos"];
+		const productRecord = appInternals.plugins?.plugins?.["yaos"];
 
 		// Guard 1: product plugin must be loaded
-		if (!product) {
+		if (!productRecord) {
 			console.error(
 				"[YAOS QA] FATAL: product plugin 'yaos' not found. " +
 				"window.__YAOS_DEBUG__ will NOT be mounted. " +
@@ -257,24 +291,58 @@ export default class YaosQaHarnessPlugin extends Plugin {
 			return;
 		}
 
-		// Guard 2: getEngineControlPort must exist (confirms QA product build, not prod main.js)
-		if (typeof (product as any).getEngineControlPort !== "function") {
-			console.error(
-				"[YAOS QA] FATAL: product plugin is missing getEngineControlPort. " +
-				"The vault is loading the production main.js instead of the QA product build. " +
-				"Run: npm run build:qa-product, then re-run qa:prepare.",
+		// Guard 2: every product member this harness reaches for must exist.
+		//
+		// The cast that produces ProductInternals is unchecked, so a renamed field
+		// is invisible to both compilers and surfaces as `undefined` in the middle
+		// of a scenario — usually while debugging something else. Probing the
+		// whole set up front turns that into one loud failure before any
+		// scenario runs. Keep this table in step with the accessors passed to
+		// buildQaDebugApi below.
+		//
+		// `method` members live on the prototype; `field` members are declared
+		// with a `= null` initialiser so the property exists from construction
+		// even before the subsystem is built. `reconciliationController` is
+		// deliberately absent — it uses definite assignment (`!`) and so has no
+		// property until the product assigns it, which makes it indistinguishable
+		// here from a rename. It is probed at its accessor instead.
+		const probes: ReadonlyArray<readonly [string, "method" | "field", string]> = [
+			["getEngineControlPort", "method", "The vault is loading the production main.js instead of the QA product build. Run: npm run build:qa-product, then re-run qa:prepare."],
+			["setQaNetworkHold", "method", "Same cause as getEngineControlPort — this is the other QA-only accessor attached under __YAOS_QA_HARNESS_ENABLED__."],
+			["sha256Hex", "method", "Renamed or removed from the product plugin class."],
+			["vaultSync", "field", "Renamed or removed from the product plugin class."],
+			["connectionController", "field", "Renamed or removed from the product plugin class."],
+			["editorBindings", "field", "Renamed or removed from the product plugin class."],
+		];
+		const missing = probes.filter(([name, kind]) =>
+			kind === "method"
+				? typeof productRecord[name] !== "function"
+				: !(name in productRecord),
+		);
+		if (missing.length > 0) {
+			for (const [name, kind, hint] of missing) {
+				console.error(`[YAOS QA] FATAL: product plugin is missing ${kind} '${name}'. ${hint}`);
+			}
+			new Notice(
+				`YAOS QA FATAL: product is missing ${missing.length} member(s) the harness needs — ` +
+				`${missing.map(([n]) => n).join(", ")}. See the developer console.`,
+				15000,
 			);
-			new Notice("YAOS QA FATAL: wrong product build — getEngineControlPort missing. " +
-				"Run npm run build:qa-product.", 15000);
 			return;
 		}
+
+		// The private surface of the product plugin that this harness reaches
+		// for. These members are not exported API — they are instance fields and
+		// prototype methods read through the plugin registry — so this shape is
+		// asserted, not inferred. Guard 2 above proves every one of them exists
+		// before we get here, and the accessors below are the only readers.
+		const product = productRecord as unknown as ProductInternals;
 
 		// Guard 3: product.lab must exist (confirms qaDebugMode=true and the
 		// debug runtime installed). Typed as the real handle so a member that
 		// disappears from the product is a compile error here, not a silent
 		// undefined at scenario runtime.
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const lab = (product as any).lab as TelemetryRuntimeHandle | null | undefined;
+		const lab = product.lab;
 		if (!lab) {
 			console.error(
 				"[YAOS QA] FATAL: product.lab (TelemetryRuntimeHandle) is null. " +
@@ -287,13 +355,27 @@ export default class YaosQaHarnessPlugin extends Plugin {
 
 		const debugApi = buildQaDebugApi({
 			app: this.app,
-			getVaultSync: () => (product as any).vaultSync ?? null,
-			getReconciliationController: () => (product as any).reconciliationController,
-			getConnectionController: () => (product as any).connectionController ?? null,
+			getVaultSync: () => product.vaultSync ?? null,
+			// Declared with definite assignment (`!`) on the product, so unlike its
+			// siblings it has no property at all until the product assigns it —
+			// which is why Guard 2 cannot probe it. Callers ask this for
+			// `isReconciled`, so answering "not yet built" as `false` would be a
+			// lie a scenario could pass on. Name the real problem instead.
+			getReconciliationController: () => {
+				const rc = product.reconciliationController;
+				if (!rc) {
+					throw new Error(
+						"[YAOS QA] product.reconciliationController is not assigned. " +
+						"Either the product has not finished starting, or the field was renamed.",
+					);
+				}
+				return rc;
+			},
+			getConnectionController: () => product.connectionController ?? null,
 			getFlightTraceController: () => lab.getFlightTraceController?.() ?? null,
-			getEditorBindings: () => (product as any).editorBindings ?? null,
+			getEditorBindings: () => product.editorBindings ?? null,
 			getDiagnosticsDir: () => undefined,
-			sha256Hex: (text: string) => (product as any).sha256Hex(text) as Promise<string>,
+			sha256Hex: (text: string) => product.sha256Hex(text),
 			// No start/stop bridge: the recorder follows the product's
 			// settings.debug, which qa/scripts/prepare-vault-lib.ts sets to true.
 			//
@@ -311,17 +393,17 @@ export default class YaosQaHarnessPlugin extends Plugin {
 				return result.ok ? result.path : null;
 			},
 			runReconciliation: async () => {
-				const rc = (product as any).reconciliationController;
+				const rc = product.reconciliationController;
 				await rc?.runReconciliation("conservative");
 			},
 			// setQaNetworkHold("offline") holds the provider offline and blocks reconnects.
 			// setQaNetworkHold("online") releases the hold and triggers reconnect.
 			disconnectProvider: () =>
-				void (product as any).setQaNetworkHold?.("offline"),
+				void product.setQaNetworkHold("offline"),
 			connectProvider: () =>
-				void (product as any).setQaNetworkHold?.("online"),
+				void product.setQaNetworkHold("online"),
 			getPathSaltFingerprint: () => lab.getPathSaltFingerprint(),
-			getEngineControlPort: () => (product as any).getEngineControlPort(),
+			getEngineControlPort: () => product.getEngineControlPort(),
 		});
 
 		(window as unknown as Record<string, unknown>).__YAOS_DEBUG__ = debugApi;
