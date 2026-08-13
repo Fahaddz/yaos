@@ -131,10 +131,11 @@ export function suite(name: string): Suite {
 			// whatever is still buffered — which would be exactly the summary
 			// line the runner exists to read. Writes are ordered, so a callback
 			// on an empty trailing write fires once everything before it landed.
+			//
+			// Promise.withResolvers() would read better here, but it is Node 22+
+			// and CI runs Node 20 (.github/workflows/ci.yml).
 			for (const stream of [process.stdout, process.stderr]) {
-				const { promise, resolve: flushed } = Promise.withResolvers<void>();
-				stream.write("", () => flushed());
-				await promise;
+				await new Promise<void>((flushed) => stream.write("", () => flushed()));
 			}
 
 			process.exit(failed > 0 ? 1 : 0);
@@ -150,9 +151,9 @@ export function suite(name: string): Suite {
 
 /** Yield to the event loop for `ms` milliseconds. */
 export function sleep(ms: number): Promise<void> {
-	const { promise, resolve: elapsed } = Promise.withResolvers<void>();
-	setTimeout(elapsed, ms);
-	return promise;
+	return new Promise<void>((elapsed) => {
+		setTimeout(elapsed, ms);
+	});
 }
 
 /**

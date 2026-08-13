@@ -1,0 +1,31 @@
+{
+	// Typecheck tests/ against product and server source.
+	//
+	// tests/ is included in tsconfig.eslint.json (so typed lint rules can parse
+	// it) but nothing ever ran `tsc` over it, which is how `Promise.withResolvers`
+	// — an ES2024 API absent from Node 20 — reached CI in tests/harness.ts and
+	// failed 93 of 94 suites.
+	//
+	//   npx tsc -noEmit -p tsconfig.tests.json
+	//
+	// `lib` is deliberately pinned to ES2023, NOT ESNext: it is the ceiling of
+	// what Node 20 implements, and CI runs Node 20 (.github/workflows/ci.yml).
+	// Raising it to ESNext would make this project accept exactly the class of
+	// API that broke CI. The target/module bump to ES2022 is unavoidable —
+	// suites legitimately use top-level await, which the plugin's ES6 target
+	// forbids — but that only affects syntax, not the available API surface.
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"lib": ["ES2023", "DOM"],
+		"types": ["node", "@cloudflare/workers-types"],
+		"allowImportingTsExtensions": true,
+		"noEmit": true
+	},
+	"include": [
+		"src/**/*.ts",
+		"server/src/**/*.ts",
+		"tests/**/*.ts"
+	]
+}

@@ -40,7 +40,11 @@
 	},
 	"keywords": [],
 	"license": "0-BSD",
+	"engines": {
+		"node": ">=20"
+	},
 	"devDependencies": {
+		"@cloudflare/workers-types": "4.20260305.0",
 		"@codemirror/state": "^6.0.0",
 		"@codemirror/view": "^6.0.0",
 		"@types/node": "^20.19.0",
