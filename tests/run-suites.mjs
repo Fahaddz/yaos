@@ -3,11 +3,12 @@
 // executes them in sequence, reports pass/fail per suite, and exits non-zero
 // if any suite fails.
 //
-// DISCOVERY, NOT REGISTRATION. A suite is any `tests/*.{ts,mjs}` file that is
-// not named in tests/suites.json. There is no list to append to, because a
-// list that developers must remember to append to loses coverage — this runner
-// replaced one that had silently orphaned two real unit suites (458 + 364 LOC,
-// 146 assertions) for however long nobody noticed.
+// DISCOVERY, NOT REGISTRATION. A suite is any `*.{ts,mjs}` file inside one of
+// the four suite buckets — tests/client/, tests/server/, tests/contracts/,
+// tests/live/ — that is not named in tests/suites.json. There is no list to
+// append to, because a list that developers must remember to append to loses
+// coverage — this runner replaced one that had silently orphaned two real unit
+// suites (458 + 364 LOC, 146 assertions) for however long nobody noticed.
 //
 // The only hand-maintained data is tests/suites.json, and every entry in it
 // carries a reason string. tests/suite-discovery.ts enforces both halves of
@@ -41,7 +42,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -77,12 +78,25 @@ const RUNNER = ["node", "--import", "jiti/register"];
 // rather than a copy of it that could drift.
 // -----------------------------------------------------------------------
 
+// The four suite buckets. Everything else under tests/ is infrastructure —
+// this runner, suites.json, the shared pinned-schema-version helper, mocks/,
+// fixtures/ and manual/ — and is not a discovery candidate at all, so it needs
+// no excuse in suites.json either.
+const BUCKETS = ["client", "server", "contracts", "live"];
+
+// The one suite that cannot live in a bucket: it guards this runner's own
+// discovery functions, so it sits beside the runner it verifies and is
+// discovered explicitly rather than by directory walk.
+const ROOT_SUITES = ["tests/suite-discovery.ts"];
+
 /** Every discovery candidate in tests/, repo-root-relative and sorted. */
 export function discoverCandidates() {
-	return readdirSync(TESTS_DIR)
-		.filter((name) => name.endsWith(".ts") || name.endsWith(".mjs"))
-		.sort()
-		.map((name) => `tests/${name}`);
+	const bucketed = BUCKETS.flatMap((bucket) =>
+		readdirSync(join(TESTS_DIR, bucket))
+			.filter((name) => name.endsWith(".ts") || name.endsWith(".mjs"))
+			.map((name) => `tests/${bucket}/${name}`),
+	);
+	return [...ROOT_SUITES, ...bucketed].sort();
 }
 
 /** tests/suites.json, shape-checked so a malformed edit fails loudly. */

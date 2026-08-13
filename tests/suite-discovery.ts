@@ -1,6 +1,7 @@
 // Guard for the test-discovery contract.
 //
-// The regression runner discovers suites by convention (`tests/*.{ts,mjs}`)
+// The regression runner discovers suites by convention — every `*.{ts,mjs}`
+// file in tests/client/, tests/server/, tests/contracts/ or tests/live/ —
 // instead of reading a hand-maintained array. That only stays trustworthy if
 // two invariants hold, and both are checked here:
 //

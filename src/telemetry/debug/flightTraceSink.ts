@@ -13,7 +13,7 @@
  *   - Tracks dropped events for observability in QA/dev mode
  *
  * INVARIANT: every kind registered in PRODUCT_EVENT_KIND must have an entry
- * in DOMAIN_TO_FLIGHT_KIND. The CI check in tests/trace-sink.ts enforces
+ * in DOMAIN_TO_FLIGHT_KIND. The CI check in tests/client/trace-sink.ts enforces
  * _droppedEventCount === 0 for all known product event kinds.
  */
 

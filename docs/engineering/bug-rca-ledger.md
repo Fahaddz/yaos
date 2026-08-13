@@ -164,7 +164,7 @@ Repo-validated bug / incident ledger as of 2026-05-27.
     - User-visible Notice on amplification quarantine. Throttled to
       one per 60s; suppressed firings are counted in the next surfaced
       notice.
-- Regression: `tests/controller-recovery-orchestration-amplifier.ts`
+- Regression: `tests/client/controller-recovery-orchestration-amplifier.ts`
   (5 deterministic Node scenarios, 48 assertions in `npm run test:regressions`).
 - iPad proof: still pending. Desktop coverage proves the predicate, the
   flight kind, and the timing. Real-device validation required before

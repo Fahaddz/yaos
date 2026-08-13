@@ -1081,12 +1081,12 @@ room refuses to serve when its stored state cannot be read
 
 Current coverage:
 
-- `tests/server-sync-message-classifier.ts`
-- `tests/server-sv-echo.ts`
-- `tests/server-post-apply-wiring.ts`
-- `tests/receipt-durability.ts` — generation gating, epoch re-baselining, fallback path
-- `tests/status-label.ts` — durable vs fallback copy, degraded segment
-- `tests/provider-manual-connect.mjs` through `npm run test:integration:worker`
+- `tests/server/server-sync-message-classifier.ts`
+- `tests/server/server-sv-echo.ts`
+- `tests/contracts/server-post-apply-wiring.ts`
+- `tests/server/receipt-durability.ts` — generation gating, epoch re-baselining, fallback path
+- `tests/client/status-label.ts` — durable vs fallback copy, degraded segment
+- `tests/live/provider-manual-connect.mjs` through `npm run test:integration:worker`
 
 ### Integration test
 

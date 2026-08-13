@@ -6,7 +6,7 @@
  * transaction, and no amplification loop occurs.
  *
  * This is the controller-orchestration-level test for the origin classification
- * fix (commit 48cfe67). The unit-level proof is in tests/recovery-amplifier.ts.
+ * fix (commit 48cfe67). The unit-level proof is in tests/client/recovery-amplifier.ts.
  * This scenario exercises the full lifecycle:
  *   ReconciliationController → applyDiffToYText → diskMirror observer → origin gate.
  *

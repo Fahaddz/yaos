@@ -39,7 +39,7 @@ For current priority framing, cross-check:
 
 ### Live provider/client offline handoff integration test
 
-The storage-level proof exists (`tests/offline-handoff.ts`), but the full product
+The storage-level proof exists (`tests/server/offline-handoff.ts`), but the full product
 claim still wants one layer above it:
 1. Device A edits and disconnects.
 2. Server persists state.
@@ -48,7 +48,7 @@ claim still wants one layer above it:
 
 ### No-event reconcile admission
 
-CLOSED 2026-05. Regression test: `tests/no-event-reconcile-admission.ts` (Scenarios A–F, runs in `npm run test:regressions`). The test drives a markdown file onto disk with no CRDT entry and asserts the full admission timeline from flight events alone in both authoritative and conservative lanes, plus the preserved-unresolved guard, the clear-and-readmit cycle, and the callback failure semantics. `FLIGHT_TAXONOMY_VERSION` was not bumped; no new flight kinds were added.
+CLOSED 2026-05. Regression test: `tests/client/no-event-reconcile-admission.ts` (Scenarios A–F, runs in `npm run test:regressions`). The test drives a markdown file onto disk with no CRDT entry and asserts the full admission timeline from flight events alone in both authoritative and conservative lanes, plus the preserved-unresolved guard, the clear-and-readmit cycle, and the callback failure semantics. `FLIGHT_TAXONOMY_VERSION` was not bumped; no new flight kinds were added.
 
 Open follow-up from the closure: see "Retire `mintAdmissionOpId` callback in favor of split planner/mutation" under "Recovery / controller confidence" below.
 
@@ -128,7 +128,7 @@ targeted proof of the exact local-repair round-trip suppression invariant.
 by the no-event reconcile admission work, Option (b)) so the controller can emit
 `reconcile.file.decision` BEFORE the CRDT mutation with a shared `opId`. The
 callback works AND has documented contract + failure semantics + a regression test
-(Scenario F in `tests/no-event-reconcile-admission.ts`), but it is a controller-shaped
+(Scenario F in `tests/client/no-event-reconcile-admission.ts`), but it is a controller-shaped
 wart inside a lower-level sync method.
 
 The cleaner architecture is the planner/mutation split: `reconcileVault` returns a
@@ -201,7 +201,7 @@ not copied here verbatim; this file is intentionally for live followups.
 
 `src/telemetry/debug/flightTraceSink.ts` currently maps the explicitly supported
 product-domain kinds, but DiskMirror, provider, and recovery code paths still emit
-outside that adapter. `tests/trace-sink.ts` documents the boundary and the known
+outside that adapter. `tests/client/trace-sink.ts` documents the boundary and the known
 bypasses. Do not represent telemetry as fully dependency-inverted until those paths
 are migrated or deliberately retired; add a mapped kind and regression coverage for
 each migration.
@@ -217,7 +217,7 @@ debt, not a release blocker for the current controller fix.
 ### Real Obsidian Node-FS/CDP proof remains required
 
 The registered `open-bound-closed-only-deferral` scenario establishes the harness
-flow using `writeAdapterFile`, and `tests/open-bound-reconcile-deferral.ts` proves
+flow using `writeAdapterFile`, and `tests/client/open-bound-reconcile-deferral.ts` proves
 the controller plus tab-close lifecycle. Before release, run the scenario against a
 real debug-enabled Obsidian instance using a Node filesystem write
 (`qa/controllers/obsidian-client.ts::writeNodeFileAndWait`) to prove the OS-watcher

@@ -129,7 +129,7 @@ npm run test:regressions
 ```
 
 That command runs the guard against the repository and then runs
-`tests/schema-version-guard.mjs`, a hermetic temporary-fixture regression. It
+`tests/contracts/schema-version-guard.mjs`, a hermetic temporary-fixture regression. It
 builds fixtures containing valid plugin schema files and then, in turn, omits
 `server/src/version.ts`, declares a `1..3` range, and declares a correct pin.
 The first two must exit non-zero and the third must exit zero. That stops the

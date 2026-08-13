@@ -1,0 +1,282 @@
+import { TFile } from "obsidian";
+import { AttachmentOrchestrator } from "../../src/runtime/attachmentOrchestrator";
+import type { BlobQueueSnapshot } from "../../src/sync/blobSync";
+
+let passed = 0;
+let failed = 0;
+
+function assert(condition: boolean, message: string): void {
+	if (condition) {
+		console.log(`  PASS  ${message}`);
+		passed++;
+		return;
+	}
+	console.error(`  FAIL  ${message}`);
+	failed++;
+}
+
+function assertSnapshot(
+	actual: BlobQueueSnapshot | null,
+	expected: BlobQueueSnapshot | null,
+	message: string,
+): void {
+	assert(JSON.stringify(actual) === JSON.stringify(expected), message);
+}
+
+function bytes(text: string): ArrayBuffer {
+	const encoded = new TextEncoder().encode(text);
+	return encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
+}
+
+async function sha256Hex(data: ArrayBuffer): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", data);
+	return Array.from(new Uint8Array(digest), (byte) =>
+		byte.toString(16).padStart(2, "0"),
+	).join("");
+}
+
+async function waitFor(condition: () => boolean, message: string): Promise<void> {
+	const deadline = Date.now() + 1000;
+	while (!condition()) {
+		if (Date.now() >= deadline) throw new Error(`Timed out: ${message}`);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+}
+
+interface Fixture {
+	orchestrator: AttachmentOrchestrator;
+	fireLayoutReady(): void;
+	getPersistedQueue(): BlobQueueSnapshot | null;
+	persistCalls(): number;
+	clearCalls(): number;
+	setPersistBarrier(barrier: Promise<void> | null): void;
+	setClearBarrier(barrier: Promise<void> | null): void;
+}
+
+function makeFixture(initialPersistedQueue: BlobQueueSnapshot | null): Fixture {
+	let persistedQueue = initialPersistedQueue;
+	let persistCount = 0;
+	let clearCount = 0;
+	let persistBarrier: Promise<void> | null = null;
+	let clearBarrier: Promise<void> | null = null;
+	let onLayoutReady: (() => void) | null = null;
+	const files = new Map<string, { file: TFile & { path: string; stat: { mtime: number; size: number } }; data: ArrayBuffer }>();
+	let clock = 1;
+
+	const app = {
+		workspace: {
+			layoutReady: false,
+			onLayoutReady: (callback: () => void) => {
+				onLayoutReady = callback;
+			},
+		},
+		vault: {
+			configDir: ".obsidian",
+			getAbstractFileByPath: (path: string) => files.get(path)?.file ?? null,
+			getFiles: () => Array.from(files.values(), ({ file }) => file),
+			createFolder: async () => {},
+			createBinary: async (path: string, data: ArrayBuffer) => {
+				const file = new TFile() as TFile & {
+					path: string;
+					stat: { mtime: number; size: number };
+				};
+				file.path = path;
+				file.stat = { mtime: clock++, size: data.byteLength };
+				files.set(path, { file, data });
+			},
+			adapter: {
+				stat: async (path: string) => files.get(path)?.file.stat ?? null,
+			},
+		},
+	} as any;
+
+	const observedMap = {
+		observe: () => {},
+		unobserve: () => {},
+		get: () => undefined,
+		forEach: () => {},
+	};
+	const vaultSync = {
+		pathToBlob: observedMap,
+		blobTombstones: observedMap,
+		isBlobTombstoned: () => false,
+	} as any;
+
+	const orchestrator = new AttachmentOrchestrator({
+		app,
+		getVaultSync: () => vaultSync,
+		getRuntimeConfig: () => ({
+			enableAttachmentSync: true,
+			host: "https://worker.example",
+			token: "token",
+			vaultId: "vault",
+			maxAttachmentSizeKB: 1024,
+			attachmentConcurrency: 1,
+			debug: false,
+		}) as any,
+		getServerSupportsAttachments: () => true,
+		getTraceHttpContext: () => undefined,
+		getBlobHashCache: () => ({}),
+		getExcludePatterns: () => [],
+		persistBlobQueue: async (snapshot) => {
+			persistCount++;
+			await persistBarrier;
+			persistedQueue = snapshot;
+		},
+		clearPersistedBlobQueue: async () => {
+			clearCount++;
+			await clearBarrier;
+			persistedQueue = null;
+		},
+		getPreservedUnresolvedEntries: () => [],
+		onPreservedUnresolvedChanged: () => {},
+		trace: () => {},
+		scheduleTraceStateSnapshot: () => {},
+		refreshStatusBar: () => {},
+		log: () => {},
+	});
+
+	return {
+		orchestrator,
+		fireLayoutReady: () => onLayoutReady?.(),
+		getPersistedQueue: () => persistedQueue,
+		persistCalls: () => persistCount,
+		clearCalls: () => clearCount,
+		setPersistBarrier: (barrier) => {
+			persistBarrier = barrier;
+		},
+		setClearBarrier: (barrier) => {
+			clearBarrier = barrier;
+		},
+	};
+}
+
+async function drainRestoredDownload(
+	fixture: Fixture,
+	data: ArrayBuffer,
+): Promise<void> {
+	(fixture.orchestrator.manager as any).blobClient = {
+		download: async () => data,
+	};
+	fixture.orchestrator.markStartupReady("test");
+	fixture.fireLayoutReady();
+	await waitFor(
+		() => fixture.orchestrator.manager?.exportQueue().downloads.length === 0,
+		"restored download drains",
+	);
+}
+
+console.log("\n--- Attachment orchestrator queue lifecycle ---");
+
+{
+	const remoteData = bytes("restored-download");
+	const savedQueue: BlobQueueSnapshot = {
+		uploads: [],
+		downloads: [{
+			path: "attachments/restored.bin",
+			hash: await sha256Hex(remoteData),
+			sizeBytes: remoteData.byteLength,
+		}],
+	};
+	const fixture = makeFixture(savedQueue);
+	fixture.orchestrator.hydrateSavedQueue(savedQueue);
+	fixture.orchestrator.start("hydrate", false);
+	const importedQueue = fixture.orchestrator.manager?.exportQueue();
+	assert(
+		importedQueue?.uploads.length === 0 &&
+			importedQueue.downloads.length === 1 &&
+			importedQueue.downloads[0]?.path === savedQueue.downloads[0]?.path &&
+			importedQueue.downloads[0]?.hash === savedQueue.downloads[0]?.hash,
+		"hydrated queue imports into the active manager",
+	);
+
+	await drainRestoredDownload(fixture, remoteData);
+
+	let releaseClear: (() => void) | null = null;
+	fixture.setClearBarrier(new Promise((resolve) => {
+		releaseClear = resolve;
+	}));
+	const stopping = fixture.orchestrator.stop("drained");
+	await Promise.resolve();
+	assert(fixture.orchestrator.manager === null, "stop removes the manager before terminal persistence");
+	assertSnapshot(fixture.getPersistedQueue(), savedQueue, "saved queue remains durable until terminal clear resolves");
+	releaseClear?.();
+	await stopping;
+	assert(fixture.clearCalls() === 1, "empty active manager clears persisted queue at stop");
+	assertSnapshot(fixture.getPersistedQueue(), null, "drained queue is removed from durable state");
+
+	const recreated = makeFixture(fixture.getPersistedQueue());
+	recreated.orchestrator.hydrateSavedQueue(recreated.getPersistedQueue());
+	recreated.orchestrator.start("reload", false);
+	assertSnapshot(
+		recreated.orchestrator.manager?.exportQueue() ?? null,
+		{ uploads: [], downloads: [] },
+		"recreated orchestrator has no stale queue to import",
+	);
+	await recreated.orchestrator.destroy();
+}
+
+{
+	const remoteData = bytes("status-tick-before-stop");
+	const savedQueue: BlobQueueSnapshot = {
+		uploads: [],
+		downloads: [{
+			path: "attachments/status-tick.bin",
+			hash: await sha256Hex(remoteData),
+			sizeBytes: remoteData.byteLength,
+		}],
+	};
+	const fixture = makeFixture(savedQueue);
+	fixture.orchestrator.hydrateSavedQueue(savedQueue);
+	fixture.orchestrator.start("status-tick-race", false);
+
+	let releasePersist: (() => void) | null = null;
+	fixture.setPersistBarrier(new Promise((resolve) => {
+		releasePersist = resolve;
+	}));
+	fixture.orchestrator.handleStatusTick();
+	await waitFor(() => fixture.persistCalls() === 1, "delayed status-tick checkpoint starts");
+
+	await drainRestoredDownload(fixture, remoteData);
+	const stopping = fixture.orchestrator.stop("status-tick-race");
+	await Promise.resolve();
+	assert(fixture.clearCalls() === 0, "terminal clear waits behind the earlier status-tick save");
+	fixture.orchestrator.handleStatusTick();
+	assert(fixture.persistCalls() === 1, "status ticks cannot queue stale snapshots after stop begins");
+
+	releasePersist?.();
+	await stopping;
+	assert(fixture.clearCalls() === 1, "terminal clear runs after the delayed status-tick save");
+	assertSnapshot(fixture.getPersistedQueue(), null, "terminal clear wins over a delayed periodic save");
+}
+
+{
+	const queued: BlobQueueSnapshot = {
+		uploads: [],
+		downloads: [{ path: "pending.bin", hash: "pending-hash", sizeBytes: 1 }],
+	};
+	const fixture = makeFixture(null);
+	fixture.orchestrator.hydrateSavedQueue(queued);
+	fixture.orchestrator.start("nonempty-control", false);
+	const expectedPersistedQueue = fixture.orchestrator.manager?.exportQueue() ?? null;
+	await fixture.orchestrator.destroy();
+	assert(fixture.persistCalls() === 1, "nonempty active queue is persisted during destroy");
+	assert(fixture.clearCalls() === 0, "nonempty active queue is not cleared during destroy");
+	assertSnapshot(fixture.getPersistedQueue(), expectedPersistedQueue, "destroy retains the nonempty queue snapshot");
+}
+
+{
+	const savedQueue: BlobQueueSnapshot = {
+		uploads: [{ path: "never-started.bin", sizeBytes: 1 }],
+		downloads: [],
+	};
+	const fixture = makeFixture(savedQueue);
+	fixture.orchestrator.hydrateSavedQueue(savedQueue);
+	await fixture.orchestrator.destroy();
+	assert(fixture.persistCalls() === 0, "unstarted queue is not re-persisted");
+	assert(fixture.clearCalls() === 0, "unstarted queue is not cleared");
+	assertSnapshot(fixture.getPersistedQueue(), savedQueue, "saved queue survives when attachment sync never starts");
+}
+
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);

@@ -74,7 +74,7 @@ const VALID_VAULT_RESOURCES = new Set(["auth", "debug", "blobs", "snapshots"]);
 //   1. Add the handler in server/src/routes/<resource>.ts
 //   2. Add the resource to VALID_VAULT_RESOURCES below (if it's new)
 //   3. Add the route shape to isKnownVaultRouteShape / isKnownSnapshotRouteShape
-//   4. Add a trap-env test to tests/server-route-classification-runtime.ts
+//   4. Add a trap-env test to tests/server/server-route-classification-runtime.ts
 //      asserting that the valid shape reaches auth and the invalid shapes
 //      (wrong method, unknown subpath) still return 404 without DO access
 // ─────────────────────────────────────────────────────────────────────────────

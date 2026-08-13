@@ -4,7 +4,7 @@
  * Runs inside a real Obsidian session. It proves that a disk divergence is
  * retained while the note is open under the closed-only policy, then is
  * imported after the normal tab-close/layout lifecycle. The controller-level
- * counterpart is tests/open-bound-reconcile-deferral.ts.
+ * counterpart is tests/client/open-bound-reconcile-deferral.ts.
  *
  * This scenario uses the harness adapter write path; a controller/CDP run that
  * uses Node fs is still required for OS-watcher-specific evidence.

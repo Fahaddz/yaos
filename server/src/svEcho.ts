@@ -3,7 +3,7 @@ import { MAX_SV_ECHO_BASE64_BYTES, SV_ECHO_SCHEMA, SV_ECHO_TYPE } from "./svEcho
 
 // y-partyserver custom-message wire prefix. Verified in
 // docs/archive/server-ack-spike.md against y-partyserver@2.1.2; rerun that
-// spike and tests/provider-manual-connect.mjs when upgrading y-partyserver.
+// spike and tests/live/provider-manual-connect.mjs when upgrading y-partyserver.
 const Y_PARTYSERVER_CUSTOM_PREFIX = "__YPS:";
 const WS_READY_STATE_OPEN = 1;
 
