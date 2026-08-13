@@ -18,7 +18,8 @@ import { isMarkdownSyncable, isBlobSyncable } from "./types";
 import { planCategoryRenameAction } from "./sync/policy/renameAdmissionPolicy";
 import { classifySyncPath } from "./paths/pathCategory";
 import { isCanonicalPathFileIdCollision } from "./paths/pathCollision";
-import type { TraceSink, ProductFlightPathEventInput } from "./observability/traceSink";
+import type { TraceSink } from "./observability/traceSink";
+import type { FlightEventInput, FlightPathEventInput } from "./observability/flightEnvelope";
 import { NoopTraceSink } from "./observability/noopTraceSink";
 import { PRODUCT_EVENT_KIND } from "./observability/productEventKinds";
 import {
@@ -247,7 +248,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			trace: (source, msg, details) => this.trace(source, msg, details),
 			scheduleTraceStateSnapshot: (reason) => this.scheduleTraceStateSnapshot(reason),
 			log: (message) => this.log(message),
-			recordFlightEvent: (event) => this.recordFlightEvent(event as import("./telemetry/debug/flightEvents").FlightEventInput),
+			recordFlightEvent: (event) => this.recordFlightEvent(event),
 			recordFlightPathEvent: (event) => this.recordFlightPathEvent(event),
 			getEffectiveExternalEditPolicy: (runtimePolicy) => {
 				if (__YAOS_QA_HARNESS_ENABLED__) {
@@ -669,7 +670,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			this.vaultSync = new VaultSync(this.settings, {
 				traceContext: this.getTraceHttpContext(),
 				trace: (source, msg, details) => this.trace(source, msg, details),
-				onFlightEvent: (event) => this.recordFlightEvent(event as import("./telemetry/debug/flightEvents").FlightEventInput),
+				onFlightEvent: (event) => this.recordFlightEvent(event as FlightEventInput),
 				onFlightPathEvent: (event) => this.recordFlightPathEvent(event),
 				onServerReceiptStatusChanged: () => this.queueReceiptStatusRefresh(),
 				getSocketTicket: (() => {
@@ -788,7 +789,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				() => this.persistPreservedUnresolvedState(),
 			);
 			this.diskMirror.startMapObservers();
-			this.diskMirror.setFlightEventHandler((event) => this.recordFlightPathEvent(event as import("./telemetry/debug/flightEvents").FlightPathEventInput));
+			this.diskMirror.setFlightEventHandler((event) => this.recordFlightPathEvent(event as FlightPathEventInput));
 			// Track SHA-256 baseline hash after every successful flushWrite.
 			// Used by decideClosedFileConflict on startup/re-enable to determine
 			// which side actually changed from the last known stable state.
@@ -1835,11 +1836,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		this.traceRuntime?.record(source, msg, details);
 	}
 
-	private recordFlightEvent(event: import("./telemetry/debug/flightEvents").FlightEventInput): void {
+	private recordFlightEvent(event: FlightEventInput): void {
 		this.lab?.recordFlightEvent(event);
 	}
 
-	private recordFlightPathEvent(event: ProductFlightPathEventInput | import("./telemetry/debug/flightEvents").FlightPathEventInput): void {
+	private recordFlightPathEvent(event: FlightPathEventInput): void {
 		this.lab?.recordFlightPathEvent(event);
 	}
 

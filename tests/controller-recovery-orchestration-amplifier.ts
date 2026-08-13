@@ -25,12 +25,11 @@ import { MarkdownView, TFile } from "obsidian";
 import * as Y from "yjs";
 import { ReconciliationController } from "../src/runtime/reconciliationController";
 import type { DiskIngestPort } from "../src/runtime/engineControlPort";
-import {
-	FLIGHT_KIND,
-	FLIGHT_TAXONOMY_VERSION,
-	type FlightEventInput,
-	type FlightPathEventInput,
-} from "../src/telemetry/debug/flightEvents";
+import { FLIGHT_KIND, FLIGHT_TAXONOMY_VERSION } from "../src/observability/flightTaxonomy";
+import type {
+	FlightEventInput,
+	FlightPathEventInput,
+} from "../src/observability/flightEnvelope";
 
 let passed = 0;
 let failed = 0;

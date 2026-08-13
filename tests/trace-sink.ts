@@ -38,7 +38,7 @@
 
 import { FlightTraceSink } from "../src/telemetry/debug/flightTraceSink";
 import { NoopTraceSink } from "../src/observability/noopTraceSink";
-import { FLIGHT_KIND } from "../src/telemetry/debug/flightEvents";
+import { FLIGHT_KIND } from "../src/observability/flightTaxonomy";
 import { PRODUCT_EVENT_KIND } from "../src/observability/productEventKinds";
 import type { DomainPathTraceEvent } from "../src/observability/traceSink";
 

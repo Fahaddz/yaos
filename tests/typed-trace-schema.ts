@@ -60,33 +60,34 @@ console.log("\n--- Test 3: source-grep static guard for recovery.skipped frontma
 // This is a static-text guard, not a runtime schema validator. It catches
 // accidental drift in the controller's frontmatter-ingest-blocked
 // instrumentation by checking that the typed exports exist in the
-// taxonomy module, the helper exists in the controller, and the helper
+// canonical module, the helper exists in the controller, and the helper
 // is invoked exactly six times. Real type-level enforcement comes from
 // `RecoverySkippedFrontmatterData` and `FrontmatterIngestBlockBranch` in
-// src/telemetry/debug/flightEvents.ts; the runtime invariants are asserted by
-// tests/frontmatter-guard-orchestration.ts.
+// src/observability/recoveryEventTypes.ts; the runtime invariants are asserted
+// by tests/frontmatter-guard-orchestration.ts.
 {
 	const reconciliation = file("src/runtime/reconciliationController.ts");
-	const flight = file("src/telemetry/debug/flightEvents.ts");
+	const recoveryTypes = file("src/observability/recoveryEventTypes.ts");
+	const taxonomy = file("src/observability/flightTaxonomy.ts");
 
-	// Typed taxonomy exports live in src/telemetry/debug/flightEvents.ts (the helper
-	// imports them; the test asserts they exist there, not in the
+	// Typed recovery payload exports live in src/observability/recoveryEventTypes.ts
+	// (the helper imports them; the test asserts they exist there, not in the
 	// controller, so accidental local copies in the controller are caught).
 	assert(
-		flight.includes("export type RecoverySkippedReason ="),
-		"flightEvents.ts exports RecoverySkippedReason union",
+		recoveryTypes.includes("export type RecoverySkippedReason ="),
+		"recoveryEventTypes.ts exports RecoverySkippedReason union",
 	);
 	assert(
-		flight.includes("export type FrontmatterIngestBlockBranch ="),
-		"flightEvents.ts exports FrontmatterIngestBlockBranch union",
+		recoveryTypes.includes("export type FrontmatterIngestBlockBranch ="),
+		"recoveryEventTypes.ts exports FrontmatterIngestBlockBranch union",
 	);
 	assert(
-		flight.includes("export type RecoverySkippedFrontmatterData ="),
-		"flightEvents.ts exports RecoverySkippedFrontmatterData payload type",
+		recoveryTypes.includes("export type RecoverySkippedFrontmatterData ="),
+		"recoveryEventTypes.ts exports RecoverySkippedFrontmatterData payload type",
 	);
 
 	// Closed-enum branch type covers exactly the six block sites.
-	const branchTypeMatch = flight.match(
+	const branchTypeMatch = recoveryTypes.match(
 		/export type FrontmatterIngestBlockBranch =\s*([\s\S]*?);/,
 	);
 	assert(branchTypeMatch !== null, "FrontmatterIngestBlockBranch declaration parses");
@@ -106,7 +107,7 @@ console.log("\n--- Test 3: source-grep static guard for recovery.skipped frontma
 	}
 
 	// RecoverySkippedReason carries every reason the controller emits today.
-	const reasonTypeMatch = flight.match(
+	const reasonTypeMatch = recoveryTypes.match(
 		/export type RecoverySkippedReason =\s*([\s\S]*?);/,
 	);
 	assert(reasonTypeMatch !== null, "RecoverySkippedReason declaration parses");
@@ -159,9 +160,10 @@ console.log("\n--- Test 3: source-grep static guard for recovery.skipped frontma
 	);
 
 	// FLIGHT_TAXONOMY_VERSION is at 12 (bumped by the qa.trace.* -> debug.trace.* rename;
-	// amplifier guard for recovery.amplification.quarantined).
+	// amplifier guard for recovery.amplification.quarantined). It is declared in
+	// the published vocabulary module, not in the recorder.
 	assert(
-		flight.includes("export const FLIGHT_TAXONOMY_VERSION = 12"),
+		taxonomy.includes("export const FLIGHT_TAXONOMY_VERSION = 12"),
 		"FLIGHT_TAXONOMY_VERSION at 12",
 	);
 }

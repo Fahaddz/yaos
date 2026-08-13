@@ -162,7 +162,8 @@ class FakeIndexedDBFactory {
 
 import { FlightRecorder } from "../src/telemetry/debug/flightRecorder";
 import { FlightTraceController, type FlightTraceDeps } from "../src/telemetry/debug/flightTraceController";
-import { FLIGHT_KIND, type FlightEvent } from "../src/telemetry/debug/flightEvents";
+import { FLIGHT_KIND } from "../src/observability/flightTaxonomy";
+import type { FlightEvent } from "../src/observability/flightEnvelope";
 
 let passed = 0;
 let failed = 0;

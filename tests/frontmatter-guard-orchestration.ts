@@ -51,11 +51,11 @@ import { MarkdownView, TFile } from "obsidian";
 import * as Y from "yjs";
 import { ReconciliationController } from "../src/runtime/reconciliationController";
 import type { DiskIngestPort } from "../src/runtime/engineControlPort";
-import {
-	FLIGHT_KIND,
-	type FlightEventInput,
-	type FlightPathEventInput,
-} from "../src/telemetry/debug/flightEvents";
+import { FLIGHT_KIND } from "../src/observability/flightTaxonomy";
+import type {
+	FlightEventInput,
+	FlightPathEventInput,
+} from "../src/observability/flightEnvelope";
 import {
 	ORIGIN_DISK_SYNC_RECOVER_BOUND,
 	ORIGIN_DISK_SYNC_OPEN_IDLE_RECOVER,

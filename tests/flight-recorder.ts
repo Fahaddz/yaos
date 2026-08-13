@@ -11,7 +11,7 @@
 
 import { PathIdentityResolver, deriveVaultPathSalt, deriveSaltFingerprint } from "../src/telemetry/debug/pathIdentity";
 import { FlightRecorder } from "../src/telemetry/debug/flightRecorder";
-import { FLIGHT_KIND } from "../src/telemetry/debug/flightEvents";
+import { FLIGHT_KIND } from "../src/observability/flightTaxonomy";
 
 let passed = 0;
 let failed = 0;

@@ -2,24 +2,15 @@ import type { App } from "obsidian";
 import type { VaultSyncSettings } from "../../settings";
 import { FlightRecorder, type FlightRecorderOptions } from "./flightRecorder";
 import {
-	FLIGHT_KIND,
 	FLIGHT_EVENT_SCHEMA_VERSION,
-	FLIGHT_TAXONOMY_VERSION,
 	type FlightEventInput,
-	type FlightExportResult,
 	type FlightPathEventInput,
-	type TraceContext,
-} from "./flightEvents";
-import type { ProductFlightPathEventInput } from "../../observability/traceSink";
+} from "../../observability/flightEnvelope";
+import { FLIGHT_KIND, FLIGHT_TAXONOMY_VERSION } from "../../observability/flightTaxonomy";
+import type { FlightExportResult, TraceContext } from "./flightEvents";
 import { PathIdentityResolver, deriveSaltFingerprint, deriveVaultPathSalt } from "./pathIdentity";
 import { buildTraceHeader, type TraceHeaderStateInput } from "../diagnostics/diagnosticsBundle";
 import { sha256Hex, getOrCreateLocalDeviceId } from "../../sync/indexedDbCandidateStore";
-
-/**
- * Looser input type that accepts both FlightPathEventInput and ProductFlightPathEventInput.
- * The controller normalizes priority (defaults to "important") and validates at runtime.
- */
-type AnyPathEventInput = ProductFlightPathEventInput | FlightPathEventInput;
 
 export type FlightTraceDeps = {
 	app: App;
@@ -177,8 +168,8 @@ export class FlightTraceController {
 	 * Callers on the hot path may fire-and-forget; flush() drains all pending
 	 * promises before reading the session file.
 	 */
-	recordPath(event: AnyPathEventInput): Promise<void> {
-		const p = this.resolveAndRecord(event as FlightPathEventInput);
+	recordPath(event: FlightPathEventInput): Promise<void> {
+		const p = this.resolveAndRecord(event);
 		this.pendingPathPromises.add(p);
 		void p.finally(() => this.pendingPathPromises.delete(p));
 		return p;
@@ -189,9 +180,9 @@ export class FlightTraceController {
 	 * Use this when the caller needs the seq for causedByEvents linkage.
 	 * The seq is reserved synchronously before any async work.
 	 */
-	reserveAndRecordPath(event: AnyPathEventInput): number {
+	reserveAndRecordPath(event: FlightPathEventInput): number {
 		const seq = this.recorder?.reserveSeq() ?? 0;
-		const p = this.resolveAndRecordWithSeq(event as FlightPathEventInput, seq);
+		const p = this.resolveAndRecordWithSeq(event, seq);
 		this.pendingPathPromises.add(p);
 		void p.finally(() => this.pendingPathPromises.delete(p));
 		return seq;

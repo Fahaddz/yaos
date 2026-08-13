@@ -18,7 +18,8 @@
  */
 
 import type { TraceSink, DomainTraceEvent, DomainPathTraceEvent } from "../../observability/traceSink";
-import { FLIGHT_KIND, type FlightKind, type FlightPathEventInput, type FlightLayer, type FlightSource } from "./flightEvents";
+import { FLIGHT_KIND, type FlightKind, type FlightLayer, type FlightSource } from "../../observability/flightTaxonomy";
+import type { FlightPathEventInput } from "../../observability/flightEnvelope";
 
 type FlightPathRecorder = (event: FlightPathEventInput) => void;
 

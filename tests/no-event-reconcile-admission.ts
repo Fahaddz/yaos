@@ -117,12 +117,11 @@ import {
 	type ReconcileMode,
 } from "../src/sync/vaultSync";
 import { ReconciliationController } from "../src/runtime/reconciliationController";
-import {
-	FLIGHT_KIND,
-	FLIGHT_TAXONOMY_VERSION,
-	type FlightEventInput,
-	type FlightPathEventInput,
-} from "../src/telemetry/debug/flightEvents";
+import { FLIGHT_KIND, FLIGHT_TAXONOMY_VERSION } from "../src/observability/flightTaxonomy";
+import type {
+	FlightEventInput,
+	FlightPathEventInput,
+} from "../src/observability/flightEnvelope";
 
 // -------------------------------------------------------------------
 // Assertion harness (matches tests/reconciliation-safety-brake.ts)

@@ -5,8 +5,28 @@
  * by ReconciliationController. They live here (not in telemetry/debug) because product
  * runtime code constructs and references them directly.
  *
- * The lab layer imports these when building flight event schemas.
+ * This is the canonical and only home for these declarations. The flight
+ * recorder imports them from here.
  */
+
+/**
+ * Closed-enum reason discriminator for `recovery.skipped` events. The
+ * controller picks exactly one of these per emission. New reasons require
+ * extending this union.
+ *
+ * - "crdt-current-no-op"          CRDT and disk already agree.
+ * - "recovery-lock-active"        bound recovery lock is still active.
+ * - "recent-editor-activity"      crdtOnly branch idle-grace bail.
+ * - "frontmatter-ingest-blocked"  shouldBlockFrontmatterIngest returned
+ *                                 true at one of the six block sites.
+ *                                 See FrontmatterIngestBlockBranch.
+ */
+export type RecoverySkippedReason =
+	| "crdt-current-no-op"
+	| "recovery-lock-active"
+	| "recent-editor-activity"
+	| "recent-editor-activity-local-only"
+	| "frontmatter-ingest-blocked";
 
 /**
  * Closed string-literal union covering every site at which

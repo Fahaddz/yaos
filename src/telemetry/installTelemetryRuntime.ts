@@ -29,8 +29,8 @@ import type { TelemetryRuntimeHost } from "./telemetryRuntimeHost";
 import { FlightTraceController } from "./debug/flightTraceController";
 import { FlightTraceSink } from "./debug/flightTraceSink";
 import { DiagnosticsService } from "./diagnostics/diagnosticsService";
-import type { FlightPathEventInput, FlightEventInput } from "./debug/flightEvents";
-import type { ProductFlightPathEventInput, TraceSink } from "../observability/traceSink";
+import type { FlightPathEventInput, FlightEventInput } from "../observability/flightEnvelope";
+import type { TraceSink } from "../observability/traceSink";
 import { PersistentTraceLogger } from "./debug/trace";
 import type { TraceLoggerPort, TraceLoggerConfig } from "../observability/traceLogger";
 import type { FrontmatterQuarantineEntry } from "../sync/frontmatterQuarantine";
@@ -48,7 +48,7 @@ export interface TelemetryRuntimeHandle {
 	readonly traceSink: TraceSink;
 
 	// Called by main.ts on every path event (from reconciliation, sync)
-	recordFlightPathEvent(event: ProductFlightPathEventInput | FlightPathEventInput): void;
+	recordFlightPathEvent(event: FlightPathEventInput): void;
 	recordFlightEvent(event: FlightEventInput): void;
 
 	// Flight trace lifecycle. There is no start/stop pair: recording is a pure
@@ -143,7 +143,7 @@ export async function installTelemetryRuntime(host: TelemetryRuntimeHost): Promi
 	// recordFlightPathEvent — core routing logic (passive event routing)
 	// -----------------------------------------------------------------------
 
-	function recordFlightPathEvent(event: ProductFlightPathEventInput | FlightPathEventInput): void {
+	function recordFlightPathEvent(event: FlightPathEventInput): void {
 		const isAdmissionOrRenameTarget =
 			ADMISSION_KINDS[event.kind] === true ||
 			(event.kind === "disk.rename.observed" &&

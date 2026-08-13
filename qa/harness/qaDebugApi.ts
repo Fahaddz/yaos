@@ -19,7 +19,7 @@ import type { ReconciliationController } from "../../src/runtime/reconciliationC
 import type { ConnectionController } from "../../src/runtime/connectionController";
 import type { FlightTraceController } from "../../src/telemetry/debug/flightTraceController";
 import type { EditorBindingManager } from "../../src/sync/editorBinding";
-import { FLIGHT_KIND } from "../../src/telemetry/debug/flightEvents";
+import { FLIGHT_KIND } from "../../src/observability/flightTaxonomy";
 import { yTextToString } from "../../src/utils/format";
 import { forceReplaceYText } from "../../src/sync/diff";
 import {

@@ -2,14 +2,15 @@ import { normalizePath, type App } from "obsidian";
 import { randomBase64Url } from "../../utils/base64url";
 import {
 	FLIGHT_EVENT_SCHEMA_VERSION,
-	FLIGHT_TAXONOMY_VERSION,
-	FLIGHT_KIND,
 	type FlightEvent,
 	type FlightEventInput,
-	type FlightMode,
+} from "../../observability/flightEnvelope";
+import {
+	FLIGHT_TAXONOMY_VERSION,
+	FLIGHT_KIND,
 	type FlightPriority,
-	type TraceContext,
-} from "./flightEvents";
+} from "../../observability/flightTaxonomy";
+import type { FlightMode, TraceContext } from "./flightEvents";
 
 const DEFAULT_FLUSH_MS = 1000;
 const DEFAULT_MAX_PENDING_LINES = 3000;

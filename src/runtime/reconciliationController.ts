@@ -18,7 +18,8 @@ import type {
 	ProductFlightPathEventInput,
 } from "../observability/traceSink";
 import { PRODUCT_EVENT_KIND } from "../observability/productEventKinds";
-// Types only — no FLIGHT_KIND enum import.
+// PRODUCT_EVENT_KIND, not FLIGHT_KIND: the controller is product code and may
+// only emit the product subset of the taxonomy (see productEventKinds.ts).
 import type {
 	FrontmatterIngestBlockBranch,
 	RecoverySkippedFrontmatterData,

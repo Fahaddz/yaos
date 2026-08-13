@@ -92,13 +92,20 @@ src/
   sync/                       CRDT sync, editor bindings, disk mirror, blob
   settings/                   Settings store and settings tab
   observability/              Product-owned event/trace types (no debug internals)
-    productEventKinds.ts      PRODUCT_EVENT_KIND string constants
+    flightTaxonomy.ts         FLIGHT_KIND + FLIGHT_TAXONOMY_VERSION — the published
+                              vocabulary of the exported trace format (wire contract)
+    flightEnvelope.ts         FlightEvent/FlightEventInput/FlightPathEventInput +
+                              FLIGHT_EVENT_SCHEMA_VERSION — the exported record shape
+    productEventKinds.ts      PRODUCT_EVENT_KIND — narrowed view of FLIGHT_KIND; the
+                              subset product runtime code may emit
+    recoveryEventTypes.ts     recovery.skipped reason + frontmatter payload types
     traceSink.ts              TraceSink interface + ProductFlightEvent* types
     traceContext.ts           TraceHttpContext, TraceEventDetails, TraceRecord types
     traceLogger.ts            TraceLoggerPort interface
   telemetry/                  Debug runtime, gated by the `debug` setting
     debug/                    FlightRecorder, FlightTraceController, FlightTraceSink,
-                              PathIdentityResolver
+                              PathIdentityResolver; flightEvents.ts holds recorder-only
+                              types (FlightMode, TraceContext, FlightExportResult)
     diagnostics/              DeviceWitnessTracker, DiagnosticsService, PathRedactor
     debug/ports/
       yaosDebugPort.ts        YaosDebugPort interface (canonical — used by QA + tests)

@@ -12,6 +12,15 @@
  *   - Implementation may queue async work (HMAC, redaction) internally.
  */
 
+import type {
+	FlightLayer,
+	FlightPriority,
+	FlightScope,
+	FlightSeverity,
+	FlightSource,
+} from "./flightTaxonomy";
+import type { ProductEventKind } from "./productEventKinds";
+
 export interface DomainTraceEvent {
 	readonly kind: string;
 	readonly scope: "vault" | "file" | "connection" | "diagnostics";
@@ -44,15 +53,28 @@ export interface TraceSink {
 // -----------------------------------------------------------------------
 // Product event input types
 //
-// These types mirror FlightEventInput/FlightPathEventInput but use
-// string literals for kind instead of the FlightKind enum. Product code
-// imports these; the adapter (FlightTraceSink) maps to flight schema.
+// These are capability-narrowed *views* of the canonical envelope in
+// ./flightEnvelope.ts, not parallel declarations of it. Every member is
+// derived with Extract<> from the published taxonomy, so the two cannot
+// drift and each view fails closed: if a taxonomy member is renamed the
+// narrowed union loses it and the offending product callsite stops
+// compiling, rather than silently inheriting a capability.
+//
+// Because every field is a subset of the canonical field,
+// ProductFlightEventInput is assignable to FlightEventInput and
+// ProductFlightPathEventInput to FlightPathEventInput. That is what lets
+// the recorder entry points take a single parameter type instead of a
+// union of the two spellings.
 // -----------------------------------------------------------------------
 
-export type ProductFlightScope = "file" | "folder" | "vault" | "blob" | "connection";
-export type ProductFlightSeverity = "debug" | "info" | "warn" | "error";
-export type ProductFlightPriority = "critical" | "important" | "verbose";
-export type ProductFlightLayer =
+export type ProductFlightScope = Extract<
+	FlightScope,
+	"file" | "folder" | "vault" | "blob" | "connection"
+>;
+export type ProductFlightSeverity = FlightSeverity;
+export type ProductFlightPriority = FlightPriority;
+export type ProductFlightLayer = Extract<
+	FlightLayer,
 	| "lifecycle"
 	| "disk"
 	| "crdt"
@@ -62,8 +84,10 @@ export type ProductFlightLayer =
 	| "recovery"
 	| "policy"
 	| "editor"
-	| "blob";
-export type ProductFlightSource =
+	| "blob"
+>;
+export type ProductFlightSource = Extract<
+	FlightSource,
 	| "vaultSync"
 	| "vaultEvents"
 	| "diskMirror"
@@ -71,19 +95,22 @@ export type ProductFlightSource =
 	| "reconciliationController"
 	| "connectionController"
 	| "blobSync"
-	| "serverAckTracker";
+	| "serverAckTracker"
+>;
 
 /**
  * Product event input — used by sync/runtime code.
- * kind is a string literal (e.g., "crdt.file.created") not an enum import.
+ *
+ * `kind` is a `ProductEventKind`, so product code cannot emit a harness- or
+ * recorder-only kind (`qa.phase`, `debug.trace.started`, `export.manifest`, …).
  */
 export interface ProductFlightEventInput {
-	readonly kind: string;
+	readonly kind: ProductEventKind;
 	readonly severity: ProductFlightSeverity;
 	readonly scope: ProductFlightScope;
 	readonly source: ProductFlightSource;
 	readonly layer: ProductFlightLayer;
-	readonly priority?: ProductFlightPriority;
+	readonly priority: ProductFlightPriority;
 	readonly opId?: string;
 	readonly data?: Record<string, unknown>;
 }

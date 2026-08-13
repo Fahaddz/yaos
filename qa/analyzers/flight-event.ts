@@ -1,6 +1,6 @@
 /**
  * Minimal typed representation of a flight event for the analyzer.
- * Mirrors the shape of FlightEvent from src/debug/flightEvents.ts
+ * Mirrors the shape of FlightEvent from src/observability/flightEnvelope.ts
  * but kept separate so the analyzer has no build dependency on the plugin.
  */
 
