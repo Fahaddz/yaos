@@ -19,19 +19,9 @@ if (typeof globalThis.crypto === "undefined") {
 import * as Y from "yjs";
 import { SqlDocStore } from "../../server/src/sqlDocStore";
 import { FakeDurableObjectStorage } from "../mocks/sqlStorage";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("server-persistence-pathology");
 
 // ── Store construction ───────────────────────────────────────────────────────
 
@@ -179,7 +169,7 @@ function coldStartFromStore(store: SqlDocStore): VaultDoc {
 // TEST 1: Large refill from near-empty server — 700 tiny files
 // ═══════════════════════════════════════════════════════════════════════════════
 
-console.log("\n--- Test 1: large refill from near-empty server (700 tiny files) ---");
+s.section("Test 1: large refill from near-empty server (700 tiny files)");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = makeStore(storage);
@@ -199,7 +189,7 @@ console.log("\n--- Test 1: large refill from near-empty server (700 tiny files) 
 	}
 
 	const stats0 = store.getJournalStats();
-	assert(stats0.entryCount <= 2, `initial journal has <= 2 entries (got ${stats0.entryCount})`);
+	s.check(stats0.entryCount <= 2, `initial journal has <= 2 entries (got ${stats0.entryCount})`);
 
 	// Phase 2: Client A has a full vault (700 files)
 	const clientA = makeVaultDoc();
@@ -219,21 +209,21 @@ console.log("\n--- Test 1: large refill from near-empty server (700 tiny files) 
 
 	// Server onSave: delta from loaded SV
 	const result = simulateServerSave(serverDoc, store, loadedSV);
-	assert(result.journalStats.entryCount > stats0.entryCount, "journal entry count increased after large refill");
-	assert(result.journalStats.totalBytes > 1000, `journal bytes reflect vault data (got ${result.journalStats.totalBytes})`);
+	s.check(result.journalStats.entryCount > stats0.entryCount, "journal entry count increased after large refill");
+	s.check(result.journalStats.totalBytes > 1000, `journal bytes reflect vault data (got ${result.journalStats.totalBytes})`);
 
 	// Phase 4: Cold-start Device B from store
 	const deviceB = coldStartFromStore(store);
 	const bPaths = activePaths(deviceB);
-	assert(bPaths.length === 700, `Device B has all 700 files (got ${bPaths.length})`);
-	assert(readFileContent(deviceB, "folder-0/note-0.md") !== null, "Device B can read file content");
+	s.check(bPaths.length === 700, `Device B has all 700 files (got ${bPaths.length})`);
+	s.check(readFileContent(deviceB, "folder-0/note-0.md") !== null, "Device B can read file content");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEST 2: Large refill — 700 files × 2KB content
 // ═══════════════════════════════════════════════════════════════════════════════
 
-console.log("\n--- Test 2: large refill from near-empty server (700 × 2KB files) ---");
+s.section("Test 2: large refill from near-empty server (700 × 2KB files)");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = makeStore(storage);
@@ -257,23 +247,23 @@ console.log("\n--- Test 2: large refill from near-empty server (700 × 2KB files
 	Y.applyUpdate(serverDoc, clientDelta);
 
 	const result = simulateServerSave(serverDoc, store, loadedSV);
-	assert(result.journalStats.totalBytes > 100_000, `large vault persisted (${result.journalStats.totalBytes} bytes)`);
+	s.check(result.journalStats.totalBytes > 100_000, `large vault persisted (${result.journalStats.totalBytes} bytes)`);
 
 	// Cold-start Device B
 	const deviceB = coldStartFromStore(store);
 	const bPaths = activePaths(deviceB);
-	assert(bPaths.length === 700, `Device B has all 700 files (got ${bPaths.length})`);
+	s.check(bPaths.length === 700, `Device B has all 700 files (got ${bPaths.length})`);
 
 	// Spot-check content
 	const content = readFileContent(deviceB, "folder-5/note-250.md");
-	assert(content !== null && content.startsWith("# Note 250"), "Device B has correct file content");
+	s.check(content !== null && content.startsWith("# Note 250"), "Device B has correct file content");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEST 3: Large refill — 700 files × 20KB content (stress test)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-console.log("\n--- Test 3: large refill from near-empty server (700 × 20KB files) ---");
+s.section("Test 3: large refill from near-empty server (700 × 20KB files)");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = makeStore(storage);
@@ -297,20 +287,20 @@ console.log("\n--- Test 3: large refill from near-empty server (700 × 20KB file
 	Y.applyUpdate(serverDoc, clientDelta);
 
 	const result = simulateServerSave(serverDoc, store, loadedSV);
-	assert(result.persistedBytes > 1_000_000, `large vault persisted (${result.persistedBytes} bytes)`);
-	assert(result.method === "checkpoint", `a vault-sized delta escalates to a checkpoint (got ${result.method})`);
+	s.check(result.persistedBytes > 1_000_000, `large vault persisted (${result.persistedBytes} bytes)`);
+	s.check(result.method === "checkpoint", `a vault-sized delta escalates to a checkpoint (got ${result.method})`);
 
 	// Cold-start Device B
 	const deviceB = coldStartFromStore(store);
 	const bPaths = activePaths(deviceB);
-	assert(bPaths.length === 700, `Device B has all 700 files (got ${bPaths.length})`);
+	s.check(bPaths.length === 700, `Device B has all 700 files (got ${bPaths.length})`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEST 4: Exact reporter pathology — 2 entries / 103 bytes, then refill
 // ═══════════════════════════════════════════════════════════════════════════════
 
-console.log("\n--- Test 4: exact reporter pathology — near-empty journal then full vault refill ---");
+s.section("Test 4: exact reporter pathology — near-empty journal then full vault refill");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = makeStore(storage);
@@ -327,8 +317,8 @@ console.log("\n--- Test 4: exact reporter pathology — near-empty journal then 
 	store.appendUpdate(delta2);
 
 	const stats0 = store.getJournalStats();
-	assert(stats0.entryCount === 2, `reporter-like journal: ${stats0.entryCount} entries`);
-	assert(stats0.totalBytes < 200, `reporter-like journal: ${stats0.totalBytes} bytes`);
+	s.check(stats0.entryCount === 2, `reporter-like journal: ${stats0.entryCount} entries`);
+	s.check(stats0.totalBytes < 200, `reporter-like journal: ${stats0.totalBytes} bytes`);
 
 	// Simulate DO cold-load
 	const serverDoc = new Y.Doc();
@@ -346,23 +336,23 @@ console.log("\n--- Test 4: exact reporter pathology — near-empty journal then 
 
 	// Server save (the critical moment — this is what failed for the reporter)
 	const result = simulateServerSave(serverDoc, store, loadedSV);
-	assert(result.journalStats.entryCount === 3, `journal has 3 entries after refill (got ${result.journalStats.entryCount})`);
+	s.check(result.journalStats.entryCount === 3, `journal has 3 entries after refill (got ${result.journalStats.entryCount})`);
 
 	// Simulate DO eviction and cold-load by Device B
 	const deviceB = coldStartFromStore(store);
 	const bPaths = activePaths(deviceB);
-	assert(bPaths.length === 666, `Device B has all 666 files (got ${bPaths.length})`);
+	s.check(bPaths.length === 666, `Device B has all 666 files (got ${bPaths.length})`);
 
 	// Verify Device B gets specific files
-	assert(readFileContent(deviceB, "folder-0/note-0.md") !== null, "Device B has first file");
-	assert(readFileContent(deviceB, "folder-13/note-665.md") !== null, "Device B has last file");
+	s.check(readFileContent(deviceB, "folder-0/note-0.md") !== null, "Device B has first file");
+	s.check(readFileContent(deviceB, "folder-13/note-665.md") !== null, "Device B has last file");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEST 5: appendUpdate failure does not corrupt journal
 // ═══════════════════════════════════════════════════════════════════════════════
 
-console.log("\n--- Test 5: appendUpdate failure leaves journal intact ---");
+s.section("Test 5: appendUpdate failure leaves journal intact");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = makeStore(storage);
@@ -373,7 +363,7 @@ console.log("\n--- Test 5: appendUpdate failure leaves journal intact ---");
 	store.appendUpdate(Y.encodeStateAsUpdate(doc));
 
 	const statsBeforeFail = store.getJournalStats();
-	assert(statsBeforeFail.entryCount === 1, "journal has 1 entry before failure");
+	s.check(statsBeforeFail.entryCount === 1, "journal has 1 entry before failure");
 
 	// Make the next put fail
 	storage.sql.failWritesAfterBytes = 0;
@@ -388,25 +378,25 @@ console.log("\n--- Test 5: appendUpdate failure leaves journal intact ---");
 	} catch {
 		threw = true;
 	}
-	assert(threw, "appendUpdate throws on storage failure");
+	s.check(threw, "appendUpdate throws on storage failure");
 
 	// The journal must be unchanged: SqlDocStore advances its counters only
 	// after the INSERT returns, and a rejected write never reaches the table.
 	storage.sql.failWritesAfterBytes = Infinity;
 	const statsAfterFail = store.getJournalStats();
-	assert(
+	s.check(
 		statsAfterFail.entryCount === statsBeforeFail.entryCount,
 		`journal entry count unchanged after the failed append (got ${statsAfterFail.entryCount})`,
 	);
-	assert(storage.sql.journalTruth().entryCount === 1, "storage still holds exactly the one durable entry");
-	assert(threw, "storage failure was not silently swallowed");
+	s.check(storage.sql.journalTruth().entryCount === 1, "storage still holds exactly the one durable entry");
+	s.check(threw, "storage failure was not silently swallowed");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEST 7: Multiple DO lifecycles with near-empty server (simulates 80+ loads)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-console.log("\n--- Test 7: repeated DO lifecycle — save persists across evictions ---");
+s.section("Test 7: repeated DO lifecycle — save persists across evictions");
 {
 	const storage = new FakeDurableObjectStorage();
 
@@ -444,7 +434,7 @@ console.log("\n--- Test 7: repeated DO lifecycle — save persists across evicti
 		const store = makeStore(storage);
 		const deviceB = coldStartFromStore(store);
 		const bPaths = activePaths(deviceB);
-		assert(bPaths.length === 500, `after eviction cycle, Device B has 500 files (got ${bPaths.length})`);
+		s.check(bPaths.length === 500, `after eviction cycle, Device B has 500 files (got ${bPaths.length})`);
 	}
 }
 
@@ -452,7 +442,7 @@ console.log("\n--- Test 7: repeated DO lifecycle — save persists across evicti
 // TEST 9: appendUpdate fails, checkpoint fallback succeeds
 // ═══════════════════════════════════════════════════════════════════════════════
 
-console.log("\n--- Test 9: appendUpdate fails, checkpoint fallback succeeds ---");
+s.section("Test 9: appendUpdate fails, checkpoint fallback succeeds");
 {
 	// The write threshold fails the append, then is lifted so the checkpoint can succeed.
 	const storage = new FakeDurableObjectStorage();
@@ -480,8 +470,8 @@ console.log("\n--- Test 9: appendUpdate fails, checkpoint fallback succeeds ---"
 	} catch {
 		appendFailed = true;
 	}
-	assert(appendFailed, "appendUpdate fails when storage threshold exceeded");
-	assert(storage.sql.writeFailures > 0, "storage recorded put failures");
+	s.check(appendFailed, "appendUpdate fails when storage threshold exceeded");
+	s.check(storage.sql.writeFailures > 0, "storage recorded put failures");
 
 	// Reset storage for checkpoint (which will succeed)
 	storage.sql.failWritesAfterBytes = Infinity;
@@ -498,7 +488,7 @@ console.log("\n--- Test 9: appendUpdate fails, checkpoint fallback succeeds ---"
 	} catch {
 		checkpointSucceeded = false;
 	}
-	assert(checkpointSucceeded, "checkpoint fallback succeeds after append failure");
+	s.check(checkpointSucceeded, "checkpoint fallback succeeds after append failure");
 
 	// Cold-load should have the full content
 	const reloaded = store.loadState();
@@ -506,7 +496,7 @@ console.log("\n--- Test 9: appendUpdate fails, checkpoint fallback succeeds ---"
 	if (reloaded.snapshot) Y.applyUpdate(restoredDoc, reloaded.snapshot);
 	for (const u of reloaded.journalUpdates) Y.applyUpdate(restoredDoc, u);
 
-	assert(
+	s.check(
 		restoredDoc.getText("t").toString() === "x".repeat(10_000),
 		"checkpoint contains full content after fallback",
 	);
@@ -516,7 +506,7 @@ console.log("\n--- Test 9: appendUpdate fails, checkpoint fallback succeeds ---"
 // TEST 10: appendUpdate fails, checkpoint fallback also fails
 // ═══════════════════════════════════════════════════════════════════════════════
 
-console.log("\n--- Test 10: appendUpdate fails, checkpoint fallback also fails ---");
+s.section("Test 10: appendUpdate fails, checkpoint fallback also fails");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = makeStore(storage);
@@ -541,7 +531,7 @@ console.log("\n--- Test 10: appendUpdate fails, checkpoint fallback also fails -
 	} catch {
 		appendFailed = true;
 	}
-	assert(appendFailed, "appendUpdate fails");
+	s.check(appendFailed, "appendUpdate fails");
 
 	// Try checkpoint — should also fail
 	let checkpointFailed = false;
@@ -553,19 +543,19 @@ console.log("\n--- Test 10: appendUpdate fails, checkpoint fallback also fails -
 	} catch {
 		checkpointFailed = true;
 	}
-	assert(checkpointFailed, "checkpoint also fails when storage is completely broken");
+	s.check(checkpointFailed, "checkpoint also fails when storage is completely broken");
 
 	// Re-enable storage and verify original state is intact.  The failed
 	// checkpoint deleted the journal before its INSERT threw, so this only holds
 	// if the transaction rolled back — which is the contract under test.
 	storage.sql.failWritesAfterBytes = Infinity;
 	const afterStats = store.getJournalStats();
-	assert(
+	s.check(
 		afterStats.entryCount === initialStats.entryCount,
 		"journal unchanged after failed saves",
 	);
 	const reopened = makeStore(storage).loadState();
-	assert(
+	s.check(
 		reopened.journalStats.entryCount === initialStats.entryCount,
 		`a cold load still finds the pre-failure journal (got ${reopened.journalStats.entryCount})`,
 	);
@@ -573,7 +563,7 @@ console.log("\n--- Test 10: appendUpdate fails, checkpoint fallback also fails -
 
 // ── Test 11: tombstone non-resurrection during authoritative reconcile ───────
 
-console.log("\n--- Test 11: tombstoned stale disk file is not resurrected during authoritative reconcile ---");
+s.section("Test 11: tombstoned stale disk file is not resurrected during authoritative reconcile");
 {
 	// Import the actual production function
 	const { classifyDiskPathForReconcile } = await import("../../src/sync/vaultSync.js");
@@ -588,11 +578,11 @@ console.log("\n--- Test 11: tombstoned stale disk file is not resurrected during
 			true,   // isTombstoned
 			"authoritative",
 		);
-		assert(result.action === "tombstone-conflict", "tombstoned path returns tombstone-conflict");
-		assert(result.conflict !== undefined, "conflict object is returned");
-		assert(result.conflict!.path === testPath, "conflict path matches");
-		assert(result.conflict!.action === "preserved-local-only", "conflict action correct");
-		assert(result.conflict!.reason === "disk-present-at-tombstoned-path", "conflict reason correct");
+		s.check(result.action === "tombstone-conflict", "tombstoned path returns tombstone-conflict");
+		s.check(result.conflict !== undefined, "conflict object is returned");
+		s.check(result.conflict!.path === testPath, "conflict path matches");
+		s.check(result.conflict!.action === "preserved-local-only", "conflict action correct");
+		s.check(result.conflict!.reason === "disk-present-at-tombstoned-path", "conflict reason correct");
 	}
 
 	// Test 2: Already in CRDT → skip-in-crdt
@@ -603,8 +593,8 @@ console.log("\n--- Test 11: tombstoned stale disk file is not resurrected during
 			false,  // isTombstoned
 			"authoritative",
 		);
-		assert(result.action === "skip-in-crdt", "path in CRDT returns skip-in-crdt");
-		assert(result.conflict === undefined, "no conflict for skip-in-crdt");
+		s.check(result.action === "skip-in-crdt", "path in CRDT returns skip-in-crdt");
+		s.check(result.conflict === undefined, "no conflict for skip-in-crdt");
 	}
 
 	// Test 3: Not in CRDT, not tombstoned, authoritative → seed-to-crdt
@@ -615,7 +605,7 @@ console.log("\n--- Test 11: tombstoned stale disk file is not resurrected during
 			false,  // isTombstoned
 			"authoritative",
 		);
-		assert(result.action === "seed-to-crdt", "new path in authoritative returns seed-to-crdt");
+		s.check(result.action === "seed-to-crdt", "new path in authoritative returns seed-to-crdt");
 	}
 
 	// Test 4: Not in CRDT, not tombstoned, conservative → untracked
@@ -626,7 +616,7 @@ console.log("\n--- Test 11: tombstoned stale disk file is not resurrected during
 			false,  // isTombstoned
 			"conservative",
 		);
-		assert(result.action === "untracked", "new path in conservative returns untracked");
+		s.check(result.action === "untracked", "new path in conservative returns untracked");
 	}
 
 	// Test 5: Tombstoned takes precedence over authoritative mode
@@ -637,7 +627,7 @@ console.log("\n--- Test 11: tombstoned stale disk file is not resurrected during
 			true,   // isTombstoned
 			"authoritative",
 		);
-		assert(result.action === "tombstone-conflict", "tombstone takes precedence in authoritative");
+		s.check(result.action === "tombstone-conflict", "tombstone takes precedence in authoritative");
 	}
 
 	// Test 6: crdtHasPath takes precedence over tombstone
@@ -649,13 +639,13 @@ console.log("\n--- Test 11: tombstoned stale disk file is not resurrected during
 			true,   // isTombstoned (inconsistent state)
 			"authoritative",
 		);
-		assert(result.action === "skip-in-crdt", "crdtHasPath takes precedence over tombstone");
+		s.check(result.action === "skip-in-crdt", "crdtHasPath takes precedence over tombstone");
 	}
 }
 
 // ── Test 12: PersistenceCoordinator — append fails, checkpoint fallback succeeds ───────
 
-console.log("\n--- Test 12: PersistenceCoordinator — append fails, checkpoint fallback succeeds ---");
+s.section("Test 12: PersistenceCoordinator — append fails, checkpoint fallback succeeds");
 {
 	const { PersistenceCoordinator, CHECKPOINT_FALLBACK_AFTER_FAILURES } = await import(
 		"../../server/src/persistenceCoordinator.js"
@@ -686,38 +676,38 @@ console.log("\n--- Test 12: PersistenceCoordinator — append fails, checkpoint 
 	// First save — append fails, not enough failures for fallback yet
 	doc.getText("t").insert(0, "content1");
 	const result1 = await coordinator.enqueueSave();
-	assert(!result1.success, "first save fails");
-	assert(result1.method === "append", "first save tried append");
-	assert(coordinator.health.status === "degraded", "status is degraded after failure");
-	assert(coordinator.health.consecutiveSaveFailures === 1, "consecutive failures = 1");
-	assert(coordinator.health.pendingPersistence === true, "pendingPersistence stays true after failure");
+	s.check(!result1.success, "first save fails");
+	s.check(result1.method === "append", "first save tried append");
+	s.check(coordinator.health.status === "degraded", "status is degraded after failure");
+	s.check(coordinator.health.consecutiveSaveFailures === 1, "consecutive failures = 1");
+	s.check(coordinator.health.pendingPersistence === true, "pendingPersistence stays true after failure");
 
 	// Second save — append fails, triggers immediate checkpoint fallback
 	doc.getText("t").insert(0, "content2");
 	const result2 = await coordinator.enqueueSave();
 
 	// After CHECKPOINT_FALLBACK_AFTER_FAILURES (2) failures, immediate fallback should succeed
-	assert(result2.success, "second save succeeds via immediate fallback");
-	assert(
+	s.check(result2.success, "second save succeeds via immediate fallback");
+	s.check(
 		result2.method === "immediate-fallback",
 		`second save used immediate fallback (got ${result2.method})`,
 	);
-	assert(coordinator.health.status === "healthy", "status is healthy after fallback success");
-	assert(coordinator.health.consecutiveSaveFailures === 0, "consecutive failures reset");
-	assert(coordinator.health.checkpointFallbackCount >= 1, "checkpoint fallback count incremented");
+	s.check(coordinator.health.status === "healthy", "status is healthy after fallback success");
+	s.check(coordinator.health.consecutiveSaveFailures === 0, "consecutive failures reset");
+	s.check(coordinator.health.checkpointFallbackCount >= 1, "checkpoint fallback count incremented");
 
 	// Verify lastPersistedStateVector advanced
 	const psv = coordinator.getLastPersistedStateVector();
-	assert(psv !== null, "lastPersistedStateVector is set after successful save");
+	s.check(psv !== null, "lastPersistedStateVector is set after successful save");
 
 	// Verify call counts
-	assert(appendCallCount === 2, `appendUpdate called twice (got ${appendCallCount})`);
-	assert(checkpointCallCount === 1, `rewriteCheckpoint called once (got ${checkpointCallCount})`);
+	s.check(appendCallCount === 2, `appendUpdate called twice (got ${appendCallCount})`);
+	s.check(checkpointCallCount === 1, `rewriteCheckpoint called once (got ${checkpointCallCount})`);
 }
 
 // ── Test 13: PersistenceCoordinator — append + checkpoint both fail ───────
 
-console.log("\n--- Test 13: PersistenceCoordinator — append + checkpoint both fail ---");
+s.section("Test 13: PersistenceCoordinator — append + checkpoint both fail");
 {
 	const { PersistenceCoordinator } = await import("../../server/src/persistenceCoordinator.js");
 
@@ -741,32 +731,32 @@ console.log("\n--- Test 13: PersistenceCoordinator — append + checkpoint both 
 
 	// Capture initial state
 	const initialPsv = coordinator.getLastPersistedStateVector();
-	assert(initialPsv === null, "initial lastPersistedStateVector is null");
+	s.check(initialPsv === null, "initial lastPersistedStateVector is null");
 
 	// First save — fails
 	doc.getText("t").insert(0, "content1");
 	const result1 = await coordinator.enqueueSave();
-	assert(!result1.success, "first save fails");
+	s.check(!result1.success, "first save fails");
 
 	// Second save — fails, triggers fallback which also fails
 	doc.getText("t").insert(0, "content2");
 	const result2 = await coordinator.enqueueSave();
-	assert(!result2.success, "second save fails");
-	assert(result2.method === "immediate-fallback", "second save tried immediate fallback");
+	s.check(!result2.success, "second save fails");
+	s.check(result2.method === "immediate-fallback", "second save tried immediate fallback");
 
 	// CRITICAL INVARIANT: lastPersistedStateVector must NOT advance on failure
 	const finalPsv = coordinator.getLastPersistedStateVector();
-	assert(finalPsv === null, "lastPersistedStateVector did NOT advance after total failure");
+	s.check(finalPsv === null, "lastPersistedStateVector did NOT advance after total failure");
 
 	// Status must be degraded
-	assert(coordinator.health.status === "degraded", "status is degraded");
-	assert(coordinator.health.pendingPersistence === true, "pendingPersistence is true after failure");
-	assert(coordinator.health.consecutiveSaveFailures >= 2, "consecutive failures tracked");
+	s.check(coordinator.health.status === "degraded", "status is degraded");
+	s.check(coordinator.health.pendingPersistence === true, "pendingPersistence is true after failure");
+	s.check(coordinator.health.consecutiveSaveFailures >= 2, "consecutive failures tracked");
 }
 
 // ── Test 14: PersistenceCoordinator — queued saves use fresh state vectors ───────
 
-console.log("\n--- Test 14: PersistenceCoordinator — queued saves cannot regress lastPersistedStateVector ---");
+s.section("Test 14: PersistenceCoordinator — queued saves cannot regress lastPersistedStateVector");
 {
 	const { PersistenceCoordinator } = await import("../../server/src/persistenceCoordinator.js");
 
@@ -808,13 +798,13 @@ console.log("\n--- Test 14: PersistenceCoordinator — queued saves cannot regre
 	const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
 
 	// All should succeed
-	assert(r1.success, "first queued save succeeded");
-	assert(r2.success, "second queued save succeeded");
-	assert(r3.success, "third queued save succeeded");
+	s.check(r1.success, "first queued save succeeded");
+	s.check(r2.success, "second queued save succeeded");
+	s.check(r3.success, "third queued save succeeded");
 
 	// Final state vector should reflect all changes
 	const finalPsv = coordinator.getLastPersistedStateVector();
-	assert(finalPsv !== null, "final lastPersistedStateVector is set");
+	s.check(finalPsv !== null, "final lastPersistedStateVector is set");
 
 	// Cold load should have all content
 	const coldDoc = new Y.Doc();
@@ -823,14 +813,14 @@ console.log("\n--- Test 14: PersistenceCoordinator — queued saves cannot regre
 		Y.applyUpdate(coldDoc, update);
 	}
 	const content = coldDoc.getText("t").toJSON();
-	assert(content.includes("A"), "cold load has content A");
-	assert(content.includes("B"), "cold load has content B");
-	assert(content.includes("C"), "cold load has content C");
+	s.check(content.includes("A"), "cold load has content A");
+	s.check(content.includes("B"), "cold load has content B");
+	s.check(content.includes("C"), "cold load has content C");
 }
 
 // ── Test 14b: entry pressure coalesces instead of rewriting the snapshot ────
 
-console.log("\n--- Test 14b: PersistenceCoordinator — entry pressure coalesces, byte pressure checkpoints ---");
+s.section("Test 14b: PersistenceCoordinator — entry pressure coalesces, byte pressure checkpoints");
 {
 	const { PersistenceCoordinator } = await import("../../server/src/persistenceCoordinator.js");
 
@@ -869,14 +859,14 @@ console.log("\n--- Test 14b: PersistenceCoordinator — entry pressure coalesces
 		await coordinator.enqueueSave();
 	}
 
-	assert(coalesces > 0, `entry pressure coalesced (got ${coalesces})`);
-	assert(checkpoints === 0, `entry pressure did NOT rewrite the snapshot (got ${checkpoints})`);
-	assert(coordinator.health.coalesceCount === coalesces, "coalesce count surfaced in health");
+	s.check(coalesces > 0, `entry pressure coalesced (got ${coalesces})`);
+	s.check(checkpoints === 0, `entry pressure did NOT rewrite the snapshot (got ${checkpoints})`);
+	s.check(coordinator.health.coalesceCount === coalesces, "coalesce count surfaced in health");
 
 	coordinator.dispose(); doc.destroy();
 }
 
-console.log("\n--- Test 14b2: PersistenceCoordinator — the byte arm scales with the snapshot ---");
+s.section("Test 14b2: PersistenceCoordinator — the byte arm scales with the snapshot");
 {
 	const { PersistenceCoordinator } = await import("../../server/src/persistenceCoordinator.js");
 
@@ -916,15 +906,15 @@ console.log("\n--- Test 14b2: PersistenceCoordinator — the byte arm scales wit
 		await coordinator.enqueueSave();
 	}
 
-	assert(checkpoints === 1, `journal past snapshotBytes/4 triggers a checkpoint (got ${checkpoints})`);
-	assert(coalesces === 0, `the entry arm stayed out of it (got ${coalesces})`);
+	s.check(checkpoints === 1, `journal past snapshotBytes/4 triggers a checkpoint (got ${checkpoints})`);
+	s.check(coalesces === 0, `the entry arm stayed out of it (got ${coalesces})`);
 
 	coordinator.dispose(); doc.destroy();
 }
 
 // ── Test 14c: a failed append does not drop the buffered updates ─────────────
 
-console.log("\n--- Test 14c: PersistenceCoordinator — failed append retains updates for retry ---");
+s.section("Test 14c: PersistenceCoordinator — failed append retains updates for retry");
 {
 	const { PersistenceCoordinator } = await import("../../server/src/persistenceCoordinator.js");
 
@@ -953,27 +943,27 @@ console.log("\n--- Test 14c: PersistenceCoordinator — failed append retains up
 	failNext = true;
 	doc.getText("t").insert(0, "LOST?");
 	const failed = await coordinator.enqueueSave();
-	assert(!failed.success, "append failure reported");
+	s.check(!failed.success, "append failure reported");
 
 	failNext = false;
 	doc.getText("t").insert(0, "later-");
 	const retried = await coordinator.enqueueSave();
-	assert(retried.success, "retry succeeds");
+	s.check(retried.success, "retry succeeds");
 
 	const cold = new Y.Doc();
 	if (checkpoint) Y.applyUpdate(cold, checkpoint);
 	for (const u of journal) Y.applyUpdate(cold, u);
 	const text = cold.getText("t").toJSON();
-	assert(text.includes("LOST?"), `content from the failed save survives (got ${JSON.stringify(text)})`);
-	assert(text.includes("later-"), "content from the retry is present");
-	assert(text === doc.getText("t").toJSON(), "cold load matches the live document exactly");
+	s.check(text.includes("LOST?"), `content from the failed save survives (got ${JSON.stringify(text)})`);
+	s.check(text.includes("later-"), "content from the retry is present");
+	s.check(text === doc.getText("t").toJSON(), "cold load matches the live document exactly");
 
 	coordinator.dispose(); doc.destroy(); cold.destroy();
 }
 
 // ── Test 14d: delete-only changes travel through the update stream ───────────
 
-console.log("\n--- Test 14d: PersistenceCoordinator — delete-only change reaches storage ---");
+s.section("Test 14d: PersistenceCoordinator — delete-only change reaches storage");
 {
 	const { PersistenceCoordinator } = await import("../../server/src/persistenceCoordinator.js");
 
@@ -996,22 +986,22 @@ console.log("\n--- Test 14d: PersistenceCoordinator — delete-only change reach
 	const svBefore = Buffer.from(Y.encodeStateVector(doc)).toString("hex");
 	doc.getText("t").delete(0, doc.getText("t").length);
 	const svAfter = Buffer.from(Y.encodeStateVector(doc)).toString("hex");
-	assert(svBefore === svAfter, "state vector unchanged by the deletion (precondition)");
+	s.check(svBefore === svAfter, "state vector unchanged by the deletion (precondition)");
 
 	const result = await coordinator.enqueueSave();
-	assert(result.success && result.method !== "skipped", `delete-only save was written (got ${result.method})`);
+	s.check(result.success && result.method !== "skipped", `delete-only save was written (got ${result.method})`);
 
 	const cold = new Y.Doc();
 	if (checkpoint) Y.applyUpdate(cold, checkpoint);
 	for (const u of journal) Y.applyUpdate(cold, u);
-	assert(cold.getText("t").toJSON() === "", `deletion survives a cold load (got ${JSON.stringify(cold.getText("t").toJSON())})`);
+	s.check(cold.getText("t").toJSON() === "", `deletion survives a cold load (got ${JSON.stringify(cold.getText("t").toJSON())})`);
 
 	coordinator.dispose(); doc.destroy(); cold.destroy();
 }
 
 // ── Test 15: PersistenceCoordinator — pendingPersistence tracks degraded state ───────
 
-console.log("\n--- Test 15: PersistenceCoordinator — pendingPersistence stays true when degraded ---");
+s.section("Test 15: PersistenceCoordinator — pendingPersistence stays true when degraded");
 {
 	const { PersistenceCoordinator } = await import("../../server/src/persistenceCoordinator.js");
 
@@ -1038,18 +1028,18 @@ console.log("\n--- Test 15: PersistenceCoordinator — pendingPersistence stays 
 	const coordinator = new PersistenceCoordinator(doc, mockStore as never);
 
 	// Initial state
-	assert(coordinator.health.pendingPersistence === false, "initially no pending persistence");
-	assert(coordinator.health.queuedSaveCount === 0, "initially no queued saves");
+	s.check(coordinator.health.pendingPersistence === false, "initially no pending persistence");
+	s.check(coordinator.health.queuedSaveCount === 0, "initially no queued saves");
 
 	// Make a change and try to save — will fail
 	doc.getText("t").insert(0, "content");
 	const result1 = await coordinator.enqueueSave();
-	assert(!result1.success, "save fails");
+	s.check(!result1.success, "save fails");
 
 	// After failed save with empty queue, pendingPersistence must stay true
-	assert(coordinator.health.queuedSaveCount === 0, "queue is empty after save completes");
-	assert(coordinator.health.status === "degraded", "status is degraded");
-	assert(
+	s.check(coordinator.health.queuedSaveCount === 0, "queue is empty after save completes");
+	s.check(coordinator.health.status === "degraded", "status is degraded");
+	s.check(
 		coordinator.health.pendingPersistence === true,
 		"pendingPersistence stays true when degraded (queue empty but state unpersisted)",
 	);
@@ -1057,17 +1047,10 @@ console.log("\n--- Test 15: PersistenceCoordinator — pendingPersistence stays 
 	// Fix the store and save again
 	shouldFail = false;
 	const result2 = await coordinator.enqueueSave();
-	assert(result2.success, "retry succeeds");
+	s.check(result2.success, "retry succeeds");
 
 	// Now pendingPersistence should be false
-	assert(coordinator.health.status === "healthy", "status is healthy");
-	assert(coordinator.health.pendingPersistence === false, "pendingPersistence is false when healthy and queue empty");
+	s.check(coordinator.health.status === "healthy", "status is healthy");
+	s.check(coordinator.health.pendingPersistence === false, "pendingPersistence is false when healthy and queue empty");
 }
-
-// ── Summary ──────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

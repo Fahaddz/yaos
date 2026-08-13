@@ -1,3 +1,5 @@
+import { suite } from "../harness.mjs";
+
 const quarantineModule = await import("../../src/sync/frontmatterQuarantine.ts");
 const quarantine = quarantineModule.default ?? quarantineModule;
 const {
@@ -7,20 +9,9 @@ const {
 	upsertFrontmatterQuarantineEntry,
 } = quarantine;
 
-let passed = 0;
-let failed = 0;
+const s = suite("frontmatter-quarantine-regressions");
 
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
-
-console.log("\n--- Test 1: quarantine upsert is per-path and strictly diagnostic ---");
+s.section("Test 1: quarantine upsert is per-path and strictly diagnostic");
 {
 	let entries = [];
 	entries = upsertFrontmatterQuarantineEntry(entries, {
@@ -46,15 +37,15 @@ console.log("\n--- Test 1: quarantine upsert is per-path and strictly diagnostic
 		count: 1,
 	});
 
-	assert(entries.length === 1, "same path collapses into one diagnostic entry");
-	assert(entries[0]?.count === 2, "same path increments count");
-	assert(entries[0]?.direction === "crdt-to-disk", "same path keeps the latest direction");
-	assert(entries[0]?.reasons.length === 1 && entries[0]?.reasons[0] === "yaml-parse-error", "same path keeps normalized latest reasons");
-	assert(entries[0]?.lastNoticeAt === 10, "same path preserves prior notice timestamp when no new notice is provided");
-	assert(entries[0]?.lastNotifiedFingerprint === "fp-a", "same path preserves prior notice fingerprint when no new notice is provided");
+	s.check(entries.length === 1, "same path collapses into one diagnostic entry");
+	s.check(entries[0]?.count === 2, "same path increments count");
+	s.check(entries[0]?.direction === "crdt-to-disk", "same path keeps the latest direction");
+	s.check(entries[0]?.reasons.length === 1 && entries[0]?.reasons[0] === "yaml-parse-error", "same path keeps normalized latest reasons");
+	s.check(entries[0]?.lastNoticeAt === 10, "same path preserves prior notice timestamp when no new notice is provided");
+	s.check(entries[0]?.lastNotifiedFingerprint === "fp-a", "same path preserves prior notice fingerprint when no new notice is provided");
 }
 
-console.log("\n--- Test 2: quarantine stays bounded and newest-first ---");
+s.section("Test 2: quarantine stays bounded and newest-first");
 {
 	let entries = [];
 	for (let i = 0; i < 5; i++) {
@@ -68,12 +59,12 @@ console.log("\n--- Test 2: quarantine stays bounded and newest-first ---");
 		}, 3);
 	}
 
-	assert(entries.length === 3, "quarantine entry list is capped");
-	assert(entries[0]?.path === "note-4.md", "newest entry stays first");
-	assert(entries[2]?.path === "note-2.md", "oldest retained entry is the cutoff");
+	s.check(entries.length === 3, "quarantine entry list is capped");
+	s.check(entries[0]?.path === "note-4.md", "newest entry stays first");
+	s.check(entries[2]?.path === "note-2.md", "oldest retained entry is the cutoff");
 }
 
-console.log("\n--- Test 3: quarantine clears by path on clean convergence ---");
+s.section("Test 3: quarantine clears by path on clean convergence");
 {
 	const entries = [
 		{
@@ -94,11 +85,11 @@ console.log("\n--- Test 3: quarantine clears by path on clean convergence ---");
 		},
 	];
 	const next = clearFrontmatterQuarantinePath(entries, "clear.md");
-	assert(next.length === 1, "clear removes only the target path");
-	assert(next[0]?.path === "keep.md", "clear keeps unrelated paths");
+	s.check(next.length === 1, "clear removes only the target path");
+	s.check(next[0]?.path === "keep.md", "clear keeps unrelated paths");
 }
 
-console.log("\n--- Test 4: persisted quarantine state is sanitized ---");
+s.section("Test 4: persisted quarantine state is sanitized");
 {
 	const entries = readPersistedFrontmatterQuarantine([
 		{
@@ -114,11 +105,11 @@ console.log("\n--- Test 4: persisted quarantine state is sanitized ---");
 		{ nope: true },
 	]);
 
-	assert(entries.length === 1, "invalid persisted entries are dropped");
-	assert(entries[0]?.reasons.join(",") === "a,z", "persisted reasons are normalized");
+	s.check(entries.length === 1, "invalid persisted entries are dropped");
+	s.check(entries[0]?.reasons.join(",") === "a,z", "persisted reasons are normalized");
 }
 
-console.log("\n--- Test 5: debug lines summarize quarantined paths without content ---");
+s.section("Test 5: debug lines summarize quarantined paths without content");
 {
 	const lines = buildFrontmatterQuarantineDebugLines([
 		{
@@ -131,15 +122,10 @@ console.log("\n--- Test 5: debug lines summarize quarantined paths without conte
 		},
 	]);
 
-	assert(lines[0] === "Frontmatter quarantines: 1", "debug header includes entry count");
-	assert(lines[1]?.includes("Bathroom floor clean.md"), "debug summary includes path");
-	assert(lines[1]?.includes("lastNotice"), "debug summary includes notice timing metadata");
-	assert(lines[1]?.includes("noticeFingerprint"), "debug summary includes notice fingerprint metadata");
-	assert(!lines[1]?.includes("prevHash"), "debug summary does not expose hashes or content by default");
+	s.check(lines[0] === "Frontmatter quarantines: 1", "debug header includes entry count");
+	s.check(lines[1]?.includes("Bathroom floor clean.md"), "debug summary includes path");
+	s.check(lines[1]?.includes("lastNotice"), "debug summary includes notice timing metadata");
+	s.check(lines[1]?.includes("noticeFingerprint"), "debug summary includes notice fingerprint metadata");
+	s.check(!lines[1]?.includes("prevHash"), "debug summary does not expose hashes or content by default");
 }
-
-console.log(`\n${"-".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"-".repeat(50)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

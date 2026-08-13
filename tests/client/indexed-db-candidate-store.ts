@@ -14,19 +14,9 @@ import {
 } from "../../src/sync/indexedDbCandidateStore";
 import { encodeBytesBase64, MAX_SV_ECHO_BASE64_BYTES } from "../../src/sync/svEchoMessage";
 import type { PersistedCandidateState, ScopeKey, ScopeMetadata } from "../../src/sync/candidateStore";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("indexed-db-candidate-store");
 
 const BASE_SCOPE: ScopeKey & ScopeMetadata = {
 	vaultIdHash: "a".repeat(64),
@@ -230,17 +220,17 @@ class FakeRequest<T> {
 	}
 }
 
-console.log("\n--- Test 1: key shape and hash helper ---");
+s.section("Test 1: key shape and hash helper");
 {
-	assert(
+	s.check(
 		buildCandidateStoreKey(BASE_SCOPE) === `yaos-ack-v1:${"b".repeat(64)}:${"a".repeat(64)}:local-device`,
 		"candidate key uses serverHostHash, vaultIdHash, localDeviceId",
 	);
 	const hash = await sha256Hex("YAOS");
-	assert(/^[0-9a-f]{64}$/.test(hash), "sha256Hex returns lowercase 64-char hex");
+	s.check(/^[0-9a-f]{64}$/.test(hash), "sha256Hex returns lowercase 64-char hex");
 }
 
-console.log("\n--- Test 2: save/load survives store re-instantiation ---");
+s.section("Test 2: save/load survives store re-instantiation");
 {
 	const fake = new FakeIndexedDBFactory();
 	const store1 = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-1");
@@ -249,10 +239,10 @@ console.log("\n--- Test 2: save/load survives store re-instantiation ---");
 
 	const store2 = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-1");
 	const loaded = await store2.load(BASE_SCOPE);
-	assert(sameState(loaded, state), "saved state loads from a new store instance");
+	s.check(sameState(loaded, state), "saved state loads from a new store instance");
 }
 
-console.log("\n--- Test 3: scope mismatch fails closed ---");
+s.section("Test 3: scope mismatch fails closed");
 {
 	const fake = new FakeIndexedDBFactory();
 	const store = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-2");
@@ -260,72 +250,72 @@ console.log("\n--- Test 3: scope mismatch fails closed ---");
 
 	const wrongScope = { ...BASE_SCOPE, roomName: "room-2" };
 	const loaded = await store.load(wrongScope);
-	assert(loaded === null, "wrong roomName returns null");
+	s.check(loaded === null, "wrong roomName returns null");
 }
 
-console.log("\n--- Test 4: clear deletes candidate state ---");
+s.section("Test 4: clear deletes candidate state");
 {
 	const fake = new FakeIndexedDBFactory();
 	const store = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-3");
 	await store.save(makeState());
 	await store.clear();
 	const loaded = await store.load(BASE_SCOPE);
-	assert(loaded === null, "clear removes stored candidate");
+	s.check(loaded === null, "clear removes stored candidate");
 }
 
-console.log("\n--- Test 5: corrupt records fail closed ---");
+s.section("Test 5: corrupt records fail closed");
 {
 	const fake = new FakeIndexedDBFactory();
 	const key = buildCandidateStoreKey(BASE_SCOPE);
 
 	fake.putRaw("ack-test-4", "candidateStates", key, { ...makeState(), schema: 2 });
 	const schemaStore = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-4");
-	assert(await schemaStore.load(BASE_SCOPE) === null, "wrong schema returns null");
+	s.check(await schemaStore.load(BASE_SCOPE) === null, "wrong schema returns null");
 
 	fake.putRaw("ack-test-5", "candidateStates", key, { ...makeState(), candidateSvBase64: encodeBytesBase64(new Uint8Array(0)) });
 	const corruptSvStore = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-5");
-	assert(await corruptSvStore.load(BASE_SCOPE) === null, "invalid candidate SV returns null");
+	s.check(await corruptSvStore.load(BASE_SCOPE) === null, "invalid candidate SV returns null");
 
 	fake.putRaw("ack-test-5b", "candidateStates", key, { ...makeState(), ackStoreVersion: 2 });
 	const versionStore = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-5b");
-	assert(await versionStore.load(BASE_SCOPE) === null, "unsupported ackStoreVersion returns null");
+	s.check(await versionStore.load(BASE_SCOPE) === null, "unsupported ackStoreVersion returns null");
 
 	fake.putRaw("ack-test-5c", "candidateStates", key, { ...makeState(), candidateSvBase64: "A".repeat(MAX_SV_ECHO_BASE64_BYTES + 1) });
 	const oversizedStore = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-5c");
-	assert(await oversizedStore.load(BASE_SCOPE) === null, "oversized candidate SV returns null");
+	s.check(await oversizedStore.load(BASE_SCOPE) === null, "oversized candidate SV returns null");
 
 	fake.putRaw("ack-test-5d", "candidateStates", key, { ...makeState(), candidateCapturedAt: Number.NaN });
 	const nanStore = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-5d");
-	assert(await nanStore.load(BASE_SCOPE) === null, "NaN timestamp returns null");
+	s.check(await nanStore.load(BASE_SCOPE) === null, "NaN timestamp returns null");
 
 	fake.putRaw("ack-test-5e", "candidateStates", key, { ...makeState(), candidateSvBase64: null, candidateCapturedAt: 123 });
 	const nullCandidateWithCaptureStore = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-5e");
-	assert(await nullCandidateWithCaptureStore.load(BASE_SCOPE) === null, "null candidate with capturedAt returns null");
+	s.check(await nullCandidateWithCaptureStore.load(BASE_SCOPE) === null, "null candidate with capturedAt returns null");
 
 	fake.putRaw("ack-test-5f", "candidateStates", key, { ...makeState(), candidateCapturedAt: null });
 	const candidateWithoutCaptureStore = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-5f");
-	assert(await candidateWithoutCaptureStore.load(BASE_SCOPE) === null, "candidate without capturedAt returns null");
+	s.check(await candidateWithoutCaptureStore.load(BASE_SCOPE) === null, "candidate without capturedAt returns null");
 
 	fake.putRaw("ack-test-5g", "candidateStates", key, { ...makeState(), candidateSvBase64: null, candidateCapturedAt: null });
 	const nullCandidateWithHistoryStore = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-5g");
-	assert(await nullCandidateWithHistoryStore.load(BASE_SCOPE) !== null, "null candidate with historical receipt is allowed");
+	s.check(await nullCandidateWithHistoryStore.load(BASE_SCOPE) !== null, "null candidate with historical receipt is allowed");
 }
 
-console.log("\n--- Test 6: open failures fail closed on load and reject save ---");
+s.section("Test 6: open failures fail closed on load and reject save");
 {
 	const fake = new FakeIndexedDBFactory();
 	fake.failOpen = true;
 	const store = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-6");
-	assert(await store.load(BASE_SCOPE) === null, "load open failure returns null");
+	s.check(await store.load(BASE_SCOPE) === null, "load open failure returns null");
 	try {
 		await store.save(makeState());
-		assert(false, "save open failure rejects");
+		s.check(false, "save open failure rejects");
 	} catch {
-		assert(true, "save open failure rejects");
+		s.check(true, "save open failure rejects");
 	}
 }
 
-console.log("\n--- Test 7: localDeviceId is stable once created ---");
+s.section("Test 7: localDeviceId is stable once created");
 {
 	const fake = new FakeIndexedDBFactory();
 	let created = 0;
@@ -335,64 +325,64 @@ console.log("\n--- Test 7: localDeviceId is stable once created ---");
 	};
 	const first = await getOrCreateLocalDeviceId(fake as unknown as IDBFactory, randomUuid, "ack-test-7");
 	const second = await getOrCreateLocalDeviceId(fake as unknown as IDBFactory, randomUuid, "ack-test-7");
-	assert(first === "uuid-1", "first localDeviceId is generated");
-	assert(second === first, "second localDeviceId reuses stored value");
-	assert(created === 1, "random UUID called only once");
+	s.check(first === "uuid-1", "first localDeviceId is generated");
+	s.check(second === first, "second localDeviceId reuses stored value");
+	s.check(created === 1, "random UUID called only once");
 }
 
-console.log("\n--- Test 8: save rejects mismatched or invalid scope ---");
+s.section("Test 8: save rejects mismatched or invalid scope");
 {
 	const fake = new FakeIndexedDBFactory();
 	const store = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-8");
 	try {
 		await store.save(makeState({ ...BASE_SCOPE, roomName: "other-room" }));
-		assert(false, "mismatched save rejects");
+		s.check(false, "mismatched save rejects");
 	} catch {
-		assert(true, "mismatched save rejects");
+		s.check(true, "mismatched save rejects");
 	}
 	try {
 		await store.save(makeState({ ...BASE_SCOPE, vaultIdHash: "not-a-hash" }));
-		assert(false, "invalid persisted state rejects");
+		s.check(false, "invalid persisted state rejects");
 	} catch {
-		assert(true, "invalid persisted state rejects");
+		s.check(true, "invalid persisted state rejects");
 	}
 }
 
-console.log("\n--- Test 9: writes resolve only after transaction completion ---");
+s.section("Test 9: writes resolve only after transaction completion");
 {
 	const fake = new FakeIndexedDBFactory();
 	const store = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-9");
 	let resolved = false;
 	const savePromise = store.save(makeState()).then(() => { resolved = true; });
 	await Promise.resolve();
-	assert(!resolved, "save not resolved at request success tick");
+	s.check(!resolved, "save not resolved at request success tick");
 	await savePromise;
-	assert(resolved, "save resolves after transaction completion");
+	s.check(resolved, "save resolves after transaction completion");
 }
 
-console.log("\n--- Test 10: transaction abort after request success rejects save/delete ---");
+s.section("Test 10: transaction abort after request success rejects save/delete");
 {
 	const fake = new FakeIndexedDBFactory();
 	const store = new IndexedDbCandidateStore(BASE_SCOPE, fake as unknown as IDBFactory, "ack-test-10");
 	fake.abortNextWriteTransaction = true;
 	try {
 		await store.save(makeState());
-		assert(false, "save abort rejects");
+		s.check(false, "save abort rejects");
 	} catch {
-		assert(true, "save abort rejects");
+		s.check(true, "save abort rejects");
 	}
 
 	await store.save(makeState());
 	fake.abortNextWriteTransaction = true;
 	try {
 		await store.clear();
-		assert(false, "clear abort rejects");
+		s.check(false, "clear abort rejects");
 	} catch {
-		assert(true, "clear abort rejects");
+		s.check(true, "clear abort rejects");
 	}
 }
 
-console.log("\n--- Test 11: concurrent localDeviceId creation converges ---");
+s.section("Test 11: concurrent localDeviceId creation converges");
 {
 	const fake = new FakeIndexedDBFactory();
 	let created = 0;
@@ -404,12 +394,7 @@ console.log("\n--- Test 11: concurrent localDeviceId creation converges ---");
 		getOrCreateLocalDeviceId(fake as unknown as IDBFactory, randomUuid, "ack-test-11"),
 		getOrCreateLocalDeviceId(fake as unknown as IDBFactory, randomUuid, "ack-test-11"),
 	]);
-	assert(first === second, "concurrent callers return the same localDeviceId");
-	assert(created === 1, "concurrent callers generate one UUID");
+	s.check(first === second, "concurrent callers return the same localDeviceId");
+	s.check(created === 1, "concurrent callers generate one UUID");
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

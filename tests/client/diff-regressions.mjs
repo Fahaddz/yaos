@@ -1,4 +1,5 @@
 import * as Y from "yjs";
+import { suite } from "../harness.mjs";
 
 const diffModule = await import("../../src/sync/diff.ts");
 const {
@@ -7,18 +8,7 @@ const {
 	forceReplaceYText,
 } = diffModule.default;
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("diff-regressions");
 
 function applyAndCapture(oldText, newText, origin = "test-diff") {
 	const doc = new Y.Doc();
@@ -40,31 +30,31 @@ function applyAndCapture(oldText, newText, origin = "test-diff") {
 	};
 }
 
-console.log("\n--- Test 1: no-op diff is a no-op ---");
+s.section("Test 1: no-op diff is a no-op");
 {
 	const oldText = "line 1\nline 2\n";
 	const { value, delta, doc } = applyAndCapture(oldText, oldText);
-	assert(value === oldText, "content unchanged after no-op");
-	assert(delta === null, "no transaction emitted for no-op");
+	s.check(value === oldText, "content unchanged after no-op");
+	s.check(delta === null, "no transaction emitted for no-op");
 	doc.destroy();
 }
 
-console.log("\n--- Test 2: small mid-document edit patches correctly ---");
+s.section("Test 2: small mid-document edit patches correctly");
 {
 	const oldText = "alpha\nbeta\ngamma\n";
 	const newText = "alpha\nbeta updated\ngamma\n";
 	const { value, delta, doc } = applyAndCapture(oldText, newText);
 
-	assert(value === newText, "small edit produces exact final content");
-	assert(Array.isArray(delta) && delta.length > 0, "small edit emits a delta");
-	assert(
+	s.check(value === newText, "small edit produces exact final content");
+	s.check(Array.isArray(delta) && delta.length > 0, "small edit emits a delta");
+	s.check(
 		delta?.some((part) => typeof part.retain === "number"),
 		"small edit keeps stable surrounding content",
 	);
 	doc.destroy();
 }
 
-console.log("\n--- Test 3: far-apart edits stay localized on a large document ---");
+s.section("Test 3: far-apart edits stay localized on a large document");
 {
 	const lines = [];
 	for (let i = 0; i < 5000; i++) {
@@ -79,9 +69,9 @@ console.log("\n--- Test 3: far-apart edits stay localized on a large document --
 
 	const { value, delta, doc } = applyAndCapture(oldText, newText);
 
-	assert(value === newText, "large document edit produces exact final content");
-	assert(Array.isArray(delta) && delta.length >= 5, "large document delta stays segmented");
-	assert(
+	s.check(value === newText, "large document edit produces exact final content");
+	s.check(Array.isArray(delta) && delta.length >= 5, "large document delta stays segmented");
+	s.check(
 		delta?.some((part) => typeof part.retain === "number" && part.retain > 0),
 		"large document preserves unchanged anchors",
 	);
@@ -89,34 +79,34 @@ console.log("\n--- Test 3: far-apart edits stay localized on a large document --
 		(sum, part) => sum + (typeof part.delete === "number" ? part.delete : 0),
 		0,
 	);
-	assert(deleted < oldText.length / 4, "large document does not replace a huge chunk");
+	s.check(deleted < oldText.length / 4, "large document does not replace a huge chunk");
 	doc.destroy();
 }
 
-console.log("\n--- Test 4: line endings and trailing newline changes are preserved ---");
+s.section("Test 4: line endings and trailing newline changes are preserved");
 {
 	const oldText = "first line\nsecond line";
 	const newText = "first line\nsecond line\nthird line\n";
 	const { value, doc } = applyAndCapture(oldText, newText);
 
-	assert(value === newText, "trailing newline changes are preserved exactly");
+	s.check(value === newText, "trailing newline changes are preserved exactly");
 	doc.destroy();
 }
 
-console.log("\n--- Test 5: inline task priority icon change keeps adjacent line boundary ---");
+s.section("Test 5: inline task priority icon change keeps adjacent line boundary");
 {
 	const oldText = "- [ ] 🔺 task item\nnext line\n";
 	const newText = "- [ ] 🔹 task item\nnext line\n";
 	const { value, doc } = applyAndCapture(oldText, newText, "disk-sync-task-priority");
-	assert(value === newText, "priority icon swap keeps newline boundary intact");
-	assert(
+	s.check(value === newText, "priority icon swap keeps newline boundary intact");
+	s.check(
 		value.includes("task item\nnext line"),
 		"priority icon swap does not merge task line with the next line",
 	);
 	doc.destroy();
 }
 
-console.log("\n--- Test 6: stale-base disk patch does not duplicate task icons or merge lines ---");
+s.section("Test 6: stale-base disk patch does not duplicate task icons or merge lines");
 {
 	const oldText = "- [ ] 🔺 task item\nnext line\n";
 	const remoteText = "- [ ] 🔺 task item\nnext line changed remotely\n";
@@ -129,22 +119,22 @@ console.log("\n--- Test 6: stale-base disk patch does not duplicate task icons o
 	applyDiffToYText(ytext, oldText, diskPluginText, "disk-sync");
 
 	const merged = ytext.toString();
-	assert(
+	s.check(
 		merged.includes("- [ ] 🔹 task item\n"),
 		"stale-base patch keeps one task line with the updated icon",
 	);
-	assert(
+	s.check(
 		merged.includes("next line changed remotely\n"),
 		"stale-base patch preserves remote adjacent-line content",
 	);
-	assert(
+	s.check(
 		!merged.includes("🔹🔹"),
 		"stale-base patch does not duplicate inline task icons",
 	);
 	doc.destroy();
 }
 
-console.log("\n--- Test 7: recovery postcondition force-replaces stale-base mismatch ---");
+s.section("Test 7: recovery postcondition force-replaces stale-base mismatch");
 {
 	const doc = new Y.Doc();
 	const ytext = doc.getText("content");
@@ -157,15 +147,15 @@ console.log("\n--- Test 7: recovery postcondition force-replaces stale-base mism
 		"disk-sync-recover-bound",
 	);
 
-	assert(ytext.toString() === "abcY", "postcondition helper lands exact expected content");
-	assert(result.diffSkippedDueToStaleBase, "stale-base patch is skipped before mutation");
-	assert(!result.matchesAfterDiff, "stale-base patch mismatch is detected");
-	assert(result.forceReplaceApplied, "force replace is applied after mismatch");
-	assert(result.finalMatchesExpected, "force replace satisfies the postcondition");
+	s.check(ytext.toString() === "abcY", "postcondition helper lands exact expected content");
+	s.check(result.diffSkippedDueToStaleBase, "stale-base patch is skipped before mutation");
+	s.check(!result.matchesAfterDiff, "stale-base patch mismatch is detected");
+	s.check(result.forceReplaceApplied, "force replace is applied after mismatch");
+	s.check(result.finalMatchesExpected, "force replace satisfies the postcondition");
 	doc.destroy();
 }
 
-console.log("\n--- Test 8: forceReplaceYText replaces the whole Y.Text exactly ---");
+s.section("Test 8: forceReplaceYText replaces the whole Y.Text exactly");
 {
 	const doc = new Y.Doc();
 	const ytext = doc.getText("content");
@@ -173,12 +163,7 @@ console.log("\n--- Test 8: forceReplaceYText replaces the whole Y.Text exactly -
 
 	forceReplaceYText(ytext, "new", "disk-sync-open-idle-recover");
 
-	assert(ytext.toString() === "new", "forceReplaceYText replaces old content exactly");
+	s.check(ytext.toString() === "new", "forceReplaceYText replaces old content exactly");
 	doc.destroy();
 }
-
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

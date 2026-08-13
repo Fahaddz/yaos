@@ -122,32 +122,21 @@ import type {
 	FlightEventInput,
 	FlightPathEventInput,
 } from "../../src/observability/flightEnvelope";
+import { suite } from "../harness.ts";
 
 // -------------------------------------------------------------------
 // Assertion harness (matches tests/client/reconciliation-safety-brake.ts)
 // -------------------------------------------------------------------
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("no-event-reconcile-admission");
 
 function assertEq<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`);
-	failed++;
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`,
+	);
 }
 
 // -------------------------------------------------------------------
@@ -408,7 +397,7 @@ function buildFixture(opts: {
 // Sanity: taxonomy at the version current at the time of this spec
 // -------------------------------------------------------------------
 
-console.log("\n--- Taxonomy: FLIGHT_TAXONOMY_VERSION ---");
+s.section("Taxonomy: FLIGHT_TAXONOMY_VERSION");
 {
 	// Bumped to 12 by the qa.trace.* -> debug.trace.* rename (recorder
 	// lifecycle vocabulary). This spec does not bump.
@@ -423,7 +412,7 @@ console.log("\n--- Taxonomy: FLIGHT_TAXONOMY_VERSION ---");
 // Scenario A — fresh admission via the authoritative-mode lane
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk file ---");
+s.section("Scenario A: authoritative-mode lane admits a no-event disk file");
 {
 	const fx = buildFixture({
 		path: "Notes/no-event-arrival.md",
@@ -433,11 +422,11 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 
 	// Preconditions: not in CRDT, not in preservedUnresolved, no prior
 	// markMarkdownDirty queued (default fixture state).
-	assert(
+	s.check(
 		fx.vaultSync.getTextForPath(fx.path) === null,
 		"precondition: getTextForPath returns null before reconcile",
 	);
-	assert(
+	s.check(
 		!fx.preservedUnresolved.has(fx.path),
 		"precondition: path not in preservedUnresolved",
 	);
@@ -451,7 +440,7 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 
 	// 5.i — reconcile.start
 	const startIdx = fx.events.findIndex((e) => e.kind === "reconcile.start");
-	assert(startIdx >= 0, "Scenario A: reconcile.start fires");
+	s.check(startIdx >= 0, "Scenario A: reconcile.start fires");
 	if (startIdx >= 0) {
 		assertEq(
 			fx.events[startIdx].scope,
@@ -467,7 +456,7 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 			e.path === fx.path &&
 			e.data.decision === "seed-disk-to-crdt",
 	);
-	assert(decisionIdx >= 0, "Scenario A: reconcile.file.decision (seed-disk-to-crdt) fires for test path");
+	s.check(decisionIdx >= 0, "Scenario A: reconcile.file.decision (seed-disk-to-crdt) fires for test path");
 	if (decisionIdx >= 0) {
 		assertEq(fx.events[decisionIdx].scope, "file", "decision event scope === 'file'");
 		assertEq(
@@ -486,10 +475,10 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 	const createdIdx = fx.events.findIndex(
 		(e) => e.kind === "crdt.file.created" && e.path === fx.path,
 	);
-	assert(createdIdx >= 0, "Scenario A: crdt.file.created fires for test path");
+	s.check(createdIdx >= 0, "Scenario A: crdt.file.created fires for test path");
 	if (createdIdx >= 0) {
 		assertEq(fx.events[createdIdx].scope, "file", "crdt.file.created scope === 'file'");
-		assert(
+		s.check(
 			typeof fx.events[createdIdx].fileId === "string" &&
 				(fx.events[createdIdx].fileId as string).length > 0,
 			"crdt.file.created carries a non-empty fileId",
@@ -498,7 +487,7 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 
 	// 5.iv — reconcile.complete
 	const completeIdx = fx.events.findIndex((e) => e.kind === "reconcile.complete");
-	assert(completeIdx >= 0, "Scenario A: reconcile.complete fires");
+	s.check(completeIdx >= 0, "Scenario A: reconcile.complete fires");
 	if (completeIdx >= 0) {
 		assertEq(
 			fx.events[completeIdx].scope,
@@ -515,7 +504,7 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 				`  context: ${fx.events.map((e) => e.kind).join(" -> ")}`,
 			);
 		}
-		assert(
+		s.check(
 			orderOk,
 			"Scenario A: reconcile.file.decision emits BEFORE crdt.file.created",
 		);
@@ -530,7 +519,7 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 				`  context: ${fx.events.map((e) => e.kind).join(" -> ")}`,
 			);
 		}
-		assert(
+		s.check(
 			fullOrderOk,
 			"Scenario A: full order start -> decision -> created -> complete",
 		);
@@ -540,16 +529,16 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 	if (decisionIdx >= 0 && createdIdx >= 0) {
 		const decisionOpId = fx.events[decisionIdx].opId;
 		const createdOpId = fx.events[createdIdx].opId;
-		assert(
+		s.check(
 			typeof decisionOpId === "string" && decisionOpId.length > 0,
 			"decision opId is a non-empty string",
 		);
-		assert(
+		s.check(
 			typeof createdOpId === "string" && createdOpId.length > 0,
 			"crdt.file.created opId is a non-empty string",
 		);
 		if (typeof decisionOpId === "string") {
-			assert(
+			s.check(
 				/^op-reconcile-seed-[0-9a-z]+-[0-9a-z]+$/.test(decisionOpId),
 				`decision opId matches op-reconcile-seed-<base36-time>-<base36-rand> (got ${decisionOpId})`,
 			);
@@ -563,7 +552,7 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 
 	// 3.8 — postcondition: Y.Text exists and equals disk content
 	const ytext = fx.vaultSync.getTextForPath(fx.path);
-	assert(ytext !== null, "Scenario A: getTextForPath returns non-null Y.Text after admission");
+	s.check(ytext !== null, "Scenario A: getTextForPath returns non-null Y.Text after admission");
 	if (ytext) {
 		assertEq(ytext.toJSON(), "D", "admitted Y.Text content equals disk content 'D'");
 	}
@@ -589,7 +578,7 @@ console.log("\n--- Scenario A: authoritative-mode lane admits a no-event disk fi
 // (shared fixture; Scenario C extends Scenario B's setup directly)
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked ---");
+s.section("Scenario B: conservative-mode reconcile emits skip-untracked");
 {
 	const fx = buildFixture({
 		path: "Notes/conservative-arrival.md",
@@ -616,8 +605,8 @@ console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked 
 			e.data.decision === "skip-untracked",
 	);
 	const completeIdx = eventsB.findIndex((e) => e.kind === "reconcile.complete");
-	assert(startIdx >= 0, "Scenario B: reconcile.start fires");
-	assert(skipIdx >= 0, "Scenario B: reconcile.file.decision (skip-untracked) fires");
+	s.check(startIdx >= 0, "Scenario B: reconcile.start fires");
+	s.check(skipIdx >= 0, "Scenario B: reconcile.file.decision (skip-untracked) fires");
 	if (skipIdx >= 0) {
 		assertEq(
 			eventsB[skipIdx].data.reason,
@@ -625,9 +614,9 @@ console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked 
 			"Scenario B: skip-untracked reason === 'conservative-mode-no-auto-seed'",
 		);
 	}
-	assert(completeIdx >= 0, "Scenario B: reconcile.complete fires");
+	s.check(completeIdx >= 0, "Scenario B: reconcile.complete fires");
 	if (startIdx >= 0 && skipIdx >= 0 && completeIdx >= 0) {
-		assert(
+		s.check(
 			startIdx < skipIdx && skipIdx < completeIdx,
 			"Scenario B: order start -> skip-untracked decision -> complete",
 		);
@@ -643,13 +632,13 @@ console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked 
 	const untracked = (
 		fx.controller as unknown as { untrackedFiles: string[] }
 	).untrackedFiles;
-	assert(
+	s.check(
 		untracked.includes(fx.path),
 		`Scenario B: controller.untrackedFiles contains test path (got: ${JSON.stringify(untracked)})`,
 	);
 
 	// 4.7 — Y.Text still null
-	assert(
+	s.check(
 		fx.vaultSync.getTextForPath(fx.path) === null,
 		"Scenario B: getTextForPath still null after conservative reconcile",
 	);
@@ -672,12 +661,12 @@ console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked 
 	assertEq(createdInC.length, 1, "Scenario C: exactly one crdt.file.created during this scenario");
 	if (createdInC.length === 1) {
 		const importOpId = createdInC[0].opId;
-		assert(
+		s.check(
 			typeof importOpId === "string" && importOpId.length > 0,
 			"Scenario C: crdt.file.created opId is non-empty",
 		);
 		if (typeof importOpId === "string") {
-			assert(
+			s.check(
 				/^op-import-untracked-[0-9a-z]+-[0-9a-z]+$/.test(importOpId),
 				`Scenario C: opId matches op-import-untracked-<base36-time>-<base36-rand> (got ${importOpId})`,
 			);
@@ -687,7 +676,7 @@ console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked 
 		const scenarioBOpIds = new Set(
 			eventsB.map((e) => e.opId).filter((v): v is string => typeof v === "string"),
 		);
-		assert(
+		s.check(
 			!scenarioBOpIds.has(importOpId as string),
 			"Scenario C: opId is distinct from any Scenario B opId",
 		);
@@ -695,7 +684,7 @@ console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked 
 
 	// 5.4 — Y.Text non-null and equals disk content
 	const ytextC = fx.vaultSync.getTextForPath(fx.path);
-	assert(
+	s.check(
 		ytextC !== null,
 		"Scenario C: getTextForPath returns non-null Y.Text after import",
 	);
@@ -711,7 +700,7 @@ console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked 
 	const untrackedAfter = (
 		fx.controller as unknown as { untrackedFiles: string[] }
 	).untrackedFiles;
-	assert(
+	s.check(
 		!untrackedAfter.includes(fx.path),
 		`Scenario C: controller.untrackedFiles no longer contains test path (got: ${JSON.stringify(untrackedAfter)})`,
 	);
@@ -722,7 +711,7 @@ console.log("\n--- Scenario B: conservative-mode reconcile emits skip-untracked 
 // (shared fixture; Scenario E extends Scenario D's setup directly)
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---");
+s.section("Scenario D: preserved-unresolved guard blocks admission");
 {
 	const fx = buildFixture({
 		path: "Notes/unknown-baseline.md",
@@ -738,11 +727,11 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 	// it would require constructing a real DiskMirror whose dependencies
 	// are out of scope for this admission test.
 	fx.preservedUnresolved.add(fx.path);
-	assert(
+	s.check(
 		fx.preservedUnresolved.has(fx.path),
 		"Scenario D: precondition path is in preservedUnresolved",
 	);
-	assert(
+	s.check(
 		fx.vaultSync.getTextForPath(fx.path) === null,
 		"Scenario D: precondition path is not in CRDT",
 	);
@@ -753,7 +742,7 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 	const untracked = (
 		fx.controller as unknown as { untrackedFiles: string[] }
 	).untrackedFiles;
-	assert(
+	s.check(
 		untracked.includes(fx.path),
 		`Scenario D: runReconciliation populated untrackedFiles naturally (not pre-seeded; got: ${JSON.stringify(untracked)})`,
 	);
@@ -781,17 +770,17 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 			t.msg === "import-untracked-skipped-preserved-unresolved" &&
 			(t.details?.path as string) === fx.path,
 	);
-	assert(
+	s.check(
 		!!skipTrace,
 		"Scenario D: import-untracked-skipped-preserved-unresolved trace fires for test path",
 	);
 
 	// 6.5 — Y.Text still null AND isPreservedUnresolved still true
-	assert(
+	s.check(
 		fx.vaultSync.getTextForPath(fx.path) === null,
 		"Scenario D: Y.Text remains null after skip",
 	);
-	assert(
+	s.check(
 		fx.preservedUnresolved.has(fx.path),
 		"Scenario D: isPreservedUnresolved remains true (not auto-cleared by skip)",
 	);
@@ -803,7 +792,7 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 
 	// 7.1 — clear preserved-unresolved
 	fx.preservedUnresolved.delete(fx.path);
-	assert(
+	s.check(
 		!fx.preservedUnresolved.has(fx.path),
 		"Scenario E: isPreservedUnresolved returns false after clear",
 	);
@@ -817,7 +806,7 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 	const untrackedAfterRescan = (
 		fx.controller as unknown as { untrackedFiles: string[] }
 	).untrackedFiles;
-	assert(
+	s.check(
 		untrackedAfterRescan.includes(fx.path),
 		`Scenario E: runReconciliation re-populated untrackedFiles after clear (got: ${JSON.stringify(untrackedAfterRescan)})`,
 	);
@@ -844,17 +833,17 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 	);
 	if (createdInE.length === 1) {
 		const readmitOpId = createdInE[0].opId;
-		assert(
+		s.check(
 			typeof readmitOpId === "string" && readmitOpId.length > 0,
 			"Scenario E: crdt.file.created opId is non-empty",
 		);
 		if (typeof readmitOpId === "string") {
-			assert(
+			s.check(
 				/^op-import-untracked-[0-9a-z]+-[0-9a-z]+$/.test(readmitOpId),
 				`Scenario E: opId matches op-import-untracked-<base36-time>-<base36-rand> (got ${readmitOpId})`,
 			);
 			// 7.4 — opId distinct from any earlier opId in the captured array
-			assert(
+			s.check(
 				!opIdsBeforeReadmit.has(readmitOpId),
 				"Scenario E: readmit opId distinct from any earlier captured opId",
 			);
@@ -863,7 +852,7 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 
 	// 7.5 — Y.Text non-null and equals disk content
 	const ytextE = fx.vaultSync.getTextForPath(fx.path);
-	assert(ytextE !== null, "Scenario E: getTextForPath returns non-null Y.Text after readmit");
+	s.check(ytextE !== null, "Scenario E: getTextForPath returns non-null Y.Text after readmit");
 	if (ytextE) {
 		assertEq(
 			ytextE.toJSON(),
@@ -873,7 +862,7 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 	}
 
 	// 7.6 — sanity: clearPreservedUnresolved reflected
-	assert(
+	s.check(
 		!fx.preservedUnresolved.has(fx.path),
 		"Scenario E: isPreservedUnresolved remains false after clear",
 	);
@@ -897,7 +886,7 @@ console.log("\n--- Scenario D: preserved-unresolved guard blocks admission ---")
 // which obscures the seed-loop semantics this scenario asserts on.
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario F: emitDecision() throw propagates and seed mutation is skipped ---");
+s.section("Scenario F: emitDecision() throw propagates and seed mutation is skipped");
 {
 	const events: CapturedEvent[] = [];
 	const recordFlightPathEvent = (event: FlightPathEventInput): void => {
@@ -946,7 +935,7 @@ console.log("\n--- Scenario F: emitDecision() throw propagates and seed mutation
 	assertEq(thrown, sentinel, "Scenario F: emitDecision throw propagates out of reconcileVault");
 
 	// Postcondition: the seed mutation did NOT happen.
-	assert(
+	s.check(
 		vaultSync.getTextForPath(path) === null,
 		"Scenario F: getTextForPath returns null (seed mutation skipped)",
 	);
@@ -962,8 +951,4 @@ console.log("\n--- Scenario F: emitDecision() throw propagates and seed mutation
 		"Scenario F: zero crdt.file.created events for the path that failed admission",
 	);
 }
-
-console.log(`\nno-event-reconcile-admission: ${passed} passed, ${failed} failed`);
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

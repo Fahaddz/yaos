@@ -10,6 +10,7 @@ import {
 	TraceRateLimiter,
 	type TraceEntry,
 } from "../../server/src/traceStore";
+import { suite } from "../harness.ts";
 
 class FakeStorage {
 	readonly data = new Map<string, unknown>();
@@ -68,18 +69,7 @@ class SizeBoundStorage extends FakeStorage {
 	}
 }
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("trace-store");
 
 function makeEntry(i: number): TraceEntry {
 	return {
@@ -94,7 +84,7 @@ function jsonBytes(value: unknown): number {
 	return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
 
-console.log("\n--- Test 1: trace store keeps only the newest bounded entries ---");
+s.section("Test 1: trace store keeps only the newest bounded entries");
 {
 	const storage = new FakeStorage();
 	for (let i = 0; i < 250; i++) {
@@ -102,16 +92,16 @@ console.log("\n--- Test 1: trace store keeps only the newest bounded entries ---
 	}
 
 	const allKeys = [...storage.data.keys()];
-	assert(allKeys.length === 100, "trace store retains exactly the newest 100 entries");
-	assert(allKeys.every((key) => key.startsWith("trace:")), "trace store writes per-entry prefixed keys");
+	s.check(allKeys.length === 100, "trace store retains exactly the newest 100 entries");
+	s.check(allKeys.every((key) => key.startsWith("trace:")), "trace store writes per-entry prefixed keys");
 
 	const recent = await listRecentTraceEntries(storage, 100);
-	assert(recent.length === 100, "debug read returns bounded recent trace entries");
-	assert((recent[0] as { seq?: unknown }).seq === 249, "most recent trace entry is returned first");
-	assert((recent.at(-1) as { seq?: unknown })?.seq === 150, "oldest retained trace entry is the 100th newest");
+	s.check(recent.length === 100, "debug read returns bounded recent trace entries");
+	s.check((recent[0] as { seq?: unknown }).seq === 249, "most recent trace entry is returned first");
+	s.check((recent.at(-1) as { seq?: unknown })?.seq === 150, "oldest retained trace entry is the 100th newest");
 }
 
-console.log("\n--- Test 2: trace store cleanup removes old backlog in one pass ---");
+s.section("Test 2: trace store cleanup removes old backlog in one pass");
 {
 	const storage = new FakeStorage();
 	for (let i = 0; i < 1000; i++) {
@@ -122,11 +112,11 @@ console.log("\n--- Test 2: trace store cleanup removes old backlog in one pass -
 	await appendTraceEntry(storage, makeEntry(1001), 100);
 
 	const allKeys = [...storage.data.keys()].sort((a, b) => a.localeCompare(b));
-	assert(allKeys.length === 100, "cleanup collapses oversized historical backlog down to the bound");
-	assert(allKeys[0]?.includes("0000000000901"), "cleanup keeps only the newest bounded key range");
+	s.check(allKeys.length === 100, "cleanup collapses oversized historical backlog down to the bound");
+	s.check(allKeys[0]?.includes("0000000000901"), "cleanup keeps only the newest bounded key range");
 }
 
-console.log("\n--- Test 3: oversized trace entries are truncated to a safe size ---");
+s.section("Test 3: oversized trace entries are truncated to a safe size");
 {
 	const storage = new SizeBoundStorage(MAX_TRACE_ENTRY_BYTES);
 	const prepared = prepareTraceEntryForStorage({
@@ -142,38 +132,38 @@ console.log("\n--- Test 3: oversized trace entries are truncated to a safe size 
 		},
 	});
 
-	assert(jsonBytes(prepared) <= MAX_TRACE_ENTRY_BYTES, "prepared trace entry fits within the storage byte budget");
-	assert(prepared.traceTruncated === true, "oversized trace entry is marked as truncated");
+	s.check(jsonBytes(prepared) <= MAX_TRACE_ENTRY_BYTES, "prepared trace entry fits within the storage byte budget");
+	s.check(prepared.traceTruncated === true, "oversized trace entry is marked as truncated");
 
 	await appendTraceEntry(storage, prepared, 10);
-	assert(storage.data.size === 1, "sanitized oversized trace entry can be persisted");
+	s.check(storage.data.size === 1, "sanitized oversized trace entry can be persisted");
 }
 
-console.log("\n--- Test 4: TraceRateLimiter admits up to the per-window cap ---");
+s.section("Test 4: TraceRateLimiter admits up to the per-window cap");
 {
 	const limiter = new TraceRateLimiter(5, 60_000);
 	let admitted = 0;
 	for (let i = 0; i < 5; i++) {
 		if (limiter.admit(1_000 + i)) admitted++;
 	}
-	assert(admitted === 5, "first five admits within the window succeed");
-	assert(limiter.admit(1_005) === false, "sixth admit within the window is rejected");
-	assert(limiter.drainDropped() === 1, "drainDropped reports exactly one drop");
-	assert(limiter.drainDropped() === 0, "drainDropped resets to zero after read");
+	s.check(admitted === 5, "first five admits within the window succeed");
+	s.check(limiter.admit(1_005) === false, "sixth admit within the window is rejected");
+	s.check(limiter.drainDropped() === 1, "drainDropped reports exactly one drop");
+	s.check(limiter.drainDropped() === 0, "drainDropped resets to zero after read");
 }
 
-console.log("\n--- Test 5: TraceRateLimiter slides forward as the window expires ---");
+s.section("Test 5: TraceRateLimiter slides forward as the window expires");
 {
 	const limiter = new TraceRateLimiter(3, 1_000);
-	assert(limiter.admit(0) === true, "t=0 admit");
-	assert(limiter.admit(100) === true, "t=100 admit");
-	assert(limiter.admit(200) === true, "t=200 admit");
-	assert(limiter.admit(300) === false, "t=300 admit dropped (over budget within window)");
-	assert(limiter.admit(1_500) === true, "t=1500 admit succeeds after window slides");
-	assert(limiter.admit(1_600) === true, "t=1600 admit succeeds (only one event still inside window)");
+	s.check(limiter.admit(0) === true, "t=0 admit");
+	s.check(limiter.admit(100) === true, "t=100 admit");
+	s.check(limiter.admit(200) === true, "t=200 admit");
+	s.check(limiter.admit(300) === false, "t=300 admit dropped (over budget within window)");
+	s.check(limiter.admit(1_500) === true, "t=1500 admit succeeds after window slides");
+	s.check(limiter.admit(1_600) === true, "t=1600 admit succeeds (only one event still inside window)");
 }
 
-console.log("\n--- Test 6: TraceRateLimiter accumulates drops across many over-budget calls ---");
+s.section("Test 6: TraceRateLimiter accumulates drops across many over-budget calls");
 {
 	const limiter = new TraceRateLimiter(2, 60_000);
 	limiter.admit(0);
@@ -181,18 +171,18 @@ console.log("\n--- Test 6: TraceRateLimiter accumulates drops across many over-b
 	for (let i = 0; i < 100; i++) {
 		limiter.admit(2 + i);
 	}
-	assert(limiter.drainDropped() === 100, "drainDropped reports the full accumulated drop count");
+	s.check(limiter.drainDropped() === 100, "drainDropped reports the full accumulated drop count");
 }
 
-console.log("\n--- Test 7: default budget is the documented per-room rate ---");
+s.section("Test 7: default budget is the documented per-room rate");
 {
-	assert(
+	s.check(
 		DEFAULT_TRACE_RATE_LIMIT_PER_WINDOW === 600,
 		"default per-window cap matches sync-invariants.md draft target (600 events / 60s)",
 	);
 }
 
-console.log("\n--- Test 8: throttle-summary bypasses the limiter and does not recurse ---");
+s.section("Test 8: throttle-summary bypasses the limiter and does not recurse");
 {
 	// Simulate the recordTrace dispatch as implemented in server.ts:
 	//   isThrottleSummary = event === TRACE_RATE_THROTTLE_EVENT
@@ -206,8 +196,8 @@ console.log("\n--- Test 8: throttle-summary bypasses the limiter and does not re
 
 	// Over-budget event: gets dropped, drop count becomes 1.
 	const admitted = limiter.admit(2);
-	assert(admitted === false, "over-budget regular event is rejected");
-	assert(limiter.drainDropped() === 1, "drop count is 1 before summary");
+	s.check(admitted === false, "over-budget regular event is rejected");
+	s.check(limiter.drainDropped() === 1, "drop count is 1 before summary");
 
 	// Now simulate a throttle summary being admitted: bypasses limiter.
 	const isThrottleSummary = true;
@@ -215,12 +205,12 @@ console.log("\n--- Test 8: throttle-summary bypasses the limiter and does not re
 	// Test that the drain after a summary returns 0 (no further accumulation).
 	limiter.admit(3); // another over-budget event
 	const dropsBeforeSummary = limiter.drainDropped();
-	assert(dropsBeforeSummary === 1, "drop accumulates between summary emissions");
+	s.check(dropsBeforeSummary === 1, "drop accumulates between summary emissions");
 
 	// After draining, further drain returns 0 — no recursion.
 	const dropsAfterDrain = limiter.drainDropped();
-	assert(dropsAfterDrain === 0, "drainDropped resets to zero; throttle summary cannot recurse");
-	assert(isThrottleSummary === true, "throttle summary flag prevents recursive admit check");
+	s.check(dropsAfterDrain === 0, "drainDropped resets to zero; throttle summary cannot recurse");
+	s.check(isThrottleSummary === true, "throttle summary flag prevents recursive admit check");
 }
 
 /**
@@ -271,10 +261,10 @@ class CountingStorage {
 		await ring.append(storage as never, { ts: new Date(1_700_000_000_000 + i).toISOString(), event: "e" } as never);
 	}
 
-	assert(storage.puts === APPENDS, `one put per append (${storage.puts})`);
-	assert(storage.data.size <= MAX, `retention honoured (${storage.data.size} <= ${MAX})`);
-	assert(storage.lists <= 3, `list calls are O(1), not O(n) (${storage.lists} for ${APPENDS} appends)`);
-	assert(
+	s.check(storage.puts === APPENDS, `one put per append (${storage.puts})`);
+	s.check(storage.data.size <= MAX, `retention honoured (${storage.data.size} <= ${MAX})`);
+	s.check(storage.lists <= 3, `list calls are O(1), not O(n) (${storage.lists} for ${APPENDS} appends)`);
+	s.check(
 		storage.keysListed / APPENDS < 2,
 		`rows read per append is small (${(storage.keysListed / APPENDS).toFixed(2)}, naive form was ~${MAX})`,
 	);
@@ -291,9 +281,9 @@ class CountingStorage {
 		for (let i = 0; i < 3; i++) {
 			await wake.append(brief as never, { ts: new Date(1_800_000_000_000 + i).toISOString(), event: "checkpoint-load" } as never);
 		}
-		assert(brief.lists === 0, `a short-lived instance lists zero times (${brief.lists})`);
-		assert(brief.keysListed === 0, `and reads zero rows to trim (${brief.keysListed})`);
-		assert(brief.puts === 3, "the traces were still written");
+		s.check(brief.lists === 0, `a short-lived instance lists zero times (${brief.lists})`);
+		s.check(brief.keysListed === 0, `and reads zero rows to trim (${brief.keysListed})`);
+		s.check(brief.puts === 3, "the traces were still written");
 	}
 
 	// Overshoot is bounded: retention is eventual, not exact, and must not drift.
@@ -303,11 +293,11 @@ class CountingStorage {
 		for (let i = 0; i < 2000; i++) {
 			await ring.append(bounded as never, { ts: new Date(1_900_000_000_000 + i).toISOString(), event: "e" } as never);
 		}
-		assert(
+		s.check(
 			bounded.data.size <= MAX + 200,
 			`stored entries stay within maxEntries + slack (${bounded.data.size} <= ${MAX + 200})`,
 		);
-		assert(bounded.data.size >= MAX, `and the ring stays full (${bounded.data.size} >= ${MAX})`);
+		s.check(bounded.data.size >= MAX, `and the ring stays full (${bounded.data.size} >= ${MAX})`);
 	}
 
 	// The stateless helper keeps its old behaviour: one list per call.
@@ -315,7 +305,7 @@ class CountingStorage {
 	for (let i = 0; i < 20; i++) {
 		await appendTraceEntry(naive as never, { ts: new Date(1_700_000_000_000 + i).toISOString(), event: "e" } as never, MAX);
 	}
-	assert(naive.lists === 20, `stateless appendTraceEntry still lists per call (${naive.lists})`);
+	s.check(naive.lists === 20, `stateless appendTraceEntry still lists per call (${naive.lists})`);
 }
 
 // ── Crowd-out: a flood of one event class must not hide every other ──────────
@@ -337,7 +327,7 @@ function traced(event: string): TraceEntry {
 	return { ts: new Date(traceClock++).toISOString(), event, roomId: "room-a" };
 }
 
-console.log("\n--- Test 9: a rare event survives a flood of high-volume ones ---");
+s.section("Test 9: a rare event survives a flood of high-volume ones");
 {
 	const storage = new CountingStorage();
 	const ring = new TraceRing(MAX_PER_CLASS);
@@ -348,16 +338,16 @@ console.log("\n--- Test 9: a rare event survives a flood of high-volume ones ---
 
 	const recent = await listRecentTraceEntries(storage as never, READ_LIMIT);
 	const rare = recent.filter((entry) => !isHighVolumeTraceEvent(entry.event));
-	assert(
+	s.check(
 		rare.some((entry) => entry.event === "checkpoint-load"),
 		"the cold-load trace is still readable after 500 update_observed appends"
 			+ ` (got ${rare.length} rare of ${recent.length}; on a live vault 98 of 100 were`
 			+ " update_observed and every cold-load, save and reap had been evicted)",
 	);
-	assert(recent.length === READ_LIMIT, `the read window is still full (${recent.length})`);
+	s.check(recent.length === READ_LIMIT, `the read window is still full (${recent.length})`);
 }
 
-console.log("\n--- Test 10: interleaved rare events all survive thousands of high-volume ones ---");
+s.section("Test 10: interleaved rare events all survive thousands of high-volume ones");
 {
 	const storage = new CountingStorage();
 	const ring = new TraceRing(MAX_PER_CLASS);
@@ -374,16 +364,16 @@ console.log("\n--- Test 10: interleaved rare events all survive thousands of hig
 	const recent = await listRecentTraceEntries(storage as never, READ_LIMIT);
 	const seen = new Set(recent.map((entry) => entry.event));
 	for (const event of rareEvents) {
-		assert(seen.has(event), `${event} survives 3000 interleaved update_observed appends`);
+		s.check(seen.has(event), `${event} survives 3000 interleaved update_observed appends`);
 	}
 	const hot = recent.filter((entry) => isHighVolumeTraceEvent(entry.event)).length;
-	assert(
+	s.check(
 		hot === READ_LIMIT - rareEvents.length,
 		`and the rest of the window is still the newest high-volume traffic (${hot} of ${recent.length})`,
 	);
 }
 
-console.log("\n--- Test 11: the class split costs a short-lived instance no reads ---");
+s.section("Test 11: the class split costs a short-lived instance no reads");
 {
 	const brief = new CountingStorage();
 	// Pre-existing history in both key spaces, as a real room has.
@@ -397,12 +387,12 @@ console.log("\n--- Test 11: the class split costs a short-lived instance no read
 	await wake.append(brief as never, traced("server.save.append_succeeded"));
 	await wake.append(brief as never, traced(HOT_EVENT));
 
-	assert(brief.lists === 0, `a short-lived instance still lists zero times (${brief.lists})`);
-	assert(brief.keysListed === 0, `and reads zero rows to trim (${brief.keysListed})`);
-	assert(brief.puts === 3, "the traces were still written");
+	s.check(brief.lists === 0, `a short-lived instance still lists zero times (${brief.lists})`);
+	s.check(brief.keysListed === 0, `and reads zero rows to trim (${brief.keysListed})`);
+	s.check(brief.puts === 3, "the traces were still written");
 }
 
-console.log("\n--- Test 12: stored entries stay bounded across both classes ---");
+s.section("Test 12: stored entries stay bounded across both classes");
 {
 	const storage = new CountingStorage();
 	const ring = new TraceRing(MAX_PER_CLASS);
@@ -412,14 +402,14 @@ console.log("\n--- Test 12: stored entries stay bounded across both classes ---"
 
 	// Each prefix trims to its own budget plus one reconciliation window.
 	const bound = 2 * (MAX_PER_CLASS + TRACE_SEED_AFTER_APPENDS);
-	assert(
+	s.check(
 		storage.data.size <= bound,
 		`stored entries stay within 2 * (max + seed slack) (${storage.data.size} <= ${bound})`,
 	);
-	assert(storage.data.size >= MAX_PER_CLASS, `and the rings stay full (${storage.data.size})`);
+	s.check(storage.data.size >= MAX_PER_CLASS, `and the rings stay full (${storage.data.size})`);
 }
 
-console.log("\n--- Test 13: the merged read is newest-first and honours limit ---");
+s.section("Test 13: the merged read is newest-first and honours limit");
 {
 	const storage = new CountingStorage();
 	const ring = new TraceRing(MAX_PER_CLASS);
@@ -431,22 +421,22 @@ console.log("\n--- Test 13: the merged read is newest-first and honours limit --
 	}
 
 	const recent = await listRecentTraceEntries(storage as never, 10);
-	assert(recent.length === 10, `the merged read honours limit (${recent.length})`);
+	s.check(recent.length === 10, `the merged read honours limit (${recent.length})`);
 	const timestamps = recent.map((entry) => Date.parse(entry.ts));
-	assert(
+	s.check(
 		timestamps.every((ts, i) => i === 0 || timestamps[i - 1] > ts),
 		"merged entries come back newest-first across both classes",
 	);
 	// Neither class exceeds its share here, so the merge is literally the
 	// newest 10 overall — the ordering the single-prefix read used to give.
 	const expected = written.slice(-10).map((entry) => entry.ts).reverse();
-	assert(
+	s.check(
 		recent.map((entry) => entry.ts).join(",") === expected.join(","),
 		"a balanced window returns exactly the newest entries overall",
 	);
 }
 
-console.log("\n--- Test 14: unused low-volume reserve goes back to the other class ---");
+s.section("Test 14: unused low-volume reserve goes back to the other class");
 {
 	const quiet = new CountingStorage();
 	const quietRing = new TraceRing(MAX_PER_CLASS);
@@ -454,7 +444,7 @@ console.log("\n--- Test 14: unused low-volume reserve goes back to the other cla
 		await quietRing.append(quiet as never, traced("checkpoint-load"));
 	}
 	const quietRecent = await listRecentTraceEntries(quiet as never, READ_LIMIT);
-	assert(
+	s.check(
 		quietRecent.length === READ_LIMIT && quietRecent.every((entry) => entry.event === "checkpoint-load"),
 		`a room with no high-volume traffic still fills the window (${quietRecent.length})`,
 	);
@@ -465,16 +455,9 @@ console.log("\n--- Test 14: unused low-volume reserve goes back to the other cla
 		await loudRing.append(loud as never, traced(HOT_EVENT));
 	}
 	const loudRecent = await listRecentTraceEntries(loud as never, READ_LIMIT);
-	assert(
+	s.check(
 		loudRecent.length === READ_LIMIT,
 		`and a room with nothing but high-volume traffic still fills it too (${loudRecent.length})`,
 	);
 }
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

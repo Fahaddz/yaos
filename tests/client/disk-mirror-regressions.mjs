@@ -1,18 +1,9 @@
+import { suite } from "../harness.mjs";
+
 const SUPPRESS_MS = 500;
 const encoder = new TextEncoder();
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("disk-mirror-regressions");
 
 async function fingerprintContent(content) {
 	const bytes = encoder.encode(content);
@@ -207,7 +198,7 @@ function makeStore() {
 	};
 }
 
-console.log("\n--- Test A: external modify inside suppression window with different content ---");
+s.section("Test A: external modify inside suppression window with different content");
 {
 	const store = makeStore();
 	const mirror = new DiskMirrorHarness(store);
@@ -219,11 +210,11 @@ console.log("\n--- Test A: external modify inside suppression window with differ
 	store.update(path, "external write");
 
 	const suppressed = await mirror.shouldSuppressModify(store.get(path));
-	assert(!suppressed, "different external content is not suppressed");
-	assert(!mirror.isSuppressed(path), "suppression entry clears after mismatch");
+	s.check(!suppressed, "different external content is not suppressed");
+	s.check(!mirror.isSuppressed(path), "suppression entry clears after mismatch");
 }
 
-console.log("\n--- Test B: queued + direct flushWrite on the same path serialize ---");
+s.section("Test B: queued + direct flushWrite on the same path serialize");
 {
 	const store = makeStore();
 	const mirror = new DiskMirrorHarness(store);
@@ -256,17 +247,17 @@ console.log("\n--- Test B: queued + direct flushWrite on the same path serialize
 	releaseFirstWrite();
 	await Promise.all([queuedWrite, directWrite]);
 
-	assert(
+	s.check(
 		store.getMaxConcurrentWrites() === 1,
 		"same-path writes never overlap",
 	);
-	assert(
+	s.check(
 		store.get(path)?.content === "second",
 		"final content reflects the later write deterministically",
 	);
 }
 
-console.log("\n--- Test C: delete suppression does not eat a rapid recreate ---");
+s.section("Test C: delete suppression does not eat a rapid recreate");
 {
 	const store = makeStore();
 	const mirror = new DiskMirrorHarness(store);
@@ -276,11 +267,11 @@ console.log("\n--- Test C: delete suppression does not eat a rapid recreate ---"
 	mirror.suppressDelete(path);
 	const suppressed = await mirror.shouldSuppressCreate(store.get(path));
 
-	assert(!suppressed, "create after delete is not suppressed as a delete");
-	assert(!mirror.isSuppressed(path), "delete suppression clears after recreate mismatch");
+	s.check(!suppressed, "create after delete is not suppressed as a delete");
+	s.check(!mirror.isSuppressed(path), "delete suppression clears after recreate mismatch");
 }
 
-console.log("\n--- Test D: suppressed write falls through safely when file read fails ---");
+s.section("Test D: suppressed write falls through safely when file read fails");
 {
 	const store = makeStore();
 	const mirror = new DiskMirrorHarness(store);
@@ -292,12 +283,7 @@ console.log("\n--- Test D: suppressed write falls through safely when file read 
 	store.failNextRead(path);
 
 	const suppressed = await mirror.shouldSuppressModify(store.get(path));
-	assert(!suppressed, "read failure does not suppress the event");
-	assert(!mirror.isSuppressed(path), "suppression entry clears after read failure");
+	s.check(!suppressed, "read failure does not suppress the event");
+	s.check(!mirror.isSuppressed(path), "suppression entry clears after read failure");
 }
-
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

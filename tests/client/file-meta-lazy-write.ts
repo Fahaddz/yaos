@@ -18,22 +18,19 @@ import {
 	isNestedFileMeta,
 	isFileMetaDeletedValue,
 } from "../../src/sync/fileMeta";
+import { suite } from "../harness.ts";
 
 // ── Test runner ─────────────────────────────────────────────────────────────
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) { passed++; } else { failed++; console.error(`  FAIL: ${msg}`); }
-}
+const s = suite("file-meta-lazy-write");
 
 function assertEqual<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) { passed++; } else { failed++; console.error(`  FAIL: ${msg} — got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`); }
-}
-
-function section(name: string): void {
-	console.log(`\n── ${name} ──`);
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg} — got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`,
+	);
 }
 
 // ── Helper: populate a doc with N flat metadata entries ──────────────────────
@@ -49,7 +46,7 @@ function populateFlat(doc: Y.Doc, count: number): void {
 
 // ── Test: new active write creates nested map ───────────────────────────────
 
-section("New active write creates nested map");
+s.section("New active write creates nested map");
 
 {
 	const doc = new Y.Doc();
@@ -58,14 +55,14 @@ section("New active write creates nested map");
 	const entry = createNestedActiveMeta("new-file.md", Date.now(), "laptop");
 	meta.set("new-id", entry);
 
-	assert(meta.get("new-id") instanceof Y.Map, "new entry is nested Y.Map");
+	s.check(meta.get("new-id") instanceof Y.Map, "new entry is nested Y.Map");
 	const nested = meta.get("new-id") as Y.Map<unknown>;
 	assertEqual(nested.get("path"), "new-file.md", "path correct");
 }
 
 // ── Test: new tombstone write creates nested map ────────────────────────────
 
-section("New tombstone write creates nested map");
+s.section("New tombstone write creates nested map");
 
 {
 	const doc = new Y.Doc();
@@ -74,14 +71,14 @@ section("New tombstone write creates nested map");
 	const entry = createNestedDeletedMeta("deleted.md", 5000);
 	meta.set("tomb-id", entry);
 
-	assert(meta.get("tomb-id") instanceof Y.Map, "tombstone is nested Y.Map");
+	s.check(meta.get("tomb-id") instanceof Y.Map, "tombstone is nested Y.Map");
 	const nested = meta.get("tomb-id") as Y.Map<unknown>;
 	assertEqual(nested.get("deletedAt"), 5000, "deletedAt correct");
 }
 
 // ── Test: active write converts ONLY the touched flat entry ─────────────────
 
-section("Active write converts only touched flat entry");
+s.section("Active write converts only touched flat entry");
 
 {
 	const doc = new Y.Doc();
@@ -91,12 +88,12 @@ section("Active write converts only touched flat entry");
 	// Touch only file-5
 	doc.transact(() => {
 		const entry = ensureNestedMetaEntry(meta, "file-5");
-		assert(entry !== null, "entry returned");
+		s.check(entry !== null, "entry returned");
 		entry!.set("mtime", Date.now());
 	});
 
 	// file-5 should be nested
-	assert(meta.get("file-5") instanceof Y.Map, "touched entry is now nested");
+	s.check(meta.get("file-5") instanceof Y.Map, "touched entry is now nested");
 
 	// All others should remain flat
 	let flatCount = 0;
@@ -113,7 +110,7 @@ section("Active write converts only touched flat entry");
 
 // ── Test: untouched flat entries remain flat after multiple writes ───────────
 
-section("Untouched flat entries remain flat");
+s.section("Untouched flat entries remain flat");
 
 {
 	const doc = new Y.Doc();
@@ -139,7 +136,7 @@ section("Untouched flat entries remain flat");
 
 // ── Test: delete write converts only touched flat entry ─────────────────────
 
-section("Delete write converts only touched entry");
+s.section("Delete write converts only touched entry");
 
 {
 	const doc = new Y.Doc();
@@ -153,8 +150,8 @@ section("Delete write converts only touched entry");
 		entry!.delete("device");
 	});
 
-	assert(meta.get("file-10") instanceof Y.Map, "deleted entry is nested");
-	assert(isFileMetaDeletedValue(meta.get("file-10")), "entry is tombstoned");
+	s.check(meta.get("file-10") instanceof Y.Map, "deleted entry is nested");
+	s.check(isFileMetaDeletedValue(meta.get("file-10")), "entry is tombstoned");
 
 	// Others remain flat
 	let flatCount = 0;
@@ -167,7 +164,7 @@ section("Delete write converts only touched entry");
 
 // ── Test: revive write clears deletedAt ─────────────────────────────────────
 
-section("Revive write clears deletedAt");
+s.section("Revive write clears deletedAt");
 
 {
 	const doc = new Y.Doc();
@@ -177,7 +174,7 @@ section("Revive write clears deletedAt");
 	const tombstone = createNestedDeletedMeta("revived.md", 3000);
 	meta.set("revive-id", tombstone);
 
-	assert(isFileMetaDeletedValue(meta.get("revive-id")), "starts as deleted");
+	s.check(isFileMetaDeletedValue(meta.get("revive-id")), "starts as deleted");
 
 	// Revive it
 	doc.transact(() => {
@@ -188,7 +185,7 @@ section("Revive write clears deletedAt");
 		entry!.set("device", "laptop");
 	});
 
-	assert(!isFileMetaDeletedValue(meta.get("revive-id")), "no longer deleted");
+	s.check(!isFileMetaDeletedValue(meta.get("revive-id")), "no longer deleted");
 	const revived = meta.get("revive-id") as Y.Map<unknown>;
 	assertEqual(revived.get("path"), "revived.md", "path preserved");
 	assertEqual(revived.get("deletedAt"), undefined, "deletedAt cleared");
@@ -196,7 +193,7 @@ section("Revive write clears deletedAt");
 
 // ── Test: tombstone write removes mtime and device ──────────────────────────
 
-section("Tombstone write removes mtime and device");
+s.section("Tombstone write removes mtime and device");
 
 {
 	const doc = new Y.Doc();
@@ -215,12 +212,12 @@ section("Tombstone write removes mtime and device");
 	const result = meta.get("del-id") as Y.Map<unknown>;
 	assertEqual(result.get("mtime"), undefined, "mtime removed");
 	assertEqual(result.get("device"), undefined, "device removed");
-	assert(typeof result.get("deletedAt") === "number", "deletedAt set");
+	s.check(typeof result.get("deletedAt") === "number", "deletedAt set");
 }
 
 // ── Test: no keys set to undefined ──────────────────────────────────────────
 
-section("No keys set to undefined");
+s.section("No keys set to undefined");
 
 {
 	const doc = new Y.Doc();
@@ -236,13 +233,13 @@ section("No keys set to undefined");
 
 	// Should only have path and mtime (no device since undefined was passed)
 	assertEqual(keys.length, 2, "only path and mtime keys present");
-	assert(keys.includes("path"), "has path");
-	assert(keys.includes("mtime"), "has mtime");
+	s.check(keys.includes("path"), "has path");
+	s.check(keys.includes("mtime"), "has mtime");
 }
 
 // ── Test: repeated active writes are idempotent ─────────────────────────────
 
-section("Repeated active writes idempotent");
+s.section("Repeated active writes idempotent");
 
 {
 	const doc = new Y.Doc();
@@ -266,7 +263,7 @@ section("Repeated active writes idempotent");
 
 // ── Test: no full-vault migration storm ─────────────────────────────────────
 
-section("No full-vault migration storm (200 entries, touch 5)");
+s.section("No full-vault migration storm (200 entries, touch 5)");
 
 {
 	const doc = new Y.Doc();
@@ -287,7 +284,7 @@ section("No full-vault migration storm (200 entries, touch 5)");
 	});
 
 	// The update should be small (proportional to 5 entries, not 200)
-	assert(updateSize < 2000, `update size bounded: ${updateSize} bytes (expected < 2000)`);
+	s.check(updateSize < 2000, `update size bounded: ${updateSize} bytes (expected < 2000)`);
 
 	// Verify counts
 	let nestedCount = 0;
@@ -303,7 +300,7 @@ section("No full-vault migration storm (200 entries, touch 5)");
 
 // ── Test: concurrent lazy conversion converges ──────────────────────────────
 
-section("Concurrent lazy conversion converges");
+s.section("Concurrent lazy conversion converges");
 
 {
 	// Two docs syncing — both touch the same flat entry
@@ -342,23 +339,14 @@ section("Concurrent lazy conversion converges");
 	const entry1 = meta1.get("file-3") as Y.Map<unknown>;
 	const entry2 = meta2.get("file-3") as Y.Map<unknown>;
 
-	assert(entry1 instanceof Y.Map, "doc1 file-3 is nested");
-	assert(entry2 instanceof Y.Map, "doc2 file-3 is nested");
+	s.check(entry1 instanceof Y.Map, "doc1 file-3 is nested");
+	s.check(entry2 instanceof Y.Map, "doc2 file-3 is nested");
 	assertEqual(entry1.get("path"), entry2.get("path"), "paths converge");
 	assertEqual(entry1.get("mtime"), entry2.get("mtime"), "mtime converges (LWW)");
 	assertEqual(entry1.get("device"), entry2.get("device"), "device converges (LWW)");
 
 	// Untouched entries should still be flat in both
-	assert(!(meta1.get("file-7") instanceof Y.Map), "doc1 untouched still flat");
-	assert(!(meta2.get("file-7") instanceof Y.Map), "doc2 untouched still flat");
+	s.check(!(meta1.get("file-7") instanceof Y.Map), "doc1 untouched still flat");
+	s.check(!(meta2.get("file-7") instanceof Y.Map), "doc2 untouched still flat");
 }
-
-// ── Report ──────────────────────────────────────────────────────────────────
-
-console.log(`\n${"═".repeat(60)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"═".repeat(60)}`);
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

@@ -14,97 +14,85 @@
 //   4. server.ts must bypass ensureDocumentLoaded for /cdn-cgi/partyserver/.
 //   5. server.ts must NOT call ensureDocumentLoaded in /__yaos/debug.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { readSource, suite } from "../harness.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const syncSocketPath = resolve(here, "../../server/src/routes/syncSocket.ts");
-const indexPath = resolve(here, "../../server/src/index.ts");
-const authPath = resolve(here, "../../server/src/routes/auth.ts");
-const serverPath = resolve(here, "../../server/src/server.ts");
+// Repo-root-relative, resolved by the harness: these paths no longer have to
+// know how deep under tests/ this suite happens to live.
+const syncSocketPath = "server/src/routes/syncSocket.ts";
+const indexPath = "server/src/index.ts";
+const authPath = "server/src/routes/auth.ts";
+const serverPath = "server/src/server.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("server-do-amplification");
 
 // ── Test 1: syncSocket.ts has no recordVaultTrace calls ───────────────────────
-console.log("\n--- Test 1: syncSocket.ts has no recordVaultTrace calls (WebSocket admission is console-only) ---");
+s.section("Test 1: syncSocket.ts has no recordVaultTrace calls (WebSocket admission is console-only)");
 {
-	const source = readFileSync(syncSocketPath, "utf8");
+	const source = readSource(syncSocketPath);
 
-	assert(
+	s.check(
 		!/recordVaultTrace\s*\(/.test(source),
 		"syncSocket.ts contains no recordVaultTrace() calls",
 	);
-	assert(
+	s.check(
 		!source.includes('"ws-connected"'),
 		"syncSocket.ts does not trace 'ws-connected' string (not persisted to YAOS_SYNC)",
 	);
-	assert(
+	s.check(
 		!/import.*recordVaultTrace/.test(source),
 		"syncSocket.ts does not import recordVaultTrace",
 	);
 	// ws-rejected events should also be console-only (schema-skew loops)
-	assert(
+	s.check(
 		!source.includes('"ws-rejected"') || !/recordVaultTrace/.test(source),
 		"ws-rejected event is not passed to recordVaultTrace",
 	);
 }
 
 // ── Test 2: index.ts classifies routes before auth ────────────────────────────
-console.log("\n--- Test 2: index.ts classifies routes before auth (unknown paths 404 without DO access) ---");
+s.section("Test 2: index.ts classifies routes before auth (unknown paths 404 without DO access)");
 {
-	const source = readFileSync(indexPath, "utf8");
+	const source = readSource(indexPath);
 
-	assert(
+	s.check(
 		/function\s+classifyWorkerRoute\s*\(/.test(source),
 		"classifyWorkerRoute function is defined in index.ts",
 	);
-	assert(
+	s.check(
 		/WorkerRoute/.test(source),
 		"WorkerRoute type is defined in index.ts",
 	);
-	assert(
+	s.check(
 		!source.includes("await getAuthState(env)"),
 		"index.ts no longer calls uncached getAuthState(env) in the fetch handler",
 	);
-	assert(
+	s.check(
 		source.includes("getAuthStateCached("),
 		"index.ts calls getAuthStateCached instead of getAuthState",
 	);
 	// Vault resource whitelist must be present
-	assert(
+	s.check(
 		/VALID_VAULT_RESOURCES/.test(source),
 		"index.ts defines VALID_VAULT_RESOURCES whitelist",
 	);
-	assert(
+	s.check(
 		/VALID_VAULT_RESOURCES\.has\(/.test(source),
 		"classifyWorkerRoute uses VALID_VAULT_RESOURCES.has() to reject unknown resources",
 	);
 	// The four known resources must be in the whitelist
 	const whitelistMatch = source.match(/VALID_VAULT_RESOURCES\s*=\s*new Set\(\[([\s\S]*?)\]\)/);
 	const whitelistText = whitelistMatch ? whitelistMatch[1] : "";
-	assert(whitelistText.includes('"auth"'), "VALID_VAULT_RESOURCES includes auth");
-	assert(whitelistText.includes('"debug"'), "VALID_VAULT_RESOURCES includes debug");
-	assert(whitelistText.includes('"blobs"'), "VALID_VAULT_RESOURCES includes blobs");
-	assert(whitelistText.includes('"snapshots"'), "VALID_VAULT_RESOURCES includes snapshots");
+	s.check(whitelistText.includes('"auth"'), "VALID_VAULT_RESOURCES includes auth");
+	s.check(whitelistText.includes('"debug"'), "VALID_VAULT_RESOURCES includes debug");
+	s.check(whitelistText.includes('"blobs"'), "VALID_VAULT_RESOURCES includes blobs");
+	s.check(whitelistText.includes('"snapshots"'), "VALID_VAULT_RESOURCES includes snapshots");
 
 	// Full route-shape validator must exist
-	assert(
+	s.check(
 		/function\s+isKnownVaultRouteShape\s*\(/.test(source),
 		"isKnownVaultRouteShape function is defined in index.ts",
 	);
-	assert(
+	s.check(
 		/isKnownVaultRouteShape\s*\(/.test(source.slice(source.indexOf("function classifyWorkerRoute"))),
 		"classifyWorkerRoute calls isKnownVaultRouteShape",
 	);
@@ -115,7 +103,7 @@ console.log("\n--- Test 2: index.ts classifies routes before auth (unknown paths
 	const classifyBody = source.slice(source.indexOf("function classifyWorkerRoute"));
 	const syncPos = classifyBody.indexOf("parseSyncPath(");
 	const vaultPos = classifyBody.indexOf("parseVaultPath(");
-	assert(
+	s.check(
 		syncPos !== -1 && vaultPos !== -1 && syncPos < vaultPos,
 		"parseSyncPath() is called before parseVaultPath() in classifyWorkerRoute (sync ordering invariant)",
 	);
@@ -123,12 +111,12 @@ console.log("\n--- Test 2: index.ts classifies routes before auth (unknown paths
 	// Verify not-found short-circuit appears BEFORE the getAuthStateCached call
 	// in the worker fetch handler body.
 	const fetchStart = source.indexOf("async fetch(req:");
-	assert(fetchStart !== -1, "fetch handler is found in index.ts");
+	s.check(fetchStart !== -1, "fetch handler is found in index.ts");
 	if (fetchStart !== -1) {
 		const afterFetch = source.slice(fetchStart);
 		const notFoundPos = afterFetch.indexOf('route.kind === "not-found"');
 		const authCachedPos = afterFetch.indexOf("getAuthStateCached(");
-		assert(
+		s.check(
 			notFoundPos !== -1 && authCachedPos !== -1 && notFoundPos < authCachedPos,
 			"not-found check (no DO access) appears before getAuthStateCached call in fetch handler",
 		);
@@ -136,48 +124,48 @@ console.log("\n--- Test 2: index.ts classifies routes before auth (unknown paths
 }
 
 // ── Test 3: auth.ts has TTL cache ─────────────────────────────────────────────
-console.log("\n--- Test 3: auth.ts has TTL cache for YAOS_CONFIG fetches ---");
+s.section("Test 3: auth.ts has TTL cache for YAOS_CONFIG fetches");
 {
-	const source = readFileSync(authPath, "utf8");
+	const source = readSource(authPath);
 
-	assert(
+	s.check(
 		/AUTH_CONFIG_CACHE_TTL_MS/.test(source),
 		"auth.ts defines AUTH_CONFIG_CACHE_TTL_MS",
 	);
-	assert(
+	s.check(
 		/cachedConfig/.test(source),
 		"auth.ts has a cachedConfig module-level variable",
 	);
-	assert(
+	s.check(
 		/getStoredServerConfigCached/.test(source),
 		"auth.ts exports getStoredServerConfigCached",
 	);
-	assert(
+	s.check(
 		/invalidateStoredServerConfigCache/.test(source),
 		"auth.ts exports invalidateStoredServerConfigCache",
 	);
-	assert(
+	s.check(
 		/getAuthStateCached/.test(source),
 		"auth.ts exports getAuthStateCached",
 	);
 	// Ensure handleClaimRoute calls invalidateStoredServerConfigCache
-	assert(
+	s.check(
 		/handleClaimRoute[\s\S]*?invalidateStoredServerConfigCache/.test(source),
 		"handleClaimRoute calls invalidateStoredServerConfigCache after successful claim",
 	);
 	// Ensure handleUpdateMetadataRoute calls invalidateStoredServerConfigCache
-	assert(
+	s.check(
 		/handleUpdateMetadataRoute[\s\S]*?invalidateStoredServerConfigCache/.test(source),
 		"handleUpdateMetadataRoute calls invalidateStoredServerConfigCache after successful update",
 	);
 }
 
 // ── Test 4: server.ts bypasses ensureDocumentLoaded for PartyServer routes ────
-console.log("\n--- Test 4: server.ts bypasses ensureDocumentLoaded for /cdn-cgi/partyserver/ ---");
+s.section("Test 4: server.ts bypasses ensureDocumentLoaded for /cdn-cgi/partyserver/");
 {
-	const source = readFileSync(serverPath, "utf8");
+	const source = readSource(serverPath);
 
-	assert(
+	s.check(
 		source.includes("/cdn-cgi/partyserver/"),
 		"server.ts checks for /cdn-cgi/partyserver/ paths",
 	);
@@ -185,7 +173,7 @@ console.log("\n--- Test 4: server.ts bypasses ensureDocumentLoaded for /cdn-cgi/
 	// The bypass must appear before the final catch-all ensureDocumentLoaded
 	const partyserverVarPos = source.indexOf("isPartyServerInternal");
 	const lastEnsurePos = source.lastIndexOf("await this.ensureDocumentLoaded()");
-	assert(
+	s.check(
 		partyserverVarPos !== -1 && lastEnsurePos !== -1 && partyserverVarPos < lastEnsurePos,
 		"PartyServer internal route bypass appears before the ensureDocumentLoaded catch-all",
 	);
@@ -193,20 +181,20 @@ console.log("\n--- Test 4: server.ts bypasses ensureDocumentLoaded for /cdn-cgi/
 	// The bypass must return super.fetch without ensureDocumentLoaded
 	// Use multiline-safe pattern ([\s\S] to cross newlines)
 	const bypassBlock = source.slice(partyserverVarPos, partyserverVarPos + 400);
-	assert(
+	s.check(
 		/isPartyServerInternal[\s\S]{0,150}isWebSocketUpgrade[\s\S]{0,100}return super\.fetch/.test(bypassBlock),
 		"non-WebSocket PartyServer internal routes call super.fetch without ensureDocumentLoaded",
 	);
 }
 
 // ── Test 5: /__yaos/debug does not call ensureDocumentLoaded ──────────────────
-console.log("\n--- Test 5: /__yaos/debug does not call ensureDocumentLoaded (cheap debug path) ---");
+s.section("Test 5: /__yaos/debug does not call ensureDocumentLoaded (cheap debug path)");
 {
-	const source = readFileSync(serverPath, "utf8");
+	const source = readSource(serverPath);
 
 	// Find the /__yaos/debug handler and check its body
 	const debugMarker = source.indexOf('"/__yaos/debug"');
-	assert(debugMarker !== -1, "/__yaos/debug handler is present in server.ts");
+	s.check(debugMarker !== -1, "/__yaos/debug handler is present in server.ts");
 
 	if (debugMarker !== -1) {
 		// Extract the if-block body by brace matching
@@ -225,15 +213,15 @@ console.log("\n--- Test 5: /__yaos/debug does not call ensureDocumentLoaded (che
 				}
 			}
 		}
-		assert(debugBody !== null, "/__yaos/debug handler body is parseable");
-		assert(
+		s.check(debugBody !== null, "/__yaos/debug handler body is parseable");
+		s.check(
 			// Check for actual call pattern, not just the identifier (which
 			// appears in comments explaining the absence of the call).
 			debugBody !== null && !/await\s+this\.ensureDocumentLoaded\s*\(\s*\)/.test(debugBody),
 			"/__yaos/debug does not call ensureDocumentLoaded (no cold-start checkpoint load on debug poll)",
 		);
 		// The cheap path should still return trace entries
-		assert(
+		s.check(
 			debugBody !== null && debugBody.includes("listRecentTraceEntries"),
 			"/__yaos/debug still reads trace entries from storage",
 		);
@@ -241,66 +229,61 @@ console.log("\n--- Test 5: /__yaos/debug does not call ensureDocumentLoaded (che
 }
 
 // ── Test 6: route-bucket logging is present and not_found is sampled ──────────
-console.log("\n--- Test 6: index.ts has route-bucket logging with not_found sampling ---");
+s.section("Test 6: index.ts has route-bucket logging with not_found sampling");
 {
-	const source = readFileSync(indexPath, "utf8");
+	const source = readSource(indexPath);
 
-	assert(
+	s.check(
 		/function\s+routeBucket\s*\(/.test(source),
 		"routeBucket function is defined in index.ts",
 	);
-	assert(
+	s.check(
 		/function\s+logWorkerRequest\s*\(/.test(source),
 		"logWorkerRequest function is defined in index.ts",
 	);
-	assert(
+	s.check(
 		/console\.info/.test(source),
 		"logWorkerRequest uses console.info for structured output",
 	);
 	// not_found must be sampled (not logged unconditionally)
-	assert(
+	s.check(
 		/not-found.*Math\.random|Math\.random.*not-found/.test(source.replace(/\s+/g, " ")),
 		"logWorkerRequest samples not_found routes (not unconditional logging)",
 	);
 	// Raw vault IDs must not appear in the log payload
-	assert(
+	s.check(
 		!/logWorkerRequest\s*\(\s*\{[^}]*vaultId/.test(source),
 		"logWorkerRequest call sites do not include raw vaultId in the log payload",
 	);
 }
 
 // ── Test 7: AuthStateCached type exists with required config ──────────────────
-console.log("\n--- Test 7: AuthStateCached type has required config for claim/unclaimed modes ---");
+s.section("Test 7: AuthStateCached type has required config for claim/unclaimed modes");
 {
-	const typesPath = resolve(here, "../../server/src/routes/types.ts");
-	const source = readFileSync(typesPath, "utf8");
+	const typesPath = "server/src/routes/types.ts";
+	const source = readSource(typesPath);
 
-	assert(
+	s.check(
 		/AuthStateCached/.test(source),
 		"types.ts defines AuthStateCached",
 	);
 	// In AuthStateCached, config must be required (not optional) for claim/unclaimed
 	// The type definition should have `config: StoredServerConfig` (no ?)
 	const cachedTypePos = source.indexOf("export type AuthStateCached");
-	assert(cachedTypePos !== -1, "AuthStateCached is found in types.ts");
+	s.check(cachedTypePos !== -1, "AuthStateCached is found in types.ts");
 	if (cachedTypePos !== -1) {
 		// Grab the type definition block (large enough to cover all three variants)
 		const typeBlock = source.slice(cachedTypePos, cachedTypePos + 400);
 		// Should NOT have "config?" (optional) in the cached type
-		assert(
+		s.check(
 			!/config\?:/.test(typeBlock),
 			"AuthStateCached claim/unclaimed variants have required config (no config?)",
 		);
 		// Should have "config: StoredServerConfig" (required)
-		assert(
+		s.check(
 			/config:\s*StoredServerConfig/.test(typeBlock),
 			"AuthStateCached has required config: StoredServerConfig",
 		);
 	}
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

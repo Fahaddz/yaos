@@ -16,6 +16,7 @@
  * Usage: bun run test-folder-rename.ts
  */
 import * as Y from "yjs";
+import { suite } from "../harness.ts";
 
 const ORIGIN_SEED = "vault-crdt-seed";
 const RENAME_BATCH_MS = 50;
@@ -119,21 +120,10 @@ function updatePathsAfterRename(renames: Map<string, string>): void {
 }
 
 // ── Test helpers ────────────────────────────────────────────────────────
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, name: string) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("folder-rename");
 
 // ── Test 1: folder rename with 35 files → single batch ──────────────────
-console.log("\n--- Test 1: folder rename batching (35 files) ---");
+s.section("Test 1: folder rename batching (35 files)");
 
 // Simulate one "open" note (bound editor)
 const openNotePath = `${OLD_FOLDER}/note-07.md`;
@@ -149,18 +139,18 @@ for (let i = 0; i < FILE_COUNT; i++) {
 // Wait for the debounce to fire
 await new Promise((r) => setTimeout(r, RENAME_BATCH_MS + 20));
 
-assert(flushCount === 1, `exactly 1 flush (got ${flushCount})`);
-assert(
+s.check(flushCount === 1, `exactly 1 flush (got ${flushCount})`);
+s.check(
 	transactCallCount === 1,
 	`exactly 1 ydoc.transact() call (got ${transactCallCount})`,
 );
-assert(
+s.check(
 	lastFlushedBatch.size === FILE_COUNT,
 	`batch contains all ${FILE_COUNT} renames (got ${lastFlushedBatch.size})`,
 );
 
 // ── Test 2: no missing files ─────────────────────────────────────────────
-console.log("\n--- Test 2: no missing files ---");
+s.section("Test 2: no missing files");
 
 let allPresent = true;
 let missingPaths: string[] = [];
@@ -171,7 +161,7 @@ for (let i = 0; i < FILE_COUNT; i++) {
 		missingPaths.push(newPath);
 	}
 }
-assert(allPresent, `all ${FILE_COUNT} files present at new paths`);
+s.check(allPresent, `all ${FILE_COUNT} files present at new paths`);
 if (missingPaths.length > 0) {
 	console.error(`  Missing: ${missingPaths.join(", ")}`);
 }
@@ -184,10 +174,10 @@ for (let i = 0; i < FILE_COUNT; i++) {
 		noOldPaths = false;
 	}
 }
-assert(noOldPaths, "all old paths removed from pathToId");
+s.check(noOldPaths, "all old paths removed from pathToId");
 
 // ── Test 3: file IDs stable, content preserved ──────────────────────────
-console.log("\n--- Test 3: file IDs stable, content preserved ---");
+s.section("Test 3: file IDs stable, content preserved");
 
 let idsStable = true;
 let contentOk = true;
@@ -206,11 +196,11 @@ for (let i = 0; i < FILE_COUNT; i++) {
 		console.error(`  Content lost for ${newPath}`);
 	}
 }
-assert(idsStable, "all file IDs unchanged after rename");
-assert(contentOk, "all Y.Text content preserved");
+s.check(idsStable, "all file IDs unchanged after rename");
+s.check(contentOk, "all Y.Text content preserved");
 
 // ── Test 4: meta paths updated ──────────────────────────────────────────
-console.log("\n--- Test 4: meta paths updated ---");
+s.section("Test 4: meta paths updated");
 
 let metaOk = true;
 for (let i = 0; i < FILE_COUNT; i++) {
@@ -222,30 +212,30 @@ for (let i = 0; i < FILE_COUNT; i++) {
 		console.error(`  Meta mismatch for ${fileId}: expected path=${newPath}, got=${m?.path}`);
 	}
 }
-assert(metaOk, "all meta entries have updated paths");
+s.check(metaOk, "all meta entries have updated paths");
 
 // ── Test 5: editor binding path updated ─────────────────────────────────
-console.log("\n--- Test 5: open editor binding stays live ---");
+s.section("Test 5: open editor binding stays live");
 
 // Simulate the onRenameBatchFlushed callback
 updatePathsAfterRename(lastFlushedBatch);
 
 const binding = editorBindings.get("leaf-1")!;
 const expectedNewPath = `${NEW_FOLDER}/note-07.md`;
-assert(
+s.check(
 	binding.path === expectedNewPath,
 	`editor binding updated: "${binding.path}" === "${expectedNewPath}"`,
 );
 
 // The fileId the binding should reference is still valid
 const bindingFileId = pathToId.get(binding.path);
-assert(
+s.check(
 	bindingFileId === seededIds.get(openNotePath),
 	"editor binding fileId still resolves (yCollab stays live)",
 );
 
 // ── Test 6: transitive chain collapse ───────────────────────────────────
-console.log("\n--- Test 6: transitive rename chain ---");
+s.section("Test 6: transitive rename chain");
 
 // Seed a file for the chain test
 ydoc.transact(() => {
@@ -264,27 +254,22 @@ queueRename("b.md", "c.md");
 
 await new Promise((r) => setTimeout(r, RENAME_BATCH_MS + 20));
 
-assert(flushCount === 1, "chain: single flush");
-assert(
+s.check(flushCount === 1, "chain: single flush");
+s.check(
 	lastFlushedBatch.size === 1,
 	`chain: collapsed to 1 entry (got ${lastFlushedBatch.size})`,
 );
-assert(
+s.check(
 	lastFlushedBatch.get("a.md") === "c.md",
 	`chain: a.md → c.md (got a.md → ${lastFlushedBatch.get("a.md")})`,
 );
-assert(pathToId.has("c.md"), "chain: c.md exists in pathToId");
-assert(!pathToId.has("a.md"), "chain: a.md removed");
-assert(!pathToId.has("b.md"), "chain: b.md never created");
-assert(
+s.check(pathToId.has("c.md"), "chain: c.md exists in pathToId");
+s.check(!pathToId.has("a.md"), "chain: a.md removed");
+s.check(!pathToId.has("b.md"), "chain: b.md never created");
+s.check(
 	pathToId.get("c.md") === "chain-id",
 	"chain: fileId stable through A→B→C",
 );
 
-// ── Summary ─────────────────────────────────────────────────────────────
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
 ydoc.destroy();
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

@@ -7,19 +7,9 @@
 
 import { planClosedFileReconcile } from "../../src/runtime/reconcile/closedFilePlanner";
 import type { ClosedFileReconcileInput } from "../../src/runtime/reconcile/closedFilePlanner";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("closed-file-planner");
 
 // Helper: SHA-256 hex-like strings (just need to be distinct for testing)
 const HASH_A = "aaaa";
@@ -42,87 +32,87 @@ function makeInput(overrides: Partial<ClosedFileReconcileInput> = {}): ClosedFil
 // Non-authoritative mode
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 1: non-authoritative mode => defer-to-crdt-flush ---");
+s.section("Test 1: non-authoritative mode => defer-to-crdt-flush");
 {
 	const action = planClosedFileReconcile(makeInput({ mode: "conservative" }));
-	assert(action.kind === "defer-to-crdt-flush", "kind is defer-to-crdt-flush");
-	assert(action.reason === "non-authoritative-mode", "reason is non-authoritative-mode");
+	s.check(action.kind === "defer-to-crdt-flush", "kind is defer-to-crdt-flush");
+	s.check(action.reason === "non-authoritative-mode", "reason is non-authoritative-mode");
 }
 
 // -----------------------------------------------------------------------
 // Open/bound files
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 2: open or bound file => defer-to-crdt-flush ---");
+s.section("Test 2: open or bound file => defer-to-crdt-flush");
 {
 	const action = planClosedFileReconcile(makeInput({ isOpenOrBound: true }));
-	assert(action.kind === "defer-to-crdt-flush", "kind is defer-to-crdt-flush");
-	assert(action.reason === "open-or-bound", "reason is open-or-bound");
+	s.check(action.kind === "defer-to-crdt-flush", "kind is defer-to-crdt-flush");
+	s.check(action.reason === "open-or-bound", "reason is open-or-bound");
 }
 
 // -----------------------------------------------------------------------
 // Disk equals CRDT
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 3: disk == CRDT => no-op ---");
+s.section("Test 3: disk == CRDT => no-op");
 {
 	const action = planClosedFileReconcile(makeInput({ diskHash: HASH_A, crdtHash: HASH_A }));
-	assert(action.kind === "no-op", "kind is no-op");
-	assert(action.reason === "disk-equals-crdt", "reason is disk-equals-crdt");
+	s.check(action.kind === "no-op", "kind is no-op");
+	s.check(action.reason === "disk-equals-crdt", "reason is disk-equals-crdt");
 }
 
 // -----------------------------------------------------------------------
 // Three-way: disk at baseline, CRDT changed
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 4: disk at baseline, CRDT changed => apply-remote-to-disk ---");
+s.section("Test 4: disk at baseline, CRDT changed => apply-remote-to-disk");
 {
 	const action = planClosedFileReconcile(makeInput({
 		diskHash: HASH_A,
 		crdtHash: HASH_B,
 		baselineHash: HASH_A, // disk == baseline, CRDT changed
 	}));
-	assert(action.kind === "apply-remote-to-disk", "CRDT wins cleanly");
-	assert(action.reason === "disk-at-baseline", "reason is disk-at-baseline");
+	s.check(action.kind === "apply-remote-to-disk", "CRDT wins cleanly");
+	s.check(action.reason === "disk-at-baseline", "reason is disk-at-baseline");
 }
 
 // -----------------------------------------------------------------------
 // Three-way: CRDT at baseline, disk changed
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 5: CRDT at baseline, disk changed => import-disk-to-crdt ---");
+s.section("Test 5: CRDT at baseline, disk changed => import-disk-to-crdt");
 {
 	const action = planClosedFileReconcile(makeInput({
 		diskHash: HASH_B,
 		crdtHash: HASH_A,
 		baselineHash: HASH_A, // CRDT == baseline, disk changed
 	}));
-	assert(action.kind === "import-disk-to-crdt", "disk wins cleanly");
-	assert(action.reason === "crdt-at-baseline", "reason is crdt-at-baseline");
+	s.check(action.kind === "import-disk-to-crdt", "disk wins cleanly");
+	s.check(action.reason === "crdt-at-baseline", "reason is crdt-at-baseline");
 }
 
 // -----------------------------------------------------------------------
 // Three-way: both changed
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 6: both changed => create-conflict-artifact ---");
+s.section("Test 6: both changed => create-conflict-artifact");
 {
 	const action = planClosedFileReconcile(makeInput({
 		diskHash: HASH_A,
 		crdtHash: HASH_B,
 		baselineHash: HASH_C, // neither matches baseline
 	}));
-	assert(action.kind === "create-conflict-artifact", "conflict artifact created");
-	assert(action.kind === "create-conflict-artifact" && action.winner === "disk", "disk wins");
-	assert(action.kind === "create-conflict-artifact" && action.preserveSide === "crdt", "CRDT preserved as artifact");
-	assert(action.reason === "both-changed", "reason is both-changed");
+	s.check(action.kind === "create-conflict-artifact", "conflict artifact created");
+	s.check(action.kind === "create-conflict-artifact" && action.winner === "disk", "disk wins");
+	s.check(action.kind === "create-conflict-artifact" && action.preserveSide === "crdt", "CRDT preserved as artifact");
+	s.check(action.reason === "both-changed", "reason is both-changed");
 }
 
 // -----------------------------------------------------------------------
 // Missing baseline: disk newer than last save
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 7: missing baseline, disk newer => conflict, disk wins ---");
+s.section("Test 7: missing baseline, disk newer => conflict, disk wins");
 {
 	const action = planClosedFileReconcile(makeInput({
 		diskHash: HASH_A,
@@ -131,17 +121,17 @@ console.log("\n--- Test 7: missing baseline, disk newer => conflict, disk wins -
 		diskMtime: 2000,
 		lastDiskIndexPersistedAt: 1000, // disk modified after last save
 	}));
-	assert(action.kind === "create-conflict-artifact", "conflict created");
-	assert(action.kind === "create-conflict-artifact" && action.winner === "disk", "disk wins (newer)");
-	assert(action.kind === "create-conflict-artifact" && action.preserveSide === "crdt", "CRDT preserved");
-	assert(action.kind === "create-conflict-artifact" && action.missingBaselinePolicy === "disk-mtime-after-last-index-save", "policy documented");
+	s.check(action.kind === "create-conflict-artifact", "conflict created");
+	s.check(action.kind === "create-conflict-artifact" && action.winner === "disk", "disk wins (newer)");
+	s.check(action.kind === "create-conflict-artifact" && action.preserveSide === "crdt", "CRDT preserved");
+	s.check(action.kind === "create-conflict-artifact" && action.missingBaselinePolicy === "disk-mtime-after-last-index-save", "policy documented");
 }
 
 // -----------------------------------------------------------------------
 // Missing baseline: no mtime evidence
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 8: missing baseline, no mtime evidence => conflict, CRDT wins ---");
+s.section("Test 8: missing baseline, no mtime evidence => conflict, CRDT wins");
 {
 	const action = planClosedFileReconcile(makeInput({
 		diskHash: HASH_A,
@@ -149,17 +139,17 @@ console.log("\n--- Test 8: missing baseline, no mtime evidence => conflict, CRDT
 		baselineHash: null,
 		// no diskMtime, no lastDiskIndexPersistedAt
 	}));
-	assert(action.kind === "create-conflict-artifact", "conflict created");
-	assert(action.kind === "create-conflict-artifact" && action.winner === "crdt", "CRDT wins (safe default)");
-	assert(action.kind === "create-conflict-artifact" && action.preserveSide === "disk", "disk preserved");
-	assert(action.kind === "create-conflict-artifact" && action.missingBaselinePolicy === "crdt-default-no-evidence", "policy documented");
+	s.check(action.kind === "create-conflict-artifact", "conflict created");
+	s.check(action.kind === "create-conflict-artifact" && action.winner === "crdt", "CRDT wins (safe default)");
+	s.check(action.kind === "create-conflict-artifact" && action.preserveSide === "disk", "disk preserved");
+	s.check(action.kind === "create-conflict-artifact" && action.missingBaselinePolicy === "crdt-default-no-evidence", "policy documented");
 }
 
 // -----------------------------------------------------------------------
 // Missing baseline: mtime present but disk not newer
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 9: missing baseline, disk NOT newer => conflict, CRDT wins ---");
+s.section("Test 9: missing baseline, disk NOT newer => conflict, CRDT wins");
 {
 	const action = planClosedFileReconcile(makeInput({
 		diskHash: HASH_A,
@@ -168,40 +158,40 @@ console.log("\n--- Test 9: missing baseline, disk NOT newer => conflict, CRDT wi
 		diskMtime: 500,
 		lastDiskIndexPersistedAt: 1000, // disk older than last save
 	}));
-	assert(action.kind === "create-conflict-artifact", "conflict created");
-	assert(action.kind === "create-conflict-artifact" && action.winner === "crdt", "CRDT wins");
-	assert(action.kind === "create-conflict-artifact" && action.missingBaselinePolicy === "crdt-default-disk-not-newer", "policy: not newer");
+	s.check(action.kind === "create-conflict-artifact", "conflict created");
+	s.check(action.kind === "create-conflict-artifact" && action.winner === "crdt", "CRDT wins");
+	s.check(action.kind === "create-conflict-artifact" && action.missingBaselinePolicy === "crdt-default-disk-not-newer", "policy: not newer");
 }
 
 // -----------------------------------------------------------------------
 // Path is preserved in all actions
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 10: path is preserved in all action kinds ---");
+s.section("Test 10: path is preserved in all action kinds");
 {
 	const path = "deep/nested/path/file.md";
 	const action1 = planClosedFileReconcile(makeInput({ path, diskHash: HASH_A, crdtHash: HASH_A }));
-	assert(action1.path === path, "path preserved in no-op");
+	s.check(action1.path === path, "path preserved in no-op");
 
 	const action2 = planClosedFileReconcile(makeInput({ path, mode: "conservative" }));
-	assert(action2.path === path, "path preserved in defer");
+	s.check(action2.path === path, "path preserved in defer");
 
 	const action3 = planClosedFileReconcile(makeInput({ path, diskHash: HASH_A, crdtHash: HASH_B, baselineHash: HASH_A }));
-	assert(action3.path === path, "path preserved in apply-remote");
+	s.check(action3.path === path, "path preserved in apply-remote");
 }
 
 // -----------------------------------------------------------------------
 // Edge: disk == crdt even when baseline is null
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 11: disk == CRDT with null baseline => no-op (not conflict) ---");
+s.section("Test 11: disk == CRDT with null baseline => no-op (not conflict)");
 {
 	const action = planClosedFileReconcile(makeInput({
 		diskHash: HASH_A,
 		crdtHash: HASH_A,
 		baselineHash: null,
 	}));
-	assert(action.kind === "no-op", "agreement overrides missing baseline");
+	s.check(action.kind === "no-op", "agreement overrides missing baseline");
 }
 
 // -----------------------------------------------------------------------
@@ -240,7 +230,7 @@ console.log("\n--- Test 11: disk == CRDT with null baseline => no-op (not confli
 // DO NOT restore the flush without understanding these convergence paths.
 // -----------------------------------------------------------------------
 
-console.log("\n--- Test 12 (characterization): open file in authoritative mode defers ---");
+s.section("Test 12 (characterization): open file in authoritative mode defers");
 {
 	// Current contract: isOpenOrBound=true → defer-to-crdt-flush.
 	// This is reached when conservative mode runs (mode is "conservative"),
@@ -253,11 +243,11 @@ console.log("\n--- Test 12 (characterization): open file in authoritative mode d
 		crdtHash: HASH_B, // disk differs from CRDT
 		baselineHash: HASH_A,
 	}));
-	assert(action.kind === "defer-to-crdt-flush", "open file → defer (convergence via vault.modify path)");
-	assert(action.reason === "open-or-bound", "reason documents why flush was deferred");
+	s.check(action.kind === "defer-to-crdt-flush", "open file → defer (convergence via vault.modify path)");
+	s.check(action.reason === "open-or-bound", "reason documents why flush was deferred");
 }
 
-console.log("\n--- Test 13 (characterization): conservative mode always defers ---");
+s.section("Test 13 (characterization): conservative mode always defers");
 {
 	// In conservative mode the planner defers all updatedOnDisk paths.
 	// Note: vaultSync.reconcileVault only populates updatedOnDisk in
@@ -269,17 +259,17 @@ console.log("\n--- Test 13 (characterization): conservative mode always defers -
 		crdtHash: HASH_B,
 		baselineHash: HASH_A,
 	}));
-	assert(actionDiffers.kind === "defer-to-crdt-flush", "conservative → defer regardless of hash state");
+	s.check(actionDiffers.kind === "defer-to-crdt-flush", "conservative → defer regardless of hash state");
 
 	const actionAgrees = planClosedFileReconcile(makeInput({
 		mode: "conservative",
 		diskHash: HASH_A,
 		crdtHash: HASH_A,
 	}));
-	assert(actionAgrees.kind === "defer-to-crdt-flush", "conservative → defer even when disk==crdt");
+	s.check(actionAgrees.kind === "defer-to-crdt-flush", "conservative → defer even when disk==crdt");
 }
 
-console.log("\n--- Test 14 (characterization): closed/unbound file in authoritative mode does NOT defer ---");
+s.section("Test 14 (characterization): closed/unbound file in authoritative mode does NOT defer");
 {
 	// The symmetric guarantee: once isOpenOrBound=false and mode=authoritative,
 	// the planner uses the full three-way conflict resolution. This is the path
@@ -291,7 +281,7 @@ console.log("\n--- Test 14 (characterization): closed/unbound file in authoritat
 		crdtHash: HASH_B,     // CRDT moved
 		baselineHash: HASH_A,
 	}));
-	assert(actionApplyRemote.kind === "apply-remote-to-disk", "closed + CRDT-only-change → apply remote");
+	s.check(actionApplyRemote.kind === "apply-remote-to-disk", "closed + CRDT-only-change → apply remote");
 
 	const actionImportDisk = planClosedFileReconcile(makeInput({
 		mode: "authoritative",
@@ -300,11 +290,6 @@ console.log("\n--- Test 14 (characterization): closed/unbound file in authoritat
 		crdtHash: HASH_A,     // CRDT at baseline
 		baselineHash: HASH_A,
 	}));
-	assert(actionImportDisk.kind === "import-disk-to-crdt", "closed + disk-only-change → import disk");
+	s.check(actionImportDisk.kind === "import-disk-to-crdt", "closed + disk-only-change → import disk");
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

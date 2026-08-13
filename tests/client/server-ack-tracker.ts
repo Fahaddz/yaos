@@ -12,19 +12,9 @@ import * as Y from "yjs";
 import { ServerAckTracker } from "../../src/sync/serverAckTracker";
 import { InMemoryCandidateStore, type ScopeKey, type ScopeMetadata } from "../../src/sync/candidateStore";
 import { isStateVectorGe } from "../../src/sync/stateVectorAck";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("server-ack-tracker");
 
 const BASE_SCOPE: ScopeKey & ScopeMetadata = {
 	vaultIdHash: "aabbcc",
@@ -78,7 +68,7 @@ async function flushMicrotasks(): Promise<void> {
 
 // ── Test 1: local update while connected captures candidate, state=false ───────
 
-console.log("\n--- Test 1: local update while connected ---");
+s.section("Test 1: local update while connected");
 {
 	const doc = makeDoc(101);
 	const provider = { __type: "provider" };
@@ -91,16 +81,16 @@ console.log("\n--- Test 1: local update while connected ---");
 
 	await flushMicrotasks();
 
-	assert(tracker.serverAppliedLocalState === false, "state=false after local update");
-	assert(tracker.lastServerReceiptEchoAt === null, "no echo yet — lastServerReceiptEchoAt null");
+	s.check(tracker.serverAppliedLocalState === false, "state=false after local update");
+	s.check(tracker.lastServerReceiptEchoAt === null, "no echo yet — lastServerReceiptEchoAt null");
 	const persisted = store.rawStored;
-	assert(persisted !== null, "candidate was persisted");
-	assert(persisted?.candidateSvBase64 !== null, "candidateSvBase64 is set");
+	s.check(persisted !== null, "candidate was persisted");
+	s.check(persisted?.candidateSvBase64 !== null, "candidateSvBase64 is set");
 }
 
 // ── Test 2: local update while disconnected ───────────────────────────────────
 
-console.log("\n--- Test 2: local update while disconnected (no provider active) ---");
+s.section("Test 2: local update while disconnected (no provider active)");
 {
 	const doc = makeDoc(102);
 	const provider = { __type: "provider" };
@@ -115,13 +105,13 @@ console.log("\n--- Test 2: local update while disconnected (no provider active) 
 
 	await flushMicrotasks();
 
-	assert(tracker.serverAppliedLocalState === false, "offline edit: state=false");
-	assert(store.rawStored?.candidateSvBase64 !== null, "offline edit: candidate persisted");
+	s.check(tracker.serverAppliedLocalState === false, "offline edit: state=false");
+	s.check(store.rawStored?.candidateSvBase64 !== null, "offline edit: candidate persisted");
 }
 
 // ── Test 3: echo dominating candidate sets state=true ─────────────────────────
 
-console.log("\n--- Test 3: dominating echo sets serverAppliedLocalState=true ---");
+s.section("Test 3: dominating echo sets serverAppliedLocalState=true");
 {
 	const doc = makeDoc(103);
 	const provider = { __type: "provider" };
@@ -133,23 +123,23 @@ console.log("\n--- Test 3: dominating echo sets serverAppliedLocalState=true ---
 	doc.getText("t").insert(0, "some edit");
 	await flushMicrotasks();
 
-	assert(tracker.serverAppliedLocalState === false, "before echo: false");
+	s.check(tracker.serverAppliedLocalState === false, "before echo: false");
 
 	// Server SV that dominates the local doc SV (same state)
 	const serverSv = Y.encodeStateVector(doc);
 	tracker.recordServerSvEcho(serverSv);
 
-	assert(tracker.serverAppliedLocalState === true, "after dominating echo: true");
-	assert(tracker.lastServerReceiptEchoAt !== null, "lastServerReceiptEchoAt set");
-	assert(tracker.lastKnownServerReceiptEchoAt !== null, "lastKnownServerReceiptEchoAt set");
+	s.check(tracker.serverAppliedLocalState === true, "after dominating echo: true");
+	s.check(tracker.lastServerReceiptEchoAt !== null, "lastServerReceiptEchoAt set");
+	s.check(tracker.lastKnownServerReceiptEchoAt !== null, "lastKnownServerReceiptEchoAt set");
 
 	await flushMicrotasks();
-	assert(store.rawStored?.lastKnownServerReceiptEchoAt !== null, "lastKnownServerReceiptEchoAt persisted");
+	s.check(store.rawStored?.lastKnownServerReceiptEchoAt !== null, "lastKnownServerReceiptEchoAt persisted");
 }
 
 // ── Test 4: echo NOT dominating candidate keeps state=false ───────────────────
 
-console.log("\n--- Test 4: non-dominating echo stays false ---");
+s.section("Test 4: non-dominating echo stays false");
 {
 	const doc = makeDoc(104);
 	const provider = { __type: "provider" };
@@ -164,12 +154,12 @@ console.log("\n--- Test 4: non-dominating echo stays false ---");
 	const emptyServerSv = Y.encodeStateVector(new Y.Doc());
 	tracker.recordServerSvEcho(emptyServerSv);
 
-	assert(tracker.serverAppliedLocalState === false, "non-dominating echo: stays false");
+	s.check(tracker.serverAppliedLocalState === false, "non-dominating echo: stays false");
 }
 
 // ── Test 5: echo with no candidate updates timestamp but leaves state null ─────
 
-console.log("\n--- Test 5: echo with no candidate — lastServerReceiptEchoAt updates, state stays null ---");
+s.section("Test 5: echo with no candidate — lastServerReceiptEchoAt updates, state stays null");
 {
 	const doc = makeDoc(105);
 	const tracker = new ServerAckTracker();
@@ -181,13 +171,13 @@ console.log("\n--- Test 5: echo with no candidate — lastServerReceiptEchoAt up
 	const serverSv = Y.encodeStateVector(doc);
 	tracker.recordServerSvEcho(serverSv);
 
-	assert(tracker.serverAppliedLocalState === null, "no candidate: state stays null");
-	assert(tracker.lastServerReceiptEchoAt !== null, "echo received: lastServerReceiptEchoAt set");
+	s.check(tracker.serverAppliedLocalState === null, "no candidate: state stays null");
+	s.check(tracker.lastServerReceiptEchoAt !== null, "echo received: lastServerReceiptEchoAt set");
 }
 
 // ── Test 6: candidate retained across disconnect ───────────────────────────────
 
-console.log("\n--- Test 6: disconnect retains candidate ---");
+s.section("Test 6: disconnect retains candidate");
 {
 	const doc = makeDoc(106);
 	const provider = {};
@@ -199,18 +189,18 @@ console.log("\n--- Test 6: disconnect retains candidate ---");
 	doc.getText("t").insert(0, "edit before disconnect");
 	await flushMicrotasks();
 
-	assert(tracker.serverAppliedLocalState === false, "before disconnect: false");
+	s.check(tracker.serverAppliedLocalState === false, "before disconnect: false");
 
 	// Simulate disconnect: tracker has no disconnect event — state is retained in memory.
 	// Re-attach is not required; state persists passively.
-	assert(tracker.serverAppliedLocalState === false, "after disconnect: candidate retained, still false");
-	assert(store.rawStored?.candidateSvBase64 !== null, "persisted candidate still present");
+	s.check(tracker.serverAppliedLocalState === false, "after disconnect: candidate retained, still false");
+	s.check(store.rawStored?.candidateSvBase64 !== null, "persisted candidate still present");
 }
 
 // ── Test 7: offline-edit confirmed after reconnect (current session) ───────────
 // NON-NEGOTIABLE TEST
 
-console.log("\n--- Test 7: offline-edit confirmed after reconnect (current session) ---");
+s.section("Test 7: offline-edit confirmed after reconnect (current session)");
 {
 	const doc = makeDoc(107);
 	const provider = {};
@@ -222,20 +212,20 @@ console.log("\n--- Test 7: offline-edit confirmed after reconnect (current sessi
 	// Edit while offline (provider connected or not is irrelevant to tracker)
 	doc.getText("t").insert(0, "offline edit");
 	await flushMicrotasks();
-	assert(tracker.serverAppliedLocalState === false, "offline edit: state=false");
+	s.check(tracker.serverAppliedLocalState === false, "offline edit: state=false");
 
 	// Simulate reconnect + server applies the edit.
 	// Server SV now includes the offline edit.
 	const serverSv = Y.encodeStateVector(doc);
 	tracker.recordServerSvEcho(serverSv);
 
-	assert(tracker.serverAppliedLocalState === true, "[NON-NEGOTIABLE] offline edit confirmed after reconnect");
+	s.check(tracker.serverAppliedLocalState === true, "[NON-NEGOTIABLE] offline edit confirmed after reconnect");
 }
 
 // ── Test 8: offline-edit confirmed after plugin restart ───────────────────────
 // NON-NEGOTIABLE TEST
 
-console.log("\n--- Test 8: offline-edit confirmed after plugin restart ---");
+s.section("Test 8: offline-edit confirmed after plugin restart");
 {
 	const store = new InMemoryCandidateStore();
 
@@ -248,7 +238,7 @@ console.log("\n--- Test 8: offline-edit confirmed after plugin restart ---");
 		await tracker.onStartup(store, BASE_SCOPE);
 		doc.getText("t").insert(0, "offline edit session 1");
 		await flushMicrotasks();
-		assert(store.rawStored?.candidateSvBase64 !== null, "session 1: candidate persisted");
+		s.check(store.rawStored?.candidateSvBase64 !== null, "session 1: candidate persisted");
 	}
 
 	// Session 2: plugin restarts. Doc is rebuilt from IDB (same state as session 1 ended).
@@ -263,19 +253,19 @@ console.log("\n--- Test 8: offline-edit confirmed after plugin restart ---");
 		attachTracker(tracker2, doc, provider, null);
 		await tracker2.onStartup(store, BASE_SCOPE);
 
-		assert(tracker2.serverAppliedLocalState === null, "restart: active state is null (not restored from persisted true/false)");
+		s.check(tracker2.serverAppliedLocalState === null, "restart: active state is null (not restored from persisted true/false)");
 
 		// Server applies the edit and sends fresh echo.
 		const serverSv = Y.encodeStateVector(doc);
 		tracker2.recordServerSvEcho(serverSv);
 
-		assert(tracker2.serverAppliedLocalState === true, "[NON-NEGOTIABLE] offline edit confirmed after restart");
+		s.check(tracker2.serverAppliedLocalState === true, "[NON-NEGOTIABLE] offline edit confirmed after restart");
 	}
 }
 
 // ── Test 9: confirmed then new local update resets to false ───────────────────
 
-console.log("\n--- Test 9: new local update after confirmed state resets to false ---");
+s.section("Test 9: new local update after confirmed state resets to false");
 {
 	const doc = makeDoc(109);
 	const provider = {};
@@ -286,18 +276,18 @@ console.log("\n--- Test 9: new local update after confirmed state resets to fals
 	doc.getText("t").insert(0, "edit 1");
 	const serverSv1 = Y.encodeStateVector(doc);
 	tracker.recordServerSvEcho(serverSv1);
-	assert(tracker.serverAppliedLocalState === true, "confirmed: true");
+	s.check(tracker.serverAppliedLocalState === true, "confirmed: true");
 	const confirmedAt = tracker.lastServerReceiptEchoAt;
-	assert(confirmedAt !== null, "confirmed: lastServerReceiptEchoAt set");
+	s.check(confirmedAt !== null, "confirmed: lastServerReceiptEchoAt set");
 
 	doc.getText("t").insert(0, "edit 2"); // new local update
-	assert(tracker.serverAppliedLocalState === false, "new edit: state reset to false");
-	assert(tracker.lastServerReceiptEchoAt === confirmedAt, "new edit: lastServerReceiptEchoAt remains historical, not current receipt");
+	s.check(tracker.serverAppliedLocalState === false, "new edit: state reset to false");
+	s.check(tracker.lastServerReceiptEchoAt === confirmedAt, "new edit: lastServerReceiptEchoAt remains historical, not current receipt");
 }
 
 // ── Test 10: confirmed then offline local update also resets to false ──────────
 
-console.log("\n--- Test 10: new offline local update after confirmed state resets to false ---");
+s.section("Test 10: new offline local update after confirmed state resets to false");
 {
 	const doc = makeDoc(110);
 	const provider = {};
@@ -307,16 +297,16 @@ console.log("\n--- Test 10: new offline local update after confirmed state reset
 
 	doc.getText("t").insert(0, "confirmed edit");
 	tracker.recordServerSvEcho(Y.encodeStateVector(doc));
-	assert(tracker.serverAppliedLocalState === true, "confirmed");
+	s.check(tracker.serverAppliedLocalState === true, "confirmed");
 
 	// Offline local update
 	doc.getText("t").insert(0, "offline edit 2");
-	assert(tracker.serverAppliedLocalState === false, "offline edit after confirm: false");
+	s.check(tracker.serverAppliedLocalState === false, "offline edit after confirm: false");
 }
 
 // ── Test 11: remote provider update does NOT create candidate ──────────────────
 
-console.log("\n--- Test 11: remote provider update does not create candidate ---");
+s.section("Test 11: remote provider update does not create candidate");
 {
 	const doc = makeDoc(111);
 	const provider = { __type: "provider" };
@@ -330,12 +320,12 @@ console.log("\n--- Test 11: remote provider update does not create candidate ---
 	const update = Y.encodeStateAsUpdate(remoteDoc);
 	Y.applyUpdate(doc, update, provider); // provider as origin
 
-	assert(tracker.serverAppliedLocalState === null, "provider update: state stays null");
+	s.check(tracker.serverAppliedLocalState === null, "provider update: state stays null");
 }
 
 // ── Test 11b: remote provider update does NOT replace retained local candidate ─
 
-console.log("\n--- Test 11b: remote provider update does not replace retained local candidate ---");
+s.section("Test 11b: remote provider update does not replace retained local candidate");
 {
 	const doc = makeDoc(121);
 	const provider = { __type: "provider" };
@@ -345,20 +335,20 @@ console.log("\n--- Test 11b: remote provider update does not replace retained lo
 
 	doc.getText("t").insert(0, "local candidate");
 	const candidateSv = Y.encodeStateVector(doc);
-	assert(tracker.serverAppliedLocalState === false, "local candidate captured");
+	s.check(tracker.serverAppliedLocalState === false, "local candidate captured");
 
 	const remoteDoc = makeDoc(999);
 	remoteDoc.getText("remote").insert(0, "remote-only");
 	Y.applyUpdate(doc, Y.encodeStateAsUpdate(remoteDoc), provider);
-	assert(tracker.serverAppliedLocalState === false, "remote update leaves local candidate pending");
+	s.check(tracker.serverAppliedLocalState === false, "remote update leaves local candidate pending");
 
 	tracker.recordServerSvEcho(candidateSv);
-	assert(tracker.serverAppliedLocalState === true, "echo for original local candidate still confirms");
+	s.check(tracker.serverAppliedLocalState === true, "echo for original local candidate still confirms");
 }
 
 // ── Test 12: IDB persistence load does NOT create candidate ───────────────────
 
-console.log("\n--- Test 12: IDB persistence load does not create candidate ---");
+s.section("Test 12: IDB persistence load does not create candidate");
 {
 	const doc = makeDoc(112);
 	const provider = {};
@@ -372,12 +362,12 @@ console.log("\n--- Test 12: IDB persistence load does not create candidate ---")
 	idbDoc.getText("t").insert(0, "idb load");
 	Y.applyUpdate(doc, Y.encodeStateAsUpdate(idbDoc), persistence);
 
-	assert(tracker.serverAppliedLocalState === null, "IDB load: state stays null");
+	s.check(tracker.serverAppliedLocalState === null, "IDB load: state stays null");
 }
 
 // ── Test 13: persisted true NOT restored as active truth after restart ─────────
 
-console.log("\n--- Test 13: persisted serverAppliedLocalState=true not restored after restart ---");
+s.section("Test 13: persisted serverAppliedLocalState=true not restored after restart");
 {
 	const store = new InMemoryCandidateStore();
 
@@ -390,9 +380,9 @@ console.log("\n--- Test 13: persisted serverAppliedLocalState=true not restored 
 		await tracker.onStartup(store, BASE_SCOPE);
 		doc.getText("t").insert(0, "session 1 edit");
 		tracker.recordServerSvEcho(Y.encodeStateVector(doc));
-		assert(tracker.serverAppliedLocalState === true, "session 1: confirmed");
+		s.check(tracker.serverAppliedLocalState === true, "session 1: confirmed");
 		await flushMicrotasks();
-		assert(store.rawStored?.lastKnownServerReceiptEchoAt !== null, "session 1: lastKnownServerReceiptEchoAt persisted");
+		s.check(store.rawStored?.lastKnownServerReceiptEchoAt !== null, "session 1: lastKnownServerReceiptEchoAt persisted");
 	}
 
 	// Session 2: restart — active state must be null, not true
@@ -404,14 +394,14 @@ console.log("\n--- Test 13: persisted serverAppliedLocalState=true not restored 
 		attachTracker(tracker2, doc, provider, null);
 		await tracker2.onStartup(store, BASE_SCOPE);
 
-		assert(tracker2.serverAppliedLocalState === null, "restart: active state null (never restored from persisted true)");
-		assert(tracker2.lastKnownServerReceiptEchoAt !== null, "restart: historical timestamp retained");
+		s.check(tracker2.serverAppliedLocalState === null, "restart: active state null (never restored from persisted true)");
+		s.check(tracker2.lastKnownServerReceiptEchoAt !== null, "restart: historical timestamp retained");
 	}
 }
 
 // ── Test 14: scope mismatch discards candidate ────────────────────────────────
 
-console.log("\n--- Test 14: scope mismatch discards persisted candidate ---");
+s.section("Test 14: scope mismatch discards persisted candidate");
 {
 	const wrongVaultScope = { ...BASE_SCOPE, vaultIdHash: "different-vault" };
 	const wrongHostScope = { ...BASE_SCOPE, serverHostHash: "different-host" };
@@ -445,13 +435,13 @@ console.log("\n--- Test 14: scope mismatch discards persisted candidate ---");
 		const tracker2 = new ServerAckTracker();
 		attachTracker(tracker2, doc2, provider, null);
 		await tracker2.onStartup(store, wrongScope);
-		assert(tracker2.serverAppliedLocalState === null, `scope mismatch (${label}): state null`);
+		s.check(tracker2.serverAppliedLocalState === null, `scope mismatch (${label}): state null`);
 	}
 }
 
 // ── Test 15: candidate ahead of doc on startup — discard ──────────────────────
 
-console.log("\n--- Test 15: candidate ahead of local doc on startup (fail closed) ---");
+s.section("Test 15: candidate ahead of local doc on startup (fail closed)");
 {
 	const store = new InMemoryCandidateStore();
 
@@ -465,7 +455,7 @@ console.log("\n--- Test 15: candidate ahead of local doc on startup (fail closed
 		advancedDoc.getText("t").insert(0, "advanced edit 1");
 		advancedDoc.getText("t").insert(0, "advanced edit 2");
 		await flushMicrotasks();
-		assert(store.rawStored?.candidateSvBase64 !== null, "advanced candidate persisted");
+		s.check(store.rawStored?.candidateSvBase64 !== null, "advanced candidate persisted");
 	}
 
 	// Restart with a doc that is BEHIND the stored candidate SV (simulates IDB corruption/gap).
@@ -478,14 +468,14 @@ console.log("\n--- Test 15: candidate ahead of local doc on startup (fail closed
 	attachTracker(tracker2, behindDoc, provider, null);
 	await tracker2.onStartup(store, BASE_SCOPE);
 
-	assert(tracker2.serverAppliedLocalState === null, "candidate ahead of doc: discarded, state null");
+	s.check(tracker2.serverAppliedLocalState === null, "candidate ahead of doc: discarded, state null");
 	await flushMicrotasks();
-	assert(store.rawStored?.candidateSvBase64 === null, "discarded candidate: null in store");
+	s.check(store.rawStored?.candidateSvBase64 === null, "discarded candidate: null in store");
 }
 
 // ── Test 16: doc ahead of candidate on startup — replace ──────────────────────
 
-console.log("\n--- Test 16: doc ahead of candidate on startup — replace with current SV ---");
+s.section("Test 16: doc ahead of candidate on startup — replace with current SV");
 {
 	const store = new InMemoryCandidateStore();
 
@@ -511,17 +501,17 @@ console.log("\n--- Test 16: doc ahead of candidate on startup — replace with c
 	await tracker2.onStartup(store, BASE_SCOPE);
 
 	// State should be false (replaced with current doc SV, marked unconfirmed)
-	assert(tracker2.serverAppliedLocalState === false, "doc ahead of candidate: state=false (replaced)");
+	s.check(tracker2.serverAppliedLocalState === false, "doc ahead of candidate: state=false (replaced)");
 
 	// A dominating echo should now confirm it
 	const serverSv = Y.encodeStateVector(aheadDoc);
 	tracker2.recordServerSvEcho(serverSv);
-	assert(tracker2.serverAppliedLocalState === true, "doc-ahead case: fresh echo confirms replaced candidate");
+	s.check(tracker2.serverAppliedLocalState === true, "doc-ahead case: fresh echo confirms replaced candidate");
 }
 
 // ── Test 17: equal candidate and doc on startup — retain, wait for echo ────────
 
-console.log("\n--- Test 17: equal candidate and doc on startup ---");
+s.section("Test 17: equal candidate and doc on startup");
 {
 	const store = new InMemoryCandidateStore();
 
@@ -544,17 +534,17 @@ console.log("\n--- Test 17: equal candidate and doc on startup ---");
 	attachTracker(tracker2, sameDoc, provider, null);
 	await tracker2.onStartup(store, BASE_SCOPE);
 
-	assert(tracker2.serverAppliedLocalState === null, "equal: state null (waiting for fresh echo)");
+	s.check(tracker2.serverAppliedLocalState === null, "equal: state null (waiting for fresh echo)");
 
 	// Fresh echo confirms it
 	const serverSv = Y.encodeStateVector(sameDoc);
 	tracker2.recordServerSvEcho(serverSv);
-	assert(tracker2.serverAppliedLocalState === true, "equal: fresh echo confirms candidate");
+	s.check(tracker2.serverAppliedLocalState === true, "equal: fresh echo confirms candidate");
 }
 
 // ── Test 18: persistence write failure degrades gracefully ────────────────────
 
-console.log("\n--- Test 18: persistence write failure — in-memory state continues ---");
+s.section("Test 18: persistence write failure — in-memory state continues");
 {
 	const store = new InMemoryCandidateStore();
 	store.simulateWriteFailure = true;
@@ -568,14 +558,14 @@ console.log("\n--- Test 18: persistence write failure — in-memory state contin
 	doc.getText("t").insert(0, "edit during failure");
 	await flushMicrotasks();
 
-	assert(tracker.serverAppliedLocalState === false, "write failure: in-memory state still works");
-	assert(!tracker.candidatePersistenceHealthy, "write failure: health flag set");
-	assert(tracker.candidatePersistenceFailureCount > 0, "write failure: failure count incremented");
+	s.check(tracker.serverAppliedLocalState === false, "write failure: in-memory state still works");
+	s.check(!tracker.candidatePersistenceHealthy, "write failure: health flag set");
+	s.check(tracker.candidatePersistenceFailureCount > 0, "write failure: failure count incremented");
 }
 
 // ── Test 19: persistence health recovers after successful write ───────────────
 
-console.log("\n--- Test 19: persistence health recovers after successful write ---");
+s.section("Test 19: persistence health recovers after successful write");
 {
 	const store = new InMemoryCandidateStore();
 	store.simulateWriteFailure = true;
@@ -588,18 +578,18 @@ console.log("\n--- Test 19: persistence health recovers after successful write -
 
 	doc.getText("t").insert(0, "edit 1");
 	await flushMicrotasks();
-	assert(!tracker.candidatePersistenceHealthy, "health false after first failure");
+	s.check(!tracker.candidatePersistenceHealthy, "health false after first failure");
 
 	store.simulateWriteFailure = false;
 	doc.getText("t").insert(0, "edit 2");
 	await flushMicrotasks();
 
-	assert(tracker.candidatePersistenceHealthy, "health restored after successful write");
+	s.check(tracker.candidatePersistenceHealthy, "health restored after successful write");
 }
 
 // ── Test 20: confirmed then disconnect+reconnect — baseline echo re-confirms ───
 
-console.log("\n--- Test 20: confirmed → disconnect → reconnect → baseline echo re-confirms ---");
+s.section("Test 20: confirmed → disconnect → reconnect → baseline echo re-confirms");
 {
 	const doc = makeDoc(120);
 	const provider = {};
@@ -610,17 +600,17 @@ console.log("\n--- Test 20: confirmed → disconnect → reconnect → baseline 
 	doc.getText("t").insert(0, "edit");
 	const serverSv = Y.encodeStateVector(doc);
 	tracker.recordServerSvEcho(serverSv);
-	assert(tracker.serverAppliedLocalState === true, "confirmed before disconnect");
+	s.check(tracker.serverAppliedLocalState === true, "confirmed before disconnect");
 
 	// Disconnect: no state change (tracker has no disconnect event)
 	// Reconnect: server sends baseline echo with same SV
 	tracker.recordServerSvEcho(serverSv);
-	assert(tracker.serverAppliedLocalState === true, "baseline echo after reconnect: still confirmed");
+	s.check(tracker.serverAppliedLocalState === true, "baseline echo after reconnect: still confirmed");
 }
 
 // ── Test 21: startup load does not overwrite already-captured live candidate ──
 
-console.log("\n--- Test 21: onStartup does not overwrite live candidate captured before load resolves ---");
+s.section("Test 21: onStartup does not overwrite live candidate captured before load resolves");
 {
 	const store = new InMemoryCandidateStore();
 
@@ -633,7 +623,7 @@ console.log("\n--- Test 21: onStartup does not overwrite live candidate captured
 		await tracker.onStartup(store, BASE_SCOPE);
 		oldDoc.getText("t").insert(0, "old");
 		await flushMicrotasks();
-		assert(store.rawStored?.candidateSvBase64 !== null, "old persisted candidate exists");
+		s.check(store.rawStored?.candidateSvBase64 !== null, "old persisted candidate exists");
 	}
 
 	const liveDoc = makeDoc(121);
@@ -645,14 +635,14 @@ console.log("\n--- Test 21: onStartup does not overwrite live candidate captured
 	const liveCandidateSv = Y.encodeStateVector(liveDoc);
 
 	await liveTracker.onStartup(store, BASE_SCOPE);
-	assert(liveTracker.serverAppliedLocalState === false, "live candidate remains pending after startup load");
+	s.check(liveTracker.serverAppliedLocalState === false, "live candidate remains pending after startup load");
 	liveTracker.recordServerSvEcho(liveCandidateSv);
-	assert(liveTracker.serverAppliedLocalState === true, "live candidate, not stale persisted candidate, is confirmed");
+	s.check(liveTracker.serverAppliedLocalState === true, "live candidate, not stale persisted candidate, is confirmed");
 }
 
 // ── Test 22: baseline behind then postApply dominating confirms candidate ─────
 
-console.log("\n--- Test 22: baseline behind then postApply dominating confirms candidate ---");
+s.section("Test 22: baseline behind then postApply dominating confirms candidate");
 {
 	const clientDoc = makeDoc(122);
 	const serverDoc = makeDoc(922);
@@ -664,23 +654,23 @@ console.log("\n--- Test 22: baseline behind then postApply dominating confirms c
 
 	clientDoc.getText("t").insert(0, "offline candidate");
 	await flushMicrotasks();
-	assert(tracker.serverAppliedLocalState === false, "candidate starts pending");
+	s.check(tracker.serverAppliedLocalState === false, "candidate starts pending");
 
 	const baselineServerSv = Y.encodeStateVector(serverDoc);
-	assert(!isStateVectorGe(baselineServerSv, Y.encodeStateVector(clientDoc)), "baseline server SV is behind candidate");
+	s.check(!isStateVectorGe(baselineServerSv, Y.encodeStateVector(clientDoc)), "baseline server SV is behind candidate");
 	tracker.recordServerSvEcho(baselineServerSv);
-	assert(tracker.serverAppliedLocalState === false, "behind baseline echo does not confirm candidate");
+	s.check(tracker.serverAppliedLocalState === false, "behind baseline echo does not confirm candidate");
 
 	Y.applyUpdate(serverDoc, Y.encodeStateAsUpdate(clientDoc));
 	const postApplyServerSv = Y.encodeStateVector(serverDoc);
-	assert(isStateVectorGe(postApplyServerSv, Y.encodeStateVector(clientDoc)), "postApply server SV dominates candidate");
+	s.check(isStateVectorGe(postApplyServerSv, Y.encodeStateVector(clientDoc)), "postApply server SV dominates candidate");
 	tracker.recordServerSvEcho(postApplyServerSv);
-	assert(tracker.serverAppliedLocalState === true, "dominating postApply echo confirms candidate");
+	s.check(tracker.serverAppliedLocalState === true, "dominating postApply echo confirms candidate");
 }
 
 // ── Test 23: slow save racing clear — clear wins ─────────────────────────────
 
-console.log("\n--- Test 23: slow save racing clear — clear wins ---");
+s.section("Test 23: slow save racing clear — clear wins");
 {
 	let saveResolve: (() => void) | null = null;
 	let clearCalled = false;
@@ -715,21 +705,21 @@ console.log("\n--- Test 23: slow save racing clear — clear wins ---");
 	await Promise.resolve();
 
 	// Let the slow save finish — clear should execute after it
-	assert(saveResolve !== null, "slow save is in flight");
+	s.check(saveResolve !== null, "slow save is in flight");
 	saveResolve!();
 
 	// Wait for clear to complete
 	await clearPromise;
 
-	assert(clearCalled, "clear was called after slow save finished");
-	assert(tracker.serverAppliedLocalState === null, "state is null after clear");
-	assert(tracker.candidatePersistenceFailureCount === 0, "clear resets failure count");
-	assert(tracker.candidatePersistenceHealthy === true, "persistence healthy after successful clear");
+	s.check(clearCalled, "clear was called after slow save finished");
+	s.check(tracker.serverAppliedLocalState === null, "state is null after clear");
+	s.check(tracker.candidatePersistenceFailureCount === 0, "clear resets failure count");
+	s.check(tracker.candidatePersistenceHealthy === true, "persistence healthy after successful clear");
 }
 
 // ── Test 24: clearLocalReceiptState resets failure count ──────────────────────
 
-console.log("\n--- Test 24: clearLocalReceiptState resets failure count ---");
+s.section("Test 24: clearLocalReceiptState resets failure count");
 {
 	const store = new InMemoryCandidateStore();
 	store.simulateWriteFailure = true;
@@ -742,16 +732,16 @@ console.log("\n--- Test 24: clearLocalReceiptState resets failure count ---");
 
 	doc.getText("t").insert(0, "edit");
 	await flushMicrotasks();
-	assert(tracker.candidatePersistenceFailureCount > 0, "failure count incremented after write failure");
+	s.check(tracker.candidatePersistenceFailureCount > 0, "failure count incremented after write failure");
 
 	store.simulateWriteFailure = false;
 	await tracker.clearLocalReceiptState();
-	assert(tracker.candidatePersistenceFailureCount === 0, "clear resets failure count to 0");
+	s.check(tracker.candidatePersistenceFailureCount === 0, "clear resets failure count to 0");
 }
 
 // ── Test 25: active op id is captured during the Y.Doc update ─────────────────
 
-console.log("\n--- Test 25: withActiveOpId attributes candidate capture to the active op ---");
+s.section("Test 25: withActiveOpId attributes candidate capture to the active op");
 {
 	const doc = makeDoc(125);
 	const provider = {};
@@ -768,18 +758,11 @@ console.log("\n--- Test 25: withActiveOpId attributes candidate capture to the a
 
 	const candidate = flightEvents.find((event) => event.kind === "server.receipt.candidate_captured");
 	const data = candidate?.data as Record<string, unknown> | undefined;
-	assert(data?.causedByOpId === "op-active-125", "candidate capture includes active op id");
+	s.check(data?.causedByOpId === "op-active-125", "candidate capture includes active op id");
 
 	doc.getText("t").insert(0, " unattributed");
 	const candidates = flightEvents.filter((event) => event.kind === "server.receipt.candidate_captured");
 	const latestData = candidates.at(-1)?.data as Record<string, unknown> | undefined;
-	assert(latestData?.causedByOpId === null, "active op id is restored after scoped mutation");
+	s.check(latestData?.causedByOpId === null, "active op id is restored after scoped mutation");
 }
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

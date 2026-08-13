@@ -1,7 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { CapabilityUpdateService } from "../../src/runtime/capabilityUpdateService";
 import type { ServerCapabilities } from "../../src/sync/serverCapabilities";
 import type { UpdateManifest } from "../../src/update/updateManifest";
@@ -14,27 +12,17 @@ import {
 	SERVER_RECOMMENDED_PLUGIN_VERSION,
 	SERVER_VERSION,
 } from "../../server/src/version";
+import { readSource, repoRoot, suite } from "../harness.ts";
 
-const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { version: string };
-const manifest = JSON.parse(readFileSync(resolve(root, "manifest.json"), "utf8")) as {
+const root = repoRoot();
+const packageJson = JSON.parse(readSource("package.json")) as { version: string };
+const manifest = JSON.parse(readSource("manifest.json")) as {
 	version: string;
 	minAppVersion: string;
 };
-const versions = JSON.parse(readFileSync(resolve(root, "versions.json"), "utf8")) as Record<string, string>;
+const versions = JSON.parse(readSource("versions.json")) as Record<string, string>;
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, message: string): void {
-	if (condition) {
-		console.log(`  PASS  ${message}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${message}`);
-	failed++;
-}
+const s = suite("release-compatibility-matrix");
 
 function parseVersion(value: string): [number, number, number] | null {
 	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
@@ -53,27 +41,27 @@ function atLeast(actual: string, minimum: string): boolean {
 	return true;
 }
 
-console.log("\n--- Release compatibility matrix ---");
+s.section("Release compatibility matrix");
 
-assert(packageJson.version === manifest.version, "package.json and manifest.json publish the same plugin version");
-assert(versions[manifest.version] === manifest.minAppVersion, "versions.json contains the release plugin version and minimum Obsidian version");
-assert(parseVersion(SERVER_VERSION) !== null, "server version is numeric semver");
-assert(atLeast(SERVER_VERSION, SERVER_MIN_COMPATIBLE_SERVER_VERSION_FOR_PLUGIN), "current server satisfies the plugin's advertised server floor");
-assert(atLeast(packageJson.version, SERVER_MIN_COMPATIBLE_PLUGIN_VERSION_FOR_SERVER), "current plugin satisfies the server's advertised plugin floor");
-assert(atLeast(packageJson.version, SERVER_RECOMMENDED_PLUGIN_VERSION), "current plugin meets the server recommendation");
-assert(
+s.check(packageJson.version === manifest.version, "package.json and manifest.json publish the same plugin version");
+s.check(versions[manifest.version] === manifest.minAppVersion, "versions.json contains the release plugin version and minimum Obsidian version");
+s.check(parseVersion(SERVER_VERSION) !== null, "server version is numeric semver");
+s.check(atLeast(SERVER_VERSION, SERVER_MIN_COMPATIBLE_SERVER_VERSION_FOR_PLUGIN), "current server satisfies the plugin's advertised server floor");
+s.check(atLeast(packageJson.version, SERVER_MIN_COMPATIBLE_PLUGIN_VERSION_FOR_SERVER), "current plugin satisfies the server's advertised plugin floor");
+s.check(atLeast(packageJson.version, SERVER_RECOMMENDED_PLUGIN_VERSION), "current plugin meets the server recommendation");
+s.check(
 	SERVER_MIN_SCHEMA_VERSION === SERVER_MAX_SCHEMA_VERSION,
 	"server publishes a single pinned schema version (min === max)",
 );
-assert(SERVER_MAX_SCHEMA_VERSION === SCHEMA_VERSION, "the pinned server schema equals the current plugin schema");
+s.check(SERVER_MAX_SCHEMA_VERSION === SCHEMA_VERSION, "the pinned server schema equals the current plugin schema");
 for (const version of [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1]) {
-	assert(
+	s.check(
 		version !== SERVER_MIN_SCHEMA_VERSION && version !== SERVER_MAX_SCHEMA_VERSION,
 		`schema v${version} is not admitted by the pinned server`,
 	);
 }
 
-console.log("\n--- Emitted release artifact contract ---");
+s.section("Emitted release artifact contract");
 {
 	execFileSync(process.execPath, ["build-server-release.mjs"], {
 		cwd: root,
@@ -81,27 +69,27 @@ console.log("\n--- Emitted release artifact contract ---");
 	});
 
 	const emittedManifest = JSON.parse(
-		readFileSync(resolve(root, "dist/release-assets/update-manifest.json"), "utf8"),
+		readSource("dist/release-assets/update-manifest.json"),
 	) as UpdateManifest;
-	assert(emittedManifest.latestServerVersion === SERVER_VERSION, "emitted manifest has the current server version");
-	assert(emittedManifest.latestPluginVersion === manifest.version, "emitted manifest has the published plugin version");
-	assert(
+	s.check(emittedManifest.latestServerVersion === SERVER_VERSION, "emitted manifest has the current server version");
+	s.check(emittedManifest.latestPluginVersion === manifest.version, "emitted manifest has the published plugin version");
+	s.check(
 		emittedManifest.minCompatibleServerVersionForPlugin === SERVER_MIN_COMPATIBLE_SERVER_VERSION_FOR_PLUGIN,
 		"emitted manifest has the plugin's server floor",
 	);
-	assert(
+	s.check(
 		emittedManifest.minCompatiblePluginVersionForServer === SERVER_MIN_COMPATIBLE_PLUGIN_VERSION_FOR_SERVER,
 		"emitted manifest has the server's plugin floor",
 	);
-	assert(emittedManifest.releaseType === "compatible", "emitted manifest reflects the non-migration release type");
-	assert(emittedManifest.migrationRequired === false, "emitted manifest marks the release as non-migrating");
-	assert(emittedManifest.autoUpdateEligible === false, "emitted manifest disables unattended updates");
-	assert(emittedManifest.upgradeOrder === "either", "emitted manifest declares either upgrade order");
-	assert(
+	s.check(emittedManifest.releaseType === "compatible", "emitted manifest reflects the non-migration release type");
+	s.check(emittedManifest.migrationRequired === false, "emitted manifest marks the release as non-migrating");
+	s.check(emittedManifest.autoUpdateEligible === false, "emitted manifest disables unattended updates");
+	s.check(emittedManifest.upgradeOrder === "either", "emitted manifest declares either upgrade order");
+	s.check(
 		emittedManifest.releaseNotesUrl.endsWith(`/tag/${packageJson.version}`),
 		"emitted manifest release notes target the plugin release tag",
 	);
-	assert(
+	s.check(
 		emittedManifest.upgradeGuideUrl === "https://github.com/kavinsood/yaos#updating-your-server",
 		"emitted manifest has the canonical upgrade guide URL",
 	);
@@ -121,28 +109,28 @@ console.log("\n--- Emitted release artifact contract ---");
 	const archiveEntries = execFileSync("unzip", ["-Z1", archivePath], { encoding: "utf8" })
 		.trim()
 		.split("\n");
-	assert(embeddedManifest.serverVersion === SERVER_VERSION, "server archive manifest has the current server version");
-	assert(embeddedManifest.pluginVersion === manifest.version, "server archive manifest has the current plugin version");
-	assert(embeddedManifest.migrationRequired === false, "server archive manifest matches migration policy");
-	assert(
+	s.check(embeddedManifest.serverVersion === SERVER_VERSION, "server archive manifest has the current server version");
+	s.check(embeddedManifest.pluginVersion === manifest.version, "server archive manifest has the current plugin version");
+	s.check(embeddedManifest.migrationRequired === false, "server archive manifest matches migration policy");
+	s.check(
 		JSON.stringify(embeddedManifest.protectedFiles) === JSON.stringify(["wrangler.toml"]),
 		"server archive protects only operator-owned wrangler.toml",
 	);
 	const expectedOwnedPaths = [".gitlab-ci.yml", "package.json", "package-lock.json", "scripts", "tsconfig.json", "src"];
-	assert(
+	s.check(
 		JSON.stringify(embeddedManifest.updateOwnedPaths) === JSON.stringify(expectedOwnedPaths),
 		"server archive declares the exact update-owned path set",
 	);
 	for (const ownedPath of embeddedManifest.updateOwnedPaths) {
-		assert(
+		s.check(
 			archiveEntries.some((entry) => entry === ownedPath || entry.startsWith(`${ownedPath}/`)),
 			`server archive contains update-owned path ${ownedPath}`,
 		);
 	}
-	assert(archiveEntries.includes("wrangler.toml"), "server archive contains the protected wrangler.toml template");
+	s.check(archiveEntries.includes("wrangler.toml"), "server archive contains the protected wrangler.toml template");
 }
 
-console.log("\n--- Runtime compatibility decision matrix ---");
+s.section("Runtime compatibility decision matrix");
 {
 	const host = "https://release-matrix.test";
 	const baseCapabilities: ServerCapabilities = {
@@ -208,21 +196,21 @@ console.log("\n--- Runtime compatibility decision matrix ---");
 	}
 
 	const currentPair = evaluateCompatibility({ pluginVersion: manifest.version, schemaVersion: SCHEMA_VERSION });
-	assert(!currentPair.blocked && currentPair.stopped === 0 && currentPair.statusErrors === 0, "current plugin/server pair remains sync-compatible at runtime");
+	s.check(!currentPair.blocked && currentPair.stopped === 0 && currentPair.statusErrors === 0, "current plugin/server pair remains sync-compatible at runtime");
 
 	const stagedPair = evaluateCompatibility({
 		pluginVersion: "1.6.0",
 		schemaVersion: SCHEMA_VERSION,
 		capabilities: { serverVersion: "0.1.9" },
 	});
-	assert(!stagedPair.blocked, "older-than-latest plugin is not blocked by the latest release's server floor");
+	s.check(!stagedPair.blocked, "older-than-latest plugin is not blocked by the latest release's server floor");
 
 	const blockedServerPair = evaluateCompatibility({
 		pluginVersion: manifest.version,
 		schemaVersion: SCHEMA_VERSION,
 		capabilities: { serverVersion: "0.1.9" },
 	});
-	assert(
+	s.check(
 		blockedServerPair.blocked && blockedServerPair.stopped === 1 && blockedServerPair.statusErrors === 1,
 		"latest plugin blocks and tears down sync against a server below its declared floor",
 	);
@@ -232,7 +220,7 @@ console.log("\n--- Runtime compatibility decision matrix ---");
 		schemaVersion: SCHEMA_VERSION,
 		capabilities: { minPluginVersion: "1.3.3" },
 	});
-	assert(
+	s.check(
 		blockedPluginPair.blocked && blockedPluginPair.stopped === 1 && blockedPluginPair.statusErrors === 1,
 		"live server plugin floor blocks an outdated plugin before sync",
 	);
@@ -241,24 +229,22 @@ console.log("\n--- Runtime compatibility decision matrix ---");
 		pluginVersion: manifest.version,
 		schemaVersion: SERVER_MIN_SCHEMA_VERSION - 1,
 	});
-	assert(blockedBelowPin.blocked, "local schema one below the pinned server schema is blocked at runtime");
+	s.check(blockedBelowPin.blocked, "local schema one below the pinned server schema is blocked at runtime");
 
 	const blockedAbovePin = evaluateCompatibility({
 		pluginVersion: manifest.version,
 		schemaVersion: SERVER_MAX_SCHEMA_VERSION + 1,
 	});
-	assert(blockedAbovePin.blocked, "local schema one above the pinned server schema is blocked at runtime");
+	s.check(blockedAbovePin.blocked, "local schema one above the pinned server schema is blocked at runtime");
 
 	const manifestPluginFloorOnly = evaluateCompatibility({
 		pluginVersion: "1.0.0",
 		schemaVersion: SCHEMA_VERSION,
 		updateManifest: { minCompatiblePluginVersionForServer: "99.0.0" },
 	});
-	assert(
+	s.check(
 		!manifestPluginFloorOnly.blocked,
 		"server-side plugin floor comes from live capabilities, not unused update-manifest metadata",
 	);
 }
-
-console.log(`\nResults: ${passed} passed, ${failed} failed`);
-if (failed > 0) process.exit(1);
+await s.done();

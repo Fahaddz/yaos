@@ -24,22 +24,19 @@ import {
 	type MetaChangeBatch,
 } from "../../src/sync/fileMeta";
 import { isLocalOrigin, ORIGIN_SEED } from "../../src/sync/origins";
+import { suite } from "../harness.ts";
 
 // ── Test runner ─────────────────────────────────────────────────────────────
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) { passed++; } else { failed++; console.error(`  FAIL: ${msg}`); }
-}
+const s = suite("meta-observer-integration");
 
 function assertEqual<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) { passed++; } else { failed++; console.error(`  FAIL: ${msg} — got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`); }
-}
-
-function section(name: string): void {
-	console.log(`\n── ${name} ──`);
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg} — got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`,
+	);
 }
 
 // ── Helper: simulate what VaultSync._metaDeepObserver does ──────────────────
@@ -98,7 +95,7 @@ function attachSemanticObserver(
 // Core observer firing tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Observer: flat object replacement fires on shallow observe");
+s.section("Observer: flat object replacement fires on shallow observe");
 
 {
 	// Baseline: flat entry replacement — old shallow observer worked for this.
@@ -121,12 +118,12 @@ section("Observer: flat object replacement fires on shallow observe");
 	});
 
 	const deleted = changes.find(c => c.kind === "deleted");
-	assert(deleted !== undefined, "flat tombstone replacement fires 'deleted'");
+	s.check(deleted !== undefined, "flat tombstone replacement fires 'deleted'");
 
 	unsubscribe();
 }
 
-section("Observer: nested deletedAt fires 'deleted' (THE critical path)");
+s.section("Observer: nested deletedAt fires 'deleted' (THE critical path)");
 
 {
 	// This is the specific case that a shallow observer missed.
@@ -152,15 +149,15 @@ section("Observer: nested deletedAt fires 'deleted' (THE critical path)");
 		entry.delete("device");
 	});
 
-	assert(changes.length > 0, "nested deletedAt mutation fires at least one change");
+	s.check(changes.length > 0, "nested deletedAt mutation fires at least one change");
 	const deleted = changes.find(c => c.kind === "deleted");
-	assert(deleted !== undefined, "nested deletedAt fires 'deleted' semantic change");
+	s.check(deleted !== undefined, "nested deletedAt fires 'deleted' semantic change");
 	assertEqual((deleted as any).path, "notes/b.md", "deleted path correct");
 
 	unsubscribe();
 }
 
-section("Observer: nested deletedAt removal fires 'revived'");
+s.section("Observer: nested deletedAt removal fires 'revived'");
 
 {
 	const doc = new Y.Doc();
@@ -183,13 +180,13 @@ section("Observer: nested deletedAt removal fires 'revived'");
 	});
 
 	const revived = changes.find(c => c.kind === "revived");
-	assert(revived !== undefined, "nested deletedAt deletion fires 'revived'");
+	s.check(revived !== undefined, "nested deletedAt deletion fires 'revived'");
 	assertEqual((revived as any).path, "notes/c.md", "revived path correct");
 
 	unsubscribe();
 }
 
-section("Observer: nested path change fires 'path-changed'");
+s.section("Observer: nested path change fires 'path-changed'");
 
 {
 	const doc = new Y.Doc();
@@ -209,14 +206,14 @@ section("Observer: nested path change fires 'path-changed'");
 	});
 
 	const pathChanged = changes.find(c => c.kind === "path-changed");
-	assert(pathChanged !== undefined, "nested path mutation fires 'path-changed'");
+	s.check(pathChanged !== undefined, "nested path mutation fires 'path-changed'");
 	assertEqual((pathChanged as any).previousPath, "notes/original.md", "previous path correct");
 	assertEqual((pathChanged as any).nextPath, "notes/renamed.md", "next path correct");
 
 	unsubscribe();
 }
 
-section("Observer: nested mtime change fires 'mtime-changed' (not delete or rename)");
+s.section("Observer: nested mtime change fires 'mtime-changed' (not delete or rename)");
 
 {
 	const doc = new Y.Doc();
@@ -241,12 +238,12 @@ section("Observer: nested mtime change fires 'mtime-changed' (not delete or rena
 	assertEqual(structuralChanges.length, 0, "mtime-only change has no structural side effects");
 
 	const mtime = changes.find(c => c.kind === "mtime-changed");
-	assert(mtime !== undefined, "mtime-only change fires 'mtime-changed'");
+	s.check(mtime !== undefined, "mtime-only change fires 'mtime-changed'");
 
 	unsubscribe();
 }
 
-section("Observer: nested device change fires 'device-changed' (not structural)");
+s.section("Observer: nested device change fires 'device-changed' (not structural)");
 
 {
 	const doc = new Y.Doc();
@@ -268,7 +265,7 @@ section("Observer: nested device change fires 'device-changed' (not structural)"
 		c.kind === "deleted" || c.kind === "revived" || c.kind === "path-changed"
 	);
 	assertEqual(structural.length, 0, "device-only change has no structural side effects");
-	assert(changes.some(c => c.kind === "device-changed"), "device-only change fires 'device-changed'");
+	s.check(changes.some(c => c.kind === "device-changed"), "device-only change fires 'device-changed'");
 
 	unsubscribe();
 }
@@ -277,7 +274,7 @@ section("Observer: nested device change fires 'device-changed' (not structural)"
 // Lazy conversion observer interaction
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Observer: flat→nested lazy conversion fires correctly");
+s.section("Observer: flat→nested lazy conversion fires correctly");
 
 {
 	const doc = new Y.Doc();
@@ -297,7 +294,7 @@ section("Observer: flat→nested lazy conversion fires correctly");
 	});
 
 	// Should fire mtime-changed (path stays the same, entry is now nested)
-	assert(changes.length > 0, "lazy conversion fires at least one change");
+	s.check(changes.length > 0, "lazy conversion fires at least one change");
 	// No spurious delete/rename during conversion
 	const structural = changes.filter(c =>
 		c.kind === "deleted" || c.kind === "revived" || c.kind === "path-changed"
@@ -311,7 +308,7 @@ section("Observer: flat→nested lazy conversion fires correctly");
 // Cross-doc sync: semantic changes fire after remote update applied
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Cross-doc: remote nested delete fires 'deleted' on receiving doc");
+s.section("Cross-doc: remote nested delete fires 'deleted' on receiving doc");
 
 {
 	const docA = new Y.Doc({ gc: false });
@@ -337,13 +334,13 @@ section("Cross-doc: remote nested delete fires 'deleted' on receiving doc");
 	Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
 
 	const deleted = changes.find(c => c.kind === "deleted");
-	assert(deleted !== undefined, "remote nested delete fires 'deleted' on receiving doc");
+	s.check(deleted !== undefined, "remote nested delete fires 'deleted' on receiving doc");
 	assertEqual((deleted as any).path, "sync/file.md", "correct path in deleted event");
 
 	unsubscribe();
 }
 
-section("Cross-doc: remote nested rename fires 'path-changed' on receiving doc");
+s.section("Cross-doc: remote nested rename fires 'path-changed' on receiving doc");
 
 {
 	const docA = new Y.Doc({ gc: false });
@@ -364,14 +361,14 @@ section("Cross-doc: remote nested rename fires 'path-changed' on receiving doc")
 	Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
 
 	const pathChanged = changes.find(c => c.kind === "path-changed");
-	assert(pathChanged !== undefined, "remote nested rename fires 'path-changed' on receiving doc");
+	s.check(pathChanged !== undefined, "remote nested rename fires 'path-changed' on receiving doc");
 	assertEqual((pathChanged as any).previousPath, "sync/before.md", "previous path correct");
 	assertEqual((pathChanged as any).nextPath, "sync/after.md", "next path correct");
 
 	unsubscribe();
 }
 
-section("Cross-doc: remote nested revive fires 'revived' on receiving doc");
+s.section("Cross-doc: remote nested revive fires 'revived' on receiving doc");
 
 {
 	const docA = new Y.Doc({ gc: false });
@@ -395,13 +392,13 @@ section("Cross-doc: remote nested revive fires 'revived' on receiving doc");
 	Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
 
 	const revived = changes.find(c => c.kind === "revived");
-	assert(revived !== undefined, "remote nested revive fires 'revived' on receiving doc");
+	s.check(revived !== undefined, "remote nested revive fires 'revived' on receiving doc");
 	assertEqual((revived as any).path, "sync/revived.md", "revived path correct");
 
 	unsubscribe();
 }
 
-section("Cross-doc: remote mtime change does NOT fire structural event on receiving doc");
+s.section("Cross-doc: remote mtime change does NOT fire structural event on receiving doc");
 
 {
 	const docA = new Y.Doc({ gc: false });
@@ -433,7 +430,7 @@ section("Cross-doc: remote mtime change does NOT fire structural event on receiv
 // Origin filtering: local vs remote
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Origin: local ORIGIN_SEED write is flagged isLocal=true");
+s.section("Origin: local ORIGIN_SEED write is flagged isLocal=true");
 
 {
 	const doc = new Y.Doc();
@@ -452,7 +449,7 @@ section("Origin: local ORIGIN_SEED write is flagged isLocal=true");
 	unsubscribe();
 }
 
-section("Origin: remote update (null origin) is flagged isLocal=false");
+s.section("Origin: remote update (null origin) is flagged isLocal=false");
 
 {
 	// Simulate a remote update applied via Y.applyUpdate (which uses null origin)
@@ -471,13 +468,13 @@ section("Origin: remote update (null origin) is flagged isLocal=false");
 	// Apply remote update to docB
 	Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
 
-	assert(batches.length > 0, "remote update fires at least one batch");
-	assert(batches.every(b => b.isLocal === false), "all remote batches are isLocal=false");
+	s.check(batches.length > 0, "remote update fires at least one batch");
+	s.check(batches.every(b => b.isLocal === false), "all remote batches are isLocal=false");
 
 	unsubscribe();
 }
 
-section("Origin: local delete does NOT get treated as remote by DiskMirror logic");
+s.section("Origin: local delete does NOT get treated as remote by DiskMirror logic");
 
 {
 	const doc = new Y.Doc();
@@ -526,7 +523,7 @@ section("Origin: local delete does NOT get treated as remote by DiskMirror logic
 	unsubscribe();
 }
 
-section("Origin: remote delete IS treated as remote by DiskMirror logic");
+s.section("Origin: remote delete IS treated as remote by DiskMirror logic");
 
 {
 	const docA = new Y.Doc({ gc: false });
@@ -570,7 +567,7 @@ section("Origin: remote delete IS treated as remote by DiskMirror logic");
 	metaB.unobserveDeep(handler);
 }
 
-section("Origin: local rename does NOT trigger remote rename handler");
+s.section("Origin: local rename does NOT trigger remote rename handler");
 
 {
 	const doc = new Y.Doc();
@@ -610,7 +607,7 @@ section("Origin: local rename does NOT trigger remote rename handler");
 // Incremental diff: extractAffectedFileIds correctness
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Incremental: top-level key change identifies correct fileId");
+s.section("Incremental: top-level key change identifies correct fileId");
 
 {
 	const doc = new Y.Doc();
@@ -626,14 +623,14 @@ section("Incremental: top-level key change identifies correct fileId");
 		meta.set("my-file-id", { path: "x.md", mtime: 1 } as unknown);
 	});
 
-	assert(capturedAffected !== null, "affected set extracted");
-	assert(capturedAffected!.has("my-file-id"), "correct fileId from top-level change");
+	s.check(capturedAffected !== null, "affected set extracted");
+	s.check(capturedAffected!.has("my-file-id"), "correct fileId from top-level change");
 	assertEqual(capturedAffected!.size, 1, "exactly one fileId affected");
 
 	meta.unobserveDeep(handler);
 }
 
-section("Incremental: nested field change identifies correct fileId via event.path");
+s.section("Incremental: nested field change identifies correct fileId via event.path");
 
 {
 	const doc = new Y.Doc();
@@ -657,19 +654,10 @@ section("Incremental: nested field change identifies correct fileId via event.pa
 		entry.set("mtime", 2000);
 	});
 
-	assert(capturedAffected !== null, "affected set extracted for nested change");
-	assert(capturedAffected!.has("nested-file-id"), "nested-file-id correctly identified from event.path");
+	s.check(capturedAffected !== null, "affected set extracted for nested change");
+	s.check(capturedAffected!.has("nested-file-id"), "nested-file-id correctly identified from event.path");
 	assertEqual(capturedAffected!.size, 1, "exactly one fileId for nested mutation");
 
 	meta.unobserveDeep(handler);
 }
-
-// ── Report ──────────────────────────────────────────────────────────────────
-
-console.log(`\n${"═".repeat(60)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"═".repeat(60)}`);
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

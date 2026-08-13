@@ -1,22 +1,12 @@
 import * as Y from "yjs";
+import { suite } from "../harness.mjs";
 const snapshotModule = await import("../../src/sync/snapshotClient.ts");
 const { diffSnapshot, restoreFromSnapshot } = snapshotModule.default ?? snapshotModule;
 const fileMetaModule = await import("../../src/sync/fileMeta.ts");
 const getMetaPath = fileMetaModule.getMetaPath ?? fileMetaModule.default?.getMetaPath;
 const getMetaDeletedAt = fileMetaModule.getMetaDeletedAt ?? fileMetaModule.default?.getMetaDeletedAt;
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("v2-offline-rename-regressions");
 
 function cloneDoc(doc) {
 	const clone = new Y.Doc();
@@ -40,7 +30,7 @@ function activeMetaPaths(doc) {
 	return paths;
 }
 
-console.log("\n--- Test 1: v2 concurrent offline rename converges to one active path ---");
+s.section("Test 1: v2 concurrent offline rename converges to one active path");
 {
 	const base = new Y.Doc();
 	const sys = base.getMap("sys");
@@ -80,20 +70,20 @@ console.log("\n--- Test 1: v2 concurrent offline rename converges to one active 
 
 	const desktopPath = desktop.getMap("meta").get(fileId)?.path;
 	const mobilePath = mobile.getMap("meta").get(fileId)?.path;
-	assert(typeof desktopPath === "string", "desktop kept an active path");
-	assert(typeof mobilePath === "string", "mobile kept an active path");
-	assert(desktopPath === mobilePath, "both replicas converge to one winner path");
-	assert(desktop.getMap("idToText").size === 1, "desktop did not clone file IDs");
-	assert(mobile.getMap("idToText").size === 1, "mobile did not clone file IDs");
-	assert(activeMetaPaths(desktop).size === 1, "desktop has exactly one active markdown path");
-	assert(activeMetaPaths(mobile).size === 1, "mobile has exactly one active markdown path");
+	s.check(typeof desktopPath === "string", "desktop kept an active path");
+	s.check(typeof mobilePath === "string", "mobile kept an active path");
+	s.check(desktopPath === mobilePath, "both replicas converge to one winner path");
+	s.check(desktop.getMap("idToText").size === 1, "desktop did not clone file IDs");
+	s.check(mobile.getMap("idToText").size === 1, "mobile did not clone file IDs");
+	s.check(activeMetaPaths(desktop).size === 1, "desktop has exactly one active markdown path");
+	s.check(activeMetaPaths(mobile).size === 1, "mobile has exactly one active markdown path");
 
 	desktop.destroy();
 	mobile.destroy();
 	base.destroy();
 }
 
-console.log("\n--- Test 2: snapshot diff ignores legacy pathToId noise for schema v2 ---");
+s.section("Test 2: snapshot diff ignores legacy pathToId noise for schema v2");
 {
 	const seed = new Y.Doc();
 	const sys = seed.getMap("sys");
@@ -118,17 +108,17 @@ console.log("\n--- Test 2: snapshot diff ignores legacy pathToId noise for schem
 	});
 
 	const diff = diffSnapshot(snapshotDoc, liveDoc);
-	assert(diff.createdSinceSnapshot.length === 0, "no fake creates from pathToId aliases");
-	assert(diff.deletedSinceSnapshot.length === 0, "no fake deletes from pathToId aliases");
-	assert(diff.contentChanged.length === 0, "no fake content changes from pathToId aliases");
-	assert(diff.unchanged.includes("notes/stable.md"), "active v2 path remains unchanged");
+	s.check(diff.createdSinceSnapshot.length === 0, "no fake creates from pathToId aliases");
+	s.check(diff.deletedSinceSnapshot.length === 0, "no fake deletes from pathToId aliases");
+	s.check(diff.contentChanged.length === 0, "no fake content changes from pathToId aliases");
+	s.check(diff.unchanged.includes("notes/stable.md"), "active v2 path remains unchanged");
 
 	seed.destroy();
 	snapshotDoc.destroy();
 	liveDoc.destroy();
 }
 
-console.log("\n--- Test 3: v2 restore undeletes without writing legacy pathToId ---");
+s.section("Test 3: v2 restore undeletes without writing legacy pathToId");
 {
 	const snapshotDoc = new Y.Doc();
 	const snapSys = snapshotDoc.getMap("sys");
@@ -162,18 +152,14 @@ console.log("\n--- Test 3: v2 restore undeletes without writing legacy pathToId 
 	});
 	const restoredMeta = liveMeta.get(fileId);
 	const restoredText = liveIdToText.get(fileId)?.toString();
-	assert(restored.markdownUndeleted === 1, "restore undeleted one markdown file");
-	assert(restoredText === "Recovered", "restore replaced stale content");
+	s.check(restored.markdownUndeleted === 1, "restore undeleted one markdown file");
+	s.check(restoredText === "Recovered", "restore replaced stale content");
 	// Use helper to read both flat (v2) and nested (v3) metadata shapes.
-	assert(getMetaPath(restoredMeta) === "notes/recover.md", "restore kept expected path");
-	assert(getMetaDeletedAt(restoredMeta) === null, "restore cleared tombstone state");
-	assert(livePathToId.size === 0, "restore did not write legacy pathToId in schema v2");
+	s.check(getMetaPath(restoredMeta) === "notes/recover.md", "restore kept expected path");
+	s.check(getMetaDeletedAt(restoredMeta) === null, "restore cleared tombstone state");
+	s.check(livePathToId.size === 0, "restore did not write legacy pathToId in schema v2");
 
 	snapshotDoc.destroy();
 	liveDoc.destroy();
 }
-
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

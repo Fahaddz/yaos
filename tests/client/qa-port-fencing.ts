@@ -20,19 +20,9 @@
  */
 
 import type { YaosDebugPort } from "../../src/telemetry/debug/ports/yaosDebugPort";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("qa-port-fencing");
 
 // A complete mock of the port. This is the load-bearing part: the annotation
 // forces the object to satisfy YaosDebugPort exactly, so adding a member to the
@@ -83,27 +73,27 @@ const mockDebugPort: YaosDebugPort = {
 
 const portKeys = Object.keys(mockDebugPort);
 
-console.log("\n--- Test 1: the port is populated and callable ---");
+s.section("Test 1: the port is populated and callable");
 {
-	assert(portKeys.length > 0, "port exposes at least one member");
-	assert(
+	s.check(portKeys.length > 0, "port exposes at least one member");
+	s.check(
 		portKeys.every((k) => typeof (mockDebugPort as Record<string, unknown>)[k] === "function"),
 		"every port member is a function",
 	);
 }
 
-console.log("\n--- Test 2: no QA-only capability on the product port ---");
+s.section("Test 2: no QA-only capability on the product port");
 {
 	// Naming conventions the QA tree uses to mark capabilities that must never
 	// be reachable from the product. See qa/harness/ports/yaosUnsafeQaPort.ts.
 	const qaOnlyMarkers = ["__qaOnly", "Unsafe", "Scenario"];
 	for (const marker of qaOnlyMarkers) {
 		const offenders = portKeys.filter((k) => k.toLowerCase().includes(marker.toLowerCase()));
-		assert(offenders.length === 0, `no port member contains '${marker}'${offenders.length ? ` (found: ${offenders.join(", ")})` : ""}`);
+		s.check(offenders.length === 0, `no port member contains '${marker}'${offenders.length ? ` (found: ${offenders.join(", ")})` : ""}`);
 	}
 }
 
-console.log("\n--- Test 3: no mutation or policy-override capability on the product port ---");
+s.section("Test 3: no mutation or policy-override capability on the product port");
 {
 	// Derived from the mock's real keys, NOT a hand-maintained list. A hardcoded
 	// copy silently stops covering members added to the port after it was written.
@@ -119,23 +109,18 @@ console.log("\n--- Test 3: no mutation or policy-override capability on the prod
 	];
 	for (const capability of forbiddenCapabilities) {
 		const offenders = portKeys.filter((k) => k.toLowerCase().includes(capability.toLowerCase()));
-		assert(offenders.length === 0, `no port member provides '${capability}'${offenders.length ? ` (found: ${offenders.join(", ")})` : ""}`);
+		s.check(offenders.length === 0, `no port member provides '${capability}'${offenders.length ? ` (found: ${offenders.join(", ")})` : ""}`);
 	}
 }
 
-console.log("\n--- Test 4: the reconnect/reconcile members present are not data mutators ---");
+s.section("Test 4: the reconnect/reconcile members present are not data mutators");
 {
 	// forceReconcile / forceReconnect / disconnectProvider / connectProvider are
 	// deliberately on the port: they drive sync lifecycle, not content. This
 	// pins that distinction so a content mutator cannot be smuggled in behind a
 	// similar-sounding name.
-	assert(portKeys.includes("forceReconcile"), "forceReconcile is present (lifecycle, allowed)");
-	assert(portKeys.includes("forceReconnect"), "forceReconnect is present (lifecycle, allowed)");
-	assert(!portKeys.some((k) => /^force(?!Reconcile$|Reconnect$)/.test(k)), "no other force* member on the port");
+	s.check(portKeys.includes("forceReconcile"), "forceReconcile is present (lifecycle, allowed)");
+	s.check(portKeys.includes("forceReconnect"), "forceReconnect is present (lifecycle, allowed)");
+	s.check(!portKeys.some((k) => /^force(?!Reconcile$|Reconnect$)/.test(k)), "no other force* member on the port");
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

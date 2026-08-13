@@ -32,19 +32,9 @@ if (typeof globalThis.crypto === "undefined") {
 import * as Y from "yjs";
 import { SqlDocStore } from "../../server/src/sqlDocStore";
 import { FakeDurableObjectStorage } from "../mocks/sqlStorage";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("offline-handoff");
 
 // ── Store construction ───────────────────────────────────────────────────────
 
@@ -157,7 +147,7 @@ function coldStartDevice(store: SqlDocStore): VaultDoc {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-console.log("\n--- Test 1: basic handoff — A writes and checkpoints, B cold-starts ---");
+s.section("Test 1: basic handoff — A writes and checkpoints, B cold-starts");
 {
 	// Device A writes a note
 	const deviceA = makeVaultDoc();
@@ -172,12 +162,12 @@ console.log("\n--- Test 1: basic handoff — A writes and checkpoints, B cold-st
 	// A goes offline. B cold-starts from checkpoint.
 	const deviceB = coldStartDevice(store);
 
-	assert(readFile(deviceB, "Inbox/note.md") === "# Hello from A", "B has A's note content");
-	assert(activePaths(deviceB).includes("Inbox/note.md"), "B sees the path in its vault");
-	assert(deviceB.pathToId.get("Inbox/note.md") === "file-001", "B has the stable file ID");
+	s.check(readFile(deviceB, "Inbox/note.md") === "# Hello from A", "B has A's note content");
+	s.check(activePaths(deviceB).includes("Inbox/note.md"), "B sees the path in its vault");
+	s.check(deviceB.pathToId.get("Inbox/note.md") === "file-001", "B has the stable file ID");
 }
 
-console.log("\n--- Test 2: offline edit handoff — A edits while disconnected, then syncs, B gets it ---");
+s.section("Test 2: offline edit handoff — A edits while disconnected, then syncs, B gets it");
 {
 	// Phase 1: Establish baseline on server.
 	const serverDoc = new Y.Doc();
@@ -191,8 +181,8 @@ console.log("\n--- Test 2: offline edit handoff — A edits while disconnected, 
 	// Phase 2: A goes offline and makes a new note.
 	writeFile(deviceA, "Projects/idea.md", "# New idea (offline)", "file-idea");
 	// A's local doc now has two files; server still only has one.
-	assert(activePaths(deviceA).length === 2, "A has 2 files locally");
-	assert(readFile(deviceA, "Projects/idea.md") !== null, "A's offline note exists locally");
+	s.check(activePaths(deviceA).length === 2, "A has 2 files locally");
+	s.check(readFile(deviceA, "Projects/idea.md") !== null, "A's offline note exists locally");
 
 	// Phase 3: A reconnects and syncs the offline edit to server.
 	syncDeviceToServer(deviceA.doc, serverDoc, store);
@@ -201,12 +191,12 @@ console.log("\n--- Test 2: offline edit handoff — A edits while disconnected, 
 	// Phase 4: A goes offline again. B cold-starts with the new server state.
 	const deviceB = coldStartDevice(store);
 
-	assert(readFile(deviceB, "Daily/2026-05-01.md") === "# May 1 baseline", "B has baseline file");
-	assert(readFile(deviceB, "Projects/idea.md") === "# New idea (offline)", "B has A's offline edit");
-	assert(activePaths(deviceB).length === 2, "B sees both files");
+	s.check(readFile(deviceB, "Daily/2026-05-01.md") === "# May 1 baseline", "B has baseline file");
+	s.check(readFile(deviceB, "Projects/idea.md") === "# New idea (offline)", "B has A's offline edit");
+	s.check(activePaths(deviceB).length === 2, "B sees both files");
 }
 
-console.log("\n--- Test 3: no simultaneous presence required ---");
+s.section("Test 3: no simultaneous presence required");
 {
 	// The entire test proves this, but this variant makes it explicit:
 	// after A syncs, A is never touched again. B connects to a different
@@ -227,12 +217,12 @@ console.log("\n--- Test 3: no simultaneous presence required ---");
 	void deviceA_ref;
 
 	const deviceB = coldStartDevice(store);
-	assert(readFile(deviceB, "vault-root.md") === "This is the vault root", "B has root note without A present");
-	assert(readFile(deviceB, "Folder/sub.md") === "A sub-note", "B has subfolder note without A present");
-	assert(activePaths(deviceB).length === 2, "B has complete vault without A");
+	s.check(readFile(deviceB, "vault-root.md") === "This is the vault root", "B has root note without A present");
+	s.check(readFile(deviceB, "Folder/sub.md") === "A sub-note", "B has subfolder note without A present");
+	s.check(activePaths(deviceB).length === 2, "B has complete vault without A");
 }
 
-console.log("\n--- Test 4: journal-based handoff (no explicit checkpoint) ---");
+s.section("Test 4: journal-based handoff (no explicit checkpoint)");
 {
 	// Verify that journal entries alone — without a full rewriteCheckpoint call —
 	// are sufficient for B to receive A's edits. This mirrors the path where
@@ -247,10 +237,10 @@ console.log("\n--- Test 4: journal-based handoff (no explicit checkpoint) ---");
 	// No checkpointServer here — state lives only in the journal
 
 	const deviceB = coldStartDevice(store);
-	assert(readFile(deviceB, "Journal/entry.md") === "Day 1", "B gets journal-only state without checkpoint");
+	s.check(readFile(deviceB, "Journal/entry.md") === "Day 1", "B gets journal-only state without checkpoint");
 }
 
-console.log("\n--- Test 5: incremental offline edits over multiple sync cycles ---");
+s.section("Test 5: incremental offline edits over multiple sync cycles");
 {
 	// A makes three separate offline edit sessions, each followed by a sync.
 	// B connects after the third sync and should have all of A's content.
@@ -273,13 +263,13 @@ console.log("\n--- Test 5: incremental offline edits over multiple sync cycles -
 
 	// B cold-starts from mixed checkpoint + journal state
 	const deviceB = coldStartDevice(store);
-	assert(readFile(deviceB, "s1.md") === "session 1", "B has session 1 content");
-	assert(readFile(deviceB, "s2.md") === "session 2", "B has session 2 content");
-	assert(readFile(deviceB, "s3.md") === "session 3", "B has session 3 content");
-	assert(activePaths(deviceB).length === 3, "B has all three files");
+	s.check(readFile(deviceB, "s1.md") === "session 1", "B has session 1 content");
+	s.check(readFile(deviceB, "s2.md") === "session 2", "B has session 2 content");
+	s.check(readFile(deviceB, "s3.md") === "session 3", "B has session 3 content");
+	s.check(activePaths(deviceB).length === 3, "B has all three files");
 }
 
-console.log("\n--- Test 6: content edit (not just file creation) survives handoff ---");
+s.section("Test 6: content edit (not just file creation) survives handoff");
 {
 	// A creates a file, syncs, then edits the content offline, syncs again.
 	// B should have the latest content, not the original.
@@ -303,13 +293,13 @@ console.log("\n--- Test 6: content edit (not just file creation) survives handof
 	checkpointServer(serverDoc, store);
 
 	const deviceB = coldStartDevice(store);
-	assert(
+	s.check(
 		readFile(deviceB, "evolving.md") === "version 2 — updated offline",
 		"B has the updated content, not the original",
 	);
 }
 
-console.log("\n--- Test 7: deleted file does not appear on B ---");
+s.section("Test 7: deleted file does not appear on B");
 {
 	// A creates a file, syncs, then deletes it (tombstone), syncs again.
 	// B cold-starts and should not see the deleted file as active.
@@ -330,18 +320,11 @@ console.log("\n--- Test 7: deleted file does not appear on B ---");
 
 	const deviceB = coldStartDevice(store);
 	// activePaths() filters out deleted entries
-	assert(!activePaths(deviceB).includes("to-delete.md"), "B does not see deleted file in active paths");
+	s.check(!activePaths(deviceB).includes("to-delete.md"), "B does not see deleted file in active paths");
 	// File ID still exists (CRDT tombstone) but is flagged as deleted
 	const bFileId = deviceB.pathToId.get("to-delete.md");
 	if (bFileId) {
-		assert(deviceB.meta.get(bFileId)?.deleted === true, "B has the tombstone flag");
+		s.check(deviceB.meta.get(bFileId)?.deleted === true, "B has the tombstone flag");
 	}
 }
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

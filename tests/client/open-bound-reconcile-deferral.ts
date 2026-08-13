@@ -12,30 +12,16 @@ import * as Y from "yjs";
 import { ReconciliationController } from "../../src/runtime/reconciliationController";
 import { EditorWorkspaceOrchestrator } from "../../src/runtime/editorWorkspaceOrchestrator";
 import { PRODUCT_EVENT_KIND } from "../../src/observability/productEventKinds";
+import { suite, until } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, message: string): void {
-	if (condition) {
-		console.log(`  PASS  ${message}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${message}`);
-		failed++;
-	}
-}
+const s = suite("open-bound-reconcile-deferral");
 
 function assertEqual<T>(actual: T, expected: T, message: string): void {
-	assert(actual === expected, `${message} (expected=${String(expected)}, actual=${String(actual)})`);
+	s.check(actual === expected, `${message} (expected=${String(expected)}, actual=${String(actual)})`);
 }
 
 async function waitFor(predicate: () => boolean, description: string): Promise<void> {
-	for (let attempt = 0; attempt < 40; attempt++) {
-		if (predicate()) return;
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-	throw new Error(`timed out waiting for ${description}`);
+	await until(predicate, { timeoutMs: 400, intervalMs: 10, message: description });
 }
 
 const path = "QA-closure/open-bound-deferral.md";
@@ -164,7 +150,7 @@ const controller = new ReconciliationController({
 	},
 });
 
-console.log("\n--- Test 1: authoritative open/bound update defers without a flush ---");
+s.section("Test 1: authoritative open/bound update defers without a flush");
 await controller.runReconciliation("authoritative");
 
 assertEqual(flushWriteCalls, 0, "authoritative reconcile does not flush the open/bound path");
@@ -177,7 +163,7 @@ assertEqual(deferred[0]?.data.reason, "open-or-bound", "deferred event records i
 assertEqual(deferred[0]?.data.isOpenInEditor, true, "deferred event records open editor state");
 assertEqual(deferred[0]?.data.isBound, true, "deferred event records bound state");
 
-console.log("\n--- Test 2: real workspace close lifecycle imports the deferred closed-only edit ---");
+s.section("Test 2: real workspace close lifecycle imports the deferred closed-only edit");
 const workspace = new EditorWorkspaceOrchestrator({
 	app: app as never,
 	getSettings: () => ({ deviceName: "closure-test" }) as never,
@@ -202,16 +188,12 @@ assertEqual(lifecycleOrder[0], "notifyFileClosed", "workspace closes DiskMirror 
 assertEqual(lifecycleOrder[1], "deferImport:layout-change", "workspace requests deferred import on layout-close lifecycle");
 assertEqual(ytext.toString(), external, "post-close CRDT converges to the external disk content");
 assertEqual(flushWriteCalls, 0, "post-close import remains disk-to-CRDT; it does not overwrite disk");
-assert(
+s.check(
 	traces.some((entry) => entry.event === "closed-only-deferred-import-queued" && entry.details?.path === path),
 	"controller records the deferred closed-only import lifecycle trace",
 );
-assert(
+s.check(
 	pathEvents.some((event) => event.kind === PRODUCT_EVENT_KIND.crdtFileUpdated && event.path === path),
 	"post-close import emits a CRDT update event",
 );
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

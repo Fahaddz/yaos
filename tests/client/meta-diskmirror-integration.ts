@@ -49,24 +49,19 @@ import {
 	SERVER_MIN_SCHEMA_VERSION,
 	SERVER_MAX_SCHEMA_VERSION,
 } from "../../server/src/version";
+import { suite } from "../harness.ts";
 
 // ── Test runner ──────────────────────────────────────────────────────────────
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) { passed++; console.log(`  PASS  ${msg}`); }
-	else { failed++; console.error(`  FAIL  ${msg}`); }
-}
+const s = suite("meta-diskmirror-integration");
 
 function assertEqual<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) { passed++; console.log(`  PASS  ${msg}`); }
-	else { failed++; console.error(`  FAIL  ${msg} — got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`); }
-}
-
-function section(name: string): void {
-	console.log(`\n── ${name} ──`);
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg} — got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`,
+	);
 }
 
 // ── DiskMirror harness ───────────────────────────────────────────────────────
@@ -172,7 +167,7 @@ function makeMirrorHarness() {
 
 // ── DiskMirror: remote nested delete ────────────────────────────────────────
 
-section("DiskMirror: remote nested delete → handleRemoteDelete called");
+s.section("DiskMirror: remote nested delete → handleRemoteDelete called");
 
 {
 	const { doc, meta, fakeProvider, calls, reset } = makeMirrorHarness();
@@ -196,18 +191,18 @@ section("DiskMirror: remote nested delete → handleRemoteDelete called");
 	// Apply with provider origin (simulates y-partyserver applying remote update)
 	Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote), fakeProvider);
 
-	assert(calls.handleRemoteDelete.length === 1, "handleRemoteDelete called once for remote nested delete");
-	assert(
+	s.check(calls.handleRemoteDelete.length === 1, "handleRemoteDelete called once for remote nested delete");
+	s.check(
 		calls.handleRemoteDelete[0] === "notes/delete-me.md",
 		`handleRemoteDelete called with correct path (got: ${calls.handleRemoteDelete[0]})`,
 	);
-	assert(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for delete");
-	assert(calls.scheduleWrite.length === 0, "scheduleWrite NOT called for delete");
+	s.check(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for delete");
+	s.check(calls.scheduleWrite.length === 0, "scheduleWrite NOT called for delete");
 }
 
 // ── DiskMirror: local nested delete → NO handleRemoteDelete ─────────────────
 
-section("DiskMirror: local nested delete (ORIGIN_SEED) → handleRemoteDelete NOT called");
+s.section("DiskMirror: local nested delete (ORIGIN_SEED) → handleRemoteDelete NOT called");
 
 {
 	const { doc, meta, calls, reset } = makeMirrorHarness();
@@ -227,13 +222,13 @@ section("DiskMirror: local nested delete (ORIGIN_SEED) → handleRemoteDelete NO
 		e.delete("device");
 	}, ORIGIN_SEED);
 
-	assert(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for local nested delete");
-	assert(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for local delete");
+	s.check(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for local nested delete");
+	s.check(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for local delete");
 }
 
 // ── DiskMirror: remote nested rename (active) → handleRemoteRename called ────
 
-section("DiskMirror: remote nested rename (active entry) → handleRemoteRename called");
+s.section("DiskMirror: remote nested rename (active entry) → handleRemoteRename called");
 
 {
 	const { doc, meta, fakeProvider, calls, reset } = makeMirrorHarness();
@@ -252,7 +247,7 @@ section("DiskMirror: remote nested rename (active entry) → handleRemoteRename 
 
 	Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote), fakeProvider);
 
-	assert(calls.handleRemoteRename.length === 1, "handleRemoteRename called once for remote nested rename");
+	s.check(calls.handleRemoteRename.length === 1, "handleRemoteRename called once for remote nested rename");
 	assertEqual(
 		calls.handleRemoteRename[0]?.from,
 		"notes/before-rename.md",
@@ -263,12 +258,12 @@ section("DiskMirror: remote nested rename (active entry) → handleRemoteRename 
 		"notes/after-rename.md",
 		"rename to-path correct",
 	);
-	assert(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for rename");
+	s.check(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for rename");
 }
 
 // ── DiskMirror: tombstone path-change → handleRemoteRename NOT called ─────────
 
-section("DiskMirror: tombstone path change → handleRemoteRename NOT called");
+s.section("DiskMirror: tombstone path change → handleRemoteRename NOT called");
 
 {
 	const { doc, meta, fakeProvider, calls, reset } = makeMirrorHarness();
@@ -289,14 +284,14 @@ section("DiskMirror: tombstone path change → handleRemoteRename NOT called");
 
 	Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote), fakeProvider);
 
-	assert(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for tombstone path change");
-	assert(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for tombstone path change");
-	assert(calls.scheduleWrite.length === 0, "scheduleWrite NOT called for tombstone path change");
+	s.check(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for tombstone path change");
+	s.check(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for tombstone path change");
+	s.check(calls.scheduleWrite.length === 0, "scheduleWrite NOT called for tombstone path change");
 }
 
 // ── DiskMirror: local rename → NO handleRemoteRename ─────────────────────────
 
-section("DiskMirror: local nested rename (ORIGIN_SEED) → handleRemoteRename NOT called");
+s.section("DiskMirror: local nested rename (ORIGIN_SEED) → handleRemoteRename NOT called");
 
 {
 	const { doc, meta, calls, reset } = makeMirrorHarness();
@@ -313,12 +308,12 @@ section("DiskMirror: local nested rename (ORIGIN_SEED) → handleRemoteRename NO
 		e.set("path", "notes/local-after.md");
 	}, ORIGIN_SEED);
 
-	assert(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for local rename");
+	s.check(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for local rename");
 }
 
 // ── DiskMirror: remote revive → scheduleWrite called ─────────────────────────
 
-section("DiskMirror: remote revive (deletedAt removed) → scheduleWrite called");
+s.section("DiskMirror: remote revive (deletedAt removed) → scheduleWrite called");
 
 {
 	const { doc, meta, fakeProvider, calls, reset } = makeMirrorHarness();
@@ -339,14 +334,14 @@ section("DiskMirror: remote revive (deletedAt removed) → scheduleWrite called"
 
 	Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote), fakeProvider);
 
-	assert(calls.scheduleWrite.length === 1, "scheduleWrite called once for remote revive");
+	s.check(calls.scheduleWrite.length === 1, "scheduleWrite called once for remote revive");
 	assertEqual(calls.scheduleWrite[0], "notes/revived.md", "scheduleWrite called with correct path");
-	assert(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for revive");
+	s.check(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for revive");
 }
 
 // ── DiskMirror: remote mtime-only change → NO disk side effects ───────────────
 
-section("DiskMirror: remote mtime-only change → NO disk side effects");
+s.section("DiskMirror: remote mtime-only change → NO disk side effects");
 
 {
 	const { doc, meta, fakeProvider, calls, reset } = makeMirrorHarness();
@@ -365,16 +360,16 @@ section("DiskMirror: remote mtime-only change → NO disk side effects");
 
 	Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote), fakeProvider);
 
-	assert(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for mtime change");
-	assert(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for mtime change");
-	assert(calls.scheduleWrite.length === 0, "scheduleWrite NOT called for mtime change");
+	s.check(calls.handleRemoteDelete.length === 0, "handleRemoteDelete NOT called for mtime change");
+	s.check(calls.handleRemoteRename.length === 0, "handleRemoteRename NOT called for mtime change");
+	s.check(calls.scheduleWrite.length === 0, "scheduleWrite NOT called for mtime change");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Origin audit: every local metadata write path uses a proper origin
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Origin audit: all known local metadata write origins are classified as local");
+s.section("Origin audit: all known local metadata write origins are classified as local");
 
 {
 	// The fake provider is not one of these — only real provider instances count as remote
@@ -391,67 +386,67 @@ section("Origin audit: all known local metadata write origins are classified as 
 	];
 
 	for (const origin of localOrigins) {
-		assert(
+		s.check(
 			isLocalOrigin(origin, fakeProvider) === true,
 			`"${origin}" classified as local`,
 		);
 	}
 }
 
-section("Origin audit: provider-origin transaction classified as remote");
+s.section("Origin audit: provider-origin transaction classified as remote");
 
 {
 	const fakeProvider = { __kind: "provider" };
 	// Provider-origin (the actual provider object) is remote
-	assert(
+	s.check(
 		isLocalOrigin(fakeProvider, fakeProvider) === false,
 		"provider object origin classified as remote",
 	);
 }
 
-section("Origin audit: null origin classified as local (undistinguished local mutation)");
+s.section("Origin audit: null origin classified as local (undistinguished local mutation)");
 
 {
 	const fakeProvider = { __kind: "provider" };
 	// null origin: yjs default for transact() without explicit origin
 	// isLocalOrigin treats this as local (not provider-origin)
-	assert(
+	s.check(
 		isLocalOrigin(null, fakeProvider) === true,
 		"null origin classified as local",
 	);
 }
 
-section("Origin audit: unknown object origin classified as local (not provider)");
+s.section("Origin audit: unknown object origin classified as local (not provider)");
 
 {
 	const fakeProvider = { __kind: "provider" };
 	const unknownObj = { __kind: "some-other-thing" };
 	// Any non-null, non-provider object is local
-	assert(
+	s.check(
 		isLocalOrigin(unknownObj, fakeProvider) === true,
 		"non-provider object origin classified as local",
 	);
 }
 
-section("Origin audit: all vaultSync metadata write paths use ORIGIN_SEED");
+s.section("Origin audit: all vaultSync metadata write paths use ORIGIN_SEED");
 
 {
 	// This is a static verification: the grep of vaultSync.ts shows all
 	// ydoc.transact() calls use ORIGIN_SEED as the second argument.
 	// We verify ORIGIN_SEED is classified as local.
 	const fakeProvider = { __kind: "provider" };
-	assert(
+	s.check(
 		isLocalOrigin(ORIGIN_SEED, fakeProvider) === true,
 		"ORIGIN_SEED is local — all vaultSync transacts are correctly suppressed",
 	);
 }
 
-section("Origin audit: ORIGIN_RESTORE (snapshot restore) classified as local");
+s.section("Origin audit: ORIGIN_RESTORE (snapshot restore) classified as local");
 
 {
 	const fakeProvider = { __kind: "provider" };
 	// Snapshot restore must not trigger DiskMirror remote reactions
-	assert(
+	s.check(
 		isLocalOrigin(ORIGIN_RESTORE, fakeProvider) === true,
 		"ORIGIN_RESTORE classified as local — snapshot restore is suppressed in DiskMirror",
 	);
@@ -461,7 +456,7 @@ section("Origin audit: ORIGIN_RESTORE (snapshot restore) classified as local");
 // v2 migration regression: migrateSchemaToV2 writes flat objects
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("v2 migration: new active entries written as flat objects (not nested Y.Map)");
+s.section("v2 migration: new active entries written as flat objects (not nested Y.Map)");
 
 {
 	// Simulate what migrateSchemaToV2 does: create new flat meta
@@ -493,15 +488,15 @@ section("v2 migration: new active entries written as flat objects (not nested Y.
 	const entryDead = meta.get("id-dead");
 	const entryLegacy = meta.get("id-legacy");
 
-	assert(!(entryA instanceof Y.Map), "active entry is NOT a nested Y.Map (flat v2)");
-	assert(!(entryDead instanceof Y.Map), "tombstone entry is NOT a nested Y.Map (flat v2)");
-	assert(!(entryLegacy instanceof Y.Map), "legacy tombstone is NOT a nested Y.Map (flat v2)");
-	assert(typeof (entryA as any).path === "string", "active entry has string path");
-	assert(typeof (entryDead as any).deletedAt === "number", "tombstone has numeric deletedAt");
+	s.check(!(entryA instanceof Y.Map), "active entry is NOT a nested Y.Map (flat v2)");
+	s.check(!(entryDead instanceof Y.Map), "tombstone entry is NOT a nested Y.Map (flat v2)");
+	s.check(!(entryLegacy instanceof Y.Map), "legacy tombstone is NOT a nested Y.Map (flat v2)");
+	s.check(typeof (entryA as any).path === "string", "active entry has string path");
+	s.check(typeof (entryDead as any).deletedAt === "number", "tombstone has numeric deletedAt");
 	assertEqual(sys.get("schemaVersion"), 2, "schemaVersion is 2 after v2 migration, not 3");
 }
 
-section("v2 migration: after migration, lazy v3 conversion only upgrades touched entries");
+s.section("v2 migration: after migration, lazy v3 conversion only upgrades touched entries");
 
 {
 	const doc = new Y.Doc();
@@ -529,7 +524,7 @@ section("v2 migration: after migration, lazy v3 conversion only upgrades touched
 	}, ORIGIN_SEED);
 
 	// id-3 should now be nested
-	assert(meta.get("id-3") instanceof Y.Map, "touched entry id-3 is now nested Y.Map");
+	s.check(meta.get("id-3") instanceof Y.Map, "touched entry id-3 is now nested Y.Map");
 
 	// All others remain flat
 	let flatCount = 0;
@@ -544,7 +539,7 @@ section("v2 migration: after migration, lazy v3 conversion only upgrades touched
 	assertEqual(nestedCount, 0, "no other entries were eagerly converted");
 }
 
-section("v2 migration: loser-path tombstones are flat, not nested");
+s.section("v2 migration: loser-path tombstones are flat, not nested");
 
 {
 	const doc = new Y.Doc();
@@ -557,8 +552,8 @@ section("v2 migration: loser-path tombstones are flat, not nested");
 		meta.set("loser-id-2", { path: "other-alias/file.md", deletedAt: now } as unknown);
 	}, ORIGIN_SEED);
 
-	assert(!(meta.get("loser-id-1") instanceof Y.Map), "loser tombstone 1 is flat");
-	assert(!(meta.get("loser-id-2") instanceof Y.Map), "loser tombstone 2 is flat");
+	s.check(!(meta.get("loser-id-1") instanceof Y.Map), "loser tombstone 1 is flat");
+	s.check(!(meta.get("loser-id-2") instanceof Y.Map), "loser tombstone 2 is flat");
 	assertEqual(typeof (meta.get("loser-id-1") as any).deletedAt, "number", "loser tombstone 1 has deletedAt");
 }
 
@@ -566,43 +561,43 @@ section("v2 migration: loser-path tombstones are flat, not nested");
 // Provider-origin / persistence-origin edge cases
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Provider-origin: actual provider instance is remote");
+s.section("Provider-origin: actual provider instance is remote");
 
 {
 	// The real y-partyserver provider applies remote updates with origin = provider instance
 	const providerA = { ws: {}, __kind: "ws-provider-a" };
 	const providerB = { ws: {}, __kind: "ws-provider-b" };
 
-	assert(isLocalOrigin(providerA, providerA) === false, "own provider is remote");
-	assert(isLocalOrigin(providerB, providerA) === true, "foreign provider is local (not the sync provider)");
-	assert(isLocalOrigin(null, providerA) === true, "null origin is local regardless of provider");
+	s.check(isLocalOrigin(providerA, providerA) === false, "own provider is remote");
+	s.check(isLocalOrigin(providerB, providerA) === true, "foreign provider is local (not the sync provider)");
+	s.check(isLocalOrigin(null, providerA) === true, "null origin is local regardless of provider");
 }
 
-section("Provider-origin: string origins used by real persistence layers");
+s.section("Provider-origin: string origins used by real persistence layers");
 
 {
 	const fakeProvider = { __kind: "provider" };
 
 	// IndexedDB persistence typically uses a string origin or null
 	// These must all be local so persistence replays don't trigger DiskMirror
-	assert(isLocalOrigin("y-indexeddb", fakeProvider) === false, "unknown string origin 'y-indexeddb' is NOT local (unknown origin policy)");
+	s.check(isLocalOrigin("y-indexeddb", fakeProvider) === false, "unknown string origin 'y-indexeddb' is NOT local (unknown origin policy)");
 	// Only explicitly known origins are local; unknown strings are foreign
 	// This is the intended behavior: if a new origin needs to be local, it must be added to origins.ts
 }
 
-section("Provider-origin: y-partyserver persistence update origin");
+s.section("Provider-origin: y-partyserver persistence update origin");
 
 {
 	const fakeProvider = { __kind: "provider" };
 	// y-partyserver applies its own updates with provider-as-origin
 	// When provider === origin, isLocalOrigin returns false (remote)
-	assert(
+	s.check(
 		isLocalOrigin(fakeProvider, fakeProvider) === false,
 		"provider-origin update (y-partyserver sync) is remote",
 	);
 }
 
-section("Schema version constants: client and server pin the same single version");
+s.section("Schema version constants: client and server pin the same single version");
 
 {
 	assertEqual(SCHEMA_VERSION, 3, "SCHEMA_VERSION from schema.ts is 3");
@@ -619,7 +614,7 @@ section("Schema version constants: client and server pin the same single version
 // consumeRemoteRename: correctness and queueRename guard
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("consumeRemoteRename: consume-on-use semantics");
+s.section("consumeRemoteRename: consume-on-use semantics");
 
 {
 	// Test the DiskMirror consumeRemoteRename method directly.
@@ -631,14 +626,14 @@ section("consumeRemoteRename: consume-on-use semantics");
 	dm._pendingRemoteRenameNewPaths.add("notes/target.md");
 
 	// First consume returns true
-	assert(mirror.consumeRemoteRename("notes/target.md") === true, "first consume returns true");
+	s.check(mirror.consumeRemoteRename("notes/target.md") === true, "first consume returns true");
 	// Second consume returns false — marker is gone
-	assert(mirror.consumeRemoteRename("notes/target.md") === false, "second consume returns false (consumed)");
+	s.check(mirror.consumeRemoteRename("notes/target.md") === false, "second consume returns false (consumed)");
 	// Different path returns false
-	assert(mirror.consumeRemoteRename("notes/other.md") === false, "unrelated path returns false");
+	s.check(mirror.consumeRemoteRename("notes/other.md") === false, "unrelated path returns false");
 }
 
-section("consumeRemoteRename: path normalization");
+s.section("consumeRemoteRename: path normalization");
 
 {
 	const { mirror } = makeMirrorHarness();
@@ -647,10 +642,10 @@ section("consumeRemoteRename: path normalization");
 	// Add with already-normalized path
 	dm._pendingRemoteRenameNewPaths.add("notes/sub/file.md");
 	// Consume with same path — must match
-	assert(mirror.consumeRemoteRename("notes/sub/file.md") === true, "normalized path consumed correctly");
+	s.check(mirror.consumeRemoteRename("notes/sub/file.md") === true, "normalized path consumed correctly");
 }
 
-section("consumeRemoteRename: passive rename does not re-enqueue in CRDT");
+s.section("consumeRemoteRename: passive rename does not re-enqueue in CRDT");
 
 {
 	// This proves the main.ts guard: when consumeRemoteRename returns true,
@@ -670,33 +665,26 @@ section("consumeRemoteRename: passive rename does not re-enqueue in CRDT");
 
 	// main.ts logic: consume and check
 	const isRemote = mirror.consumeRemoteRename("notes/renamed.md");
-	assert(isRemote === true, "vault handler detects remote-origin rename");
+	s.check(isRemote === true, "vault handler detects remote-origin rename");
 
 	// If isRemote is true, queueRename MUST be skipped.
 	// We assert isRemote here to document the invariant tested by S15.
 	// The actual skip is in main.ts: `if (isRemoteRename) return;`
-	assert(isRemote, "isRemote=true means queueRename is skipped (invariant)");
+	s.check(isRemote, "isRemote=true means queueRename is skipped (invariant)");
 
 	// After consume, the pending set is empty
 	assertEqual(dm._pendingRemoteRenameNewPaths.size, 0, "pending set empty after consume");
 }
 
-section("consumeRemoteRename: local rename does not match (set is empty)");
+s.section("consumeRemoteRename: local rename does not match (set is empty)");
 
 {
 	const { mirror } = makeMirrorHarness();
 	const dm = mirror as any;
 
 	// No pending remote renames — this is a user-initiated rename
-	assert(mirror.consumeRemoteRename("notes/user-renamed.md") === false, "user rename not in pending set");
+	s.check(mirror.consumeRemoteRename("notes/user-renamed.md") === false, "user rename not in pending set");
 	// No side effects
 	assertEqual(dm._pendingRemoteRenameNewPaths.size, 0, "pending set stays empty");
 }
-
-// ── Report ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"═".repeat(60)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"═".repeat(60)}`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

@@ -9,19 +9,9 @@ import { parseSvEchoMessage } from "../../src/sync/svEchoMessage";
 import { isStateVectorGe } from "../../src/sync/stateVectorAck";
 import * as clientProtocol from "../../src/sync/svEchoProtocol";
 import * as serverProtocol from "../../server/src/svEchoProtocol";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("server-sv-echo");
 
 function buildDocWithClients(count: number): Y.Doc {
 	const merged = new Y.Doc();
@@ -34,7 +24,7 @@ function buildDocWithClients(count: number): Y.Doc {
 	return merged;
 }
 
-console.log("\n--- Test 1: payload shape and client parser round-trip ---");
+s.section("Test 1: payload shape and client parser round-trip");
 {
 	const doc = new Y.Doc();
 	doc.getText("note").insert(0, "server receipt payload");
@@ -43,27 +33,27 @@ console.log("\n--- Test 1: payload shape and client parser round-trip ---");
 	const parsedJson = JSON.parse(payload) as Record<string, unknown>;
 	const parsedSv = parseSvEchoMessage(payload);
 
-	assert(parsedJson.type === clientProtocol.SV_ECHO_TYPE, "payload type is namespaced");
-	assert(parsedJson.schema === clientProtocol.SV_ECHO_SCHEMA, "payload schema is 1");
-	assert(typeof parsedJson.sv === "string" && parsedJson.sv.length > 0, "payload has base64 sv");
-	assert(parsedSv !== null, "client parser accepts server payload");
-	assert(parsedSv !== null && isStateVectorGe(parsedSv, serverSv), "parsed SV dominates original server SV");
-	assert(parsedSv !== null && isStateVectorGe(serverSv, parsedSv), "parsed SV equals original server SV");
+	s.check(parsedJson.type === clientProtocol.SV_ECHO_TYPE, "payload type is namespaced");
+	s.check(parsedJson.schema === clientProtocol.SV_ECHO_SCHEMA, "payload schema is 1");
+	s.check(typeof parsedJson.sv === "string" && parsedJson.sv.length > 0, "payload has base64 sv");
+	s.check(parsedSv !== null, "client parser accepts server payload");
+	s.check(parsedSv !== null && isStateVectorGe(parsedSv, serverSv), "parsed SV dominates original server SV");
+	s.check(parsedSv !== null && isStateVectorGe(serverSv, parsedSv), "parsed SV equals original server SV");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 2: client/server protocol constants stay aligned ---");
+s.section("Test 2: client/server protocol constants stay aligned");
 {
-	assert(serverProtocol.SV_ECHO_TYPE === clientProtocol.SV_ECHO_TYPE, "type constant matches client");
-	assert(serverProtocol.SV_ECHO_SCHEMA === clientProtocol.SV_ECHO_SCHEMA, "schema constant matches client");
-	assert(
+	s.check(serverProtocol.SV_ECHO_TYPE === clientProtocol.SV_ECHO_TYPE, "type constant matches client");
+	s.check(serverProtocol.SV_ECHO_SCHEMA === clientProtocol.SV_ECHO_SCHEMA, "schema constant matches client");
+	s.check(
 		serverProtocol.MAX_SV_ECHO_BASE64_BYTES === clientProtocol.MAX_SV_ECHO_BASE64_BYTES,
 		"max base64 size matches client",
 	);
 }
 
-console.log("\n--- Test 3: doc helper encodes current doc state vector ---");
+s.section("Test 3: doc helper encodes current doc state vector");
 {
 	const doc = new Y.Doc();
 	doc.getText("note").insert(0, "doc helper");
@@ -71,29 +61,29 @@ console.log("\n--- Test 3: doc helper encodes current doc state vector ---");
 	const parsedSv = parseSvEchoMessage(payload);
 	const currentSv = Y.encodeStateVector(doc);
 
-	assert(parsedSv !== null, "doc helper payload parses");
-	assert(parsedSv !== null && isStateVectorGe(parsedSv, currentSv), "doc helper SV dominates current doc SV");
-	assert(parsedSv !== null && isStateVectorGe(currentSv, parsedSv), "doc helper SV equals current doc SV");
+	s.check(parsedSv !== null, "doc helper payload parses");
+	s.check(parsedSv !== null && isStateVectorGe(parsedSv, currentSv), "doc helper SV dominates current doc SV");
+	s.check(parsedSv !== null && isStateVectorGe(currentSv, parsedSv), "doc helper SV equals current doc SV");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 4: large state vector uses byte-safe base64 ---");
+s.section("Test 4: large state vector uses byte-safe base64");
 {
 	const doc = buildDocWithClients(1800);
 	const payload = makeSvEchoCustomMessageForDoc(doc);
 	const parsedSv = parseSvEchoMessage(payload);
 	const currentSv = Y.encodeStateVector(doc);
 
-	assert(payload.length > 8192, "large SV payload exceeds one base64 chunk");
-	assert(parsedSv !== null, "large SV payload parses");
-	assert(parsedSv !== null && isStateVectorGe(parsedSv, currentSv), "large parsed SV dominates current doc SV");
-	assert(parsedSv !== null && isStateVectorGe(currentSv, parsedSv), "large parsed SV equals current doc SV");
+	s.check(payload.length > 8192, "large SV payload exceeds one base64 chunk");
+	s.check(parsedSv !== null, "large SV payload parses");
+	s.check(parsedSv !== null && isStateVectorGe(parsedSv, currentSv), "large parsed SV dominates current doc SV");
+	s.check(parsedSv !== null && isStateVectorGe(currentSv, parsedSv), "large parsed SV equals current doc SV");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 5: trySendSvEcho frames custom message and reports bytes ---");
+s.section("Test 5: trySendSvEcho frames custom message and reports bytes");
 {
 	const doc = new Y.Doc();
 	doc.getText("note").insert(0, "send helper");
@@ -105,17 +95,17 @@ console.log("\n--- Test 5: trySendSvEcho frames custom message and reports bytes
 		},
 	}, doc, "baseline");
 
-	assert(result.ok, "send helper returns ok=true on send success");
-	assert(result.kind === "baseline", "send helper preserves kind");
-	assert(result.bytes > 0, "send helper reports framed message bytes");
-	assert(sent.length === 1, "send helper sends exactly one message");
-	assert(sent[0]?.startsWith("__YPS:"), "send helper uses y-partyserver custom-message prefix");
-	assert(parseSvEchoMessage(sent[0]?.slice("__YPS:".length) ?? "") !== null, "framed payload parses after prefix removal");
+	s.check(result.ok, "send helper returns ok=true on send success");
+	s.check(result.kind === "baseline", "send helper preserves kind");
+	s.check(result.bytes > 0, "send helper reports framed message bytes");
+	s.check(sent.length === 1, "send helper sends exactly one message");
+	s.check(sent[0]?.startsWith("__YPS:"), "send helper uses y-partyserver custom-message prefix");
+	s.check(parseSvEchoMessage(sent[0]?.slice("__YPS:".length) ?? "") !== null, "framed payload parses after prefix removal");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 6: trySendSvEcho respects readyState before sending ---");
+s.section("Test 6: trySendSvEcho respects readyState before sending");
 {
 	const doc = new Y.Doc();
 	doc.getText("note").insert(0, "ready state");
@@ -133,17 +123,17 @@ console.log("\n--- Test 6: trySendSvEcho respects readyState before sending ---"
 	const closed = trySendSvEcho(sendable(3), doc, "postApply");
 	const unknown = trySendSvEcho(sendable(undefined), doc, "postApply");
 
-	assert(!connecting.ok && connecting.failure === "not_open", "CONNECTING => no send, not_open");
-	assert(open.ok, "OPEN => send attempted");
-	assert(!closing.ok && closing.failure === "not_open", "CLOSING => no send, not_open");
-	assert(!closed.ok && closed.failure === "not_open", "CLOSED => no send, not_open");
-	assert(unknown.ok, "undefined readyState => send attempted");
-	assert(sent.length === 2, "only OPEN and undefined readyState send");
+	s.check(!connecting.ok && connecting.failure === "not_open", "CONNECTING => no send, not_open");
+	s.check(open.ok, "OPEN => send attempted");
+	s.check(!closing.ok && closing.failure === "not_open", "CLOSING => no send, not_open");
+	s.check(!closed.ok && closed.failure === "not_open", "CLOSED => no send, not_open");
+	s.check(unknown.ok, "undefined readyState => send attempted");
+	s.check(sent.length === 2, "only OPEN and undefined readyState send");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 7: trySendSvEcho reports send failures and oversize drops ---");
+s.section("Test 7: trySendSvEcho reports send failures and oversize drops");
 {
 	const doc = new Y.Doc();
 	doc.getText("note").insert(0, "send failure");
@@ -160,16 +150,11 @@ console.log("\n--- Test 7: trySendSvEcho reports send failures and oversize drop
 		},
 	}, new Uint8Array(clientProtocol.MAX_SV_ECHO_BASE64_BYTES), "postApply");
 
-	assert(!throwResult.ok && throwResult.failure === "send_failed", "send throw => send_failed");
-	assert(throwResult.bytes > 0, "throw result reports attempted payload bytes");
-	assert(!oversizeResult.ok && oversizeResult.failure === "oversize", "oversize payload => oversize failure");
-	assert(oversizeResult.bytes > 0, "oversize result reports framed payload bytes");
+	s.check(!throwResult.ok && throwResult.failure === "send_failed", "send throw => send_failed");
+	s.check(throwResult.bytes > 0, "throw result reports attempted payload bytes");
+	s.check(!oversizeResult.ok && oversizeResult.failure === "oversize", "oversize payload => oversize failure");
+	s.check(oversizeResult.bytes > 0, "oversize result reports framed payload bytes");
 
 	doc.destroy();
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

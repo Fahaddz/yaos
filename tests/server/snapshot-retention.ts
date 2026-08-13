@@ -32,32 +32,20 @@ import {
 	type SnapshotIndex,
 	type RetentionPolicy,
 } from "../../server/src/snapshot";
+import { suite } from "../harness.ts";
 
 // -------------------------------------------------------------------
 // Test helpers
 // -------------------------------------------------------------------
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  ✓ ${msg}`);
-		passed++;
-	} else {
-		console.error(`  ✗ FAIL: ${msg}`);
-		failed++;
-	}
-}
+const s = suite("snapshot-retention");
 
 function assertEqual(actual: unknown, expected: unknown, msg: string): void {
-	if (actual === expected) {
-		console.log(`  ✓ ${msg}`);
-		passed++;
-	} else {
-		console.error(`  ✗ FAIL: ${msg} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`);
-		failed++;
-	}
+	const equal = actual === expected;
+	s.check(
+		equal,
+		equal ? msg : `${msg} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`,
+	);
 }
 
 function makeSnapshot(
@@ -110,7 +98,7 @@ async function test1_deleteOnlyChangesFullUpdateHash(): Promise<void> {
 	const svAfter = await computeStateVectorHash(doc);
 
 	// fullUpdateHash MUST change (it includes the delete set)
-	assert(hashBefore !== hashAfter, "fullUpdateHash changes after delete-only transaction");
+	s.check(hashBefore !== hashAfter, "fullUpdateHash changes after delete-only transaction");
 
 	// State vector also changes for delete+insert (Yjs tracks the delete as a new op)
 	// But for pure map.delete() without text ops, SV may not change.
@@ -147,7 +135,7 @@ async function test2_contentEditChangesFullUpdateHash(): Promise<void> {
 	const fullHashAfter = await computeFullUpdateHash(doc);
 	const structHashAfter = await computeStructureHash(doc);
 
-	assert(fullHashBefore !== fullHashAfter, "fullUpdateHash detects content edit");
+	s.check(fullHashBefore !== fullHashAfter, "fullUpdateHash detects content edit");
 	assertEqual(structHashBefore, structHashAfter, "structureHash does NOT detect content edit (honest naming)");
 
 	doc.destroy();
@@ -206,8 +194,8 @@ async function test4_manualSnapshotPinnedSurvivesRetention(): Promise<void> {
 
 	const { keep, prune } = selectRetention(snapshots, DEFAULT_RETENTION, now);
 
-	assert(keep.some(s => s.snapshotId === "s-manual-old"), "pinned manual snapshot is kept");
-	assert(prune.some(s => s.snapshotId === "s-daily-old"), "unpinned daily snapshot is pruned");
+	s.check(keep.some(s => s.snapshotId === "s-manual-old"), "pinned manual snapshot is kept");
+	s.check(prune.some(s => s.snapshotId === "s-daily-old"), "unpinned daily snapshot is pruned");
 }
 
 // -------------------------------------------------------------------
@@ -228,14 +216,14 @@ async function test5_legacySnapshotNotPruned(): Promise<void> {
 
 	const { keep, prune } = selectRetention(snapshots, DEFAULT_RETENTION, now);
 
-	assert(keep.some(s => s.snapshotId === "s-legacy"), "legacy snapshot without reason is kept");
-	assert(keep.some(s => s.snapshotId === "s-legacy2"), "second legacy snapshot also kept");
+	s.check(keep.some(s => s.snapshotId === "s-legacy"), "legacy snapshot without reason is kept");
+	s.check(keep.some(s => s.snapshotId === "s-legacy2"), "second legacy snapshot also kept");
 	assertEqual(prune.length, 0, "no legacy snapshots are auto-pruned");
 
 	// But with pruneLegacy=true, they become candidates
 	const { keep: k2, prune: p2 } = selectRetention(snapshots, DEFAULT_RETENTION, now, { pruneLegacy: true });
-	assert(p2.some(s => s.snapshotId === "s-legacy"), "legacy pruned with pruneLegacy=true");
-	assert(p2.some(s => s.snapshotId === "s-legacy2"), "second legacy also pruned with pruneLegacy=true");
+	s.check(p2.some(s => s.snapshotId === "s-legacy"), "legacy pruned with pruneLegacy=true");
+	s.check(p2.some(s => s.snapshotId === "s-legacy2"), "second legacy also pruned with pruneLegacy=true");
 }
 
 // -------------------------------------------------------------------
@@ -300,9 +288,9 @@ async function test11_retentionMonthBoundary(): Promise<void> {
 
 	// Mar 2 and Mar 1 are within 14 days (weekly window starts at 7d)
 	// Feb snapshots are in weekly territory
-	assert(k2.some(s => s.snapshotId === "s-mar2"), "latest kept");
+	s.check(k2.some(s => s.snapshotId === "s-mar2"), "latest kept");
 	// Weekly retention keeps newest per week
-	assert(k2.length >= 2, "at least latest + some weekly kept");
+	s.check(k2.length >= 2, "at least latest + some weekly kept");
 }
 
 // -------------------------------------------------------------------
@@ -315,9 +303,9 @@ async function test12_pruneErrorSurfacing(): Promise<void> {
 	// The pruneSnapshots function now returns { deleted, failed, errors: string[] }
 	// Verify the type shape
 	const mockResult = { deleted: 3, failed: 1, errors: ["snap-123: network timeout"] };
-	assert(Array.isArray(mockResult.errors), "errors is an array");
-	assert(mockResult.errors[0].includes("snap-123"), "error includes snapshot ID");
-	assert(mockResult.errors[0].includes("network timeout"), "error includes reason");
+	s.check(Array.isArray(mockResult.errors), "errors is an array");
+	s.check(mockResult.errors[0].includes("snap-123"), "error includes snapshot ID");
+	s.check(mockResult.errors[0].includes("network timeout"), "error includes reason");
 }
 
 // -------------------------------------------------------------------
@@ -357,7 +345,7 @@ async function test13_legacySnapshotBackwardCompat(): Promise<void> {
 		DEFAULT_RETENTION,
 		now,
 	);
-	assert(keep.some(s => s.snapshotId === "old-snap"), "legacy snapshot is kept by retention");
+	s.check(keep.some(s => s.snapshotId === "old-snap"), "legacy snapshot is kept by retention");
 }
 
 // -------------------------------------------------------------------
@@ -370,15 +358,15 @@ async function test14_roughWeekKeyAndListingExclusion(): Promise<void> {
 	// roughWeekKey should return consistent values and not crash at boundaries
 	const dec31 = roughWeekKey(new Date("2025-12-31T00:00:00Z"));
 	const jan1 = roughWeekKey(new Date("2026-01-01T00:00:00Z"));
-	assert(typeof dec31 === "string" && dec31.includes("-W"), "Dec 31 produces valid week key");
-	assert(typeof jan1 === "string" && jan1.includes("-W"), "Jan 1 produces valid week key");
+	s.check(typeof dec31 === "string" && dec31.includes("-W"), "Dec 31 produces valid week key");
+	s.check(typeof jan1 === "string" && jan1.includes("-W"), "Jan 1 produces valid week key");
 
 	// They may or may not be different (approximation is documented)
 	console.log(`  (info: Dec 31 = ${dec31}, Jan 1 = ${jan1})`);
 
 	// Verify the key format is year-Wxx
-	assert(/^\d{4}-W\d{2}$/.test(dec31), "Week key format is YYYY-Wnn");
-	assert(/^\d{4}-W\d{2}$/.test(jan1), "Week key format is YYYY-Wnn");
+	s.check(/^\d{4}-W\d{2}$/.test(dec31), "Week key format is YYYY-Wnn");
+	s.check(/^\d{4}-W\d{2}$/.test(jan1), "Week key format is YYYY-Wnn");
 }
 
 // -------------------------------------------------------------------
@@ -402,7 +390,7 @@ async function testMapDelete(): Promise<void> {
 	});
 
 	const hashAfter = await computeFullUpdateHash(doc);
-	assert(hashBefore !== hashAfter, "map.delete() changes fullUpdateHash");
+	s.check(hashBefore !== hashAfter, "map.delete() changes fullUpdateHash");
 
 	doc.destroy();
 }
@@ -425,10 +413,10 @@ async function testRetentionOnlyDaily(): Promise<void> {
 	const { keep, prune } = selectRetention(snapshots, DEFAULT_RETENTION, now);
 
 	// 7 daily + ~4 weekly (one per week beyond 7d) + some monthly
-	assert(keep.length >= 7, "at least 7 daily kept");
-	assert(keep.length <= 25, "retention actually prunes (not keeping everything)");
-	assert(prune.length > 30, "many old daily snapshots pruned");
-	assert(keep.some(s => s.snapshotId === "s-0"), "latest always kept");
+	s.check(keep.length >= 7, "at least 7 daily kept");
+	s.check(keep.length <= 25, "retention actually prunes (not keeping everything)");
+	s.check(prune.length > 30, "many old daily snapshots pruned");
+	s.check(keep.some(s => s.snapshotId === "s-0"), "latest always kept");
 }
 
 // -------------------------------------------------------------------
@@ -453,17 +441,10 @@ async function main(): Promise<void> {
 	await test14_roughWeekKeyAndListingExclusion();
 	await testMapDelete();
 	await testRetentionOnlyDaily();
-
-	console.log("\n═══════════════════════════════════════════════");
-	console.log(`RESULTS: ${passed} passed, ${failed} failed`);
-	console.log("═══════════════════════════════════════════════");
-
-	if (failed > 0) {
-		process.exit(1);
-	}
 }
 
-main().catch((err) => {
-	console.error("Fatal error:", err);
-	process.exit(1);
-});
+// A rejection from main() propagates as a top-level failure: node prints the
+// stack and exits non-zero, which is louder than the "Fatal error" catch this
+// replaced and cannot be mistaken for a pass.
+await main();
+await s.done();

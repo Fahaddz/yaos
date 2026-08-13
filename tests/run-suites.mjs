@@ -20,6 +20,19 @@
 // distinguish .mjs suites from .ts suites — the old runner's JITI/NODE column
 // was noise, and had already drifted into being inconsistent.
 //
+// ONE HARNESS FOR ALL. A suite reports through tests/harness.ts:
+//
+//   import { suite } from "../harness.ts";   // "../harness.mjs" from a .mjs suite
+//   const s = suite("my-suite");
+//   s.section("Test 1: …");
+//   s.check(cond, "message");                // boolean form, counted
+//   s.test("name", async () => { … });       // throw form, awaited by done()
+//   await s.done();                          // prints the summary, exits 0/1
+//
+// Do not hand-roll counters, a local assert(), a summary block or a
+// process.exit: `done()` is what makes an unawaited async test body impossible,
+// and a suite that never calls it fails loudly instead of exiting 0 empty.
+//
 // IMPORTANT: Always run regressions via `npm run test:regressions` (or this
 // script directly). Do NOT run individual suites with bare
 // `node --import jiti/register tests/foo.ts` — the JITI_ALIAS env injected
@@ -84,10 +97,11 @@ const RUNNER = ["node", "--import", "jiti/register"];
 // no excuse in suites.json either.
 const BUCKETS = ["client", "server", "contracts", "live"];
 
-// The one suite that cannot live in a bucket: it guards this runner's own
-// discovery functions, so it sits beside the runner it verifies and is
-// discovered explicitly rather than by directory walk.
-const ROOT_SUITES = ["tests/suite-discovery.ts"];
+// The suites that cannot live in a bucket: they guard this runner's own
+// discovery functions and the shared assertion harness every bucket suite
+// depends on. Each sits beside the file it verifies and is discovered
+// explicitly rather than by directory walk.
+const ROOT_SUITES = ["tests/harness-self.ts", "tests/suite-discovery.ts"];
 
 /** Every discovery candidate in tests/, repo-root-relative and sorted. */
 export function discoverCandidates() {

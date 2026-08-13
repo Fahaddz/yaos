@@ -56,19 +56,9 @@ import {
 	ORIGIN_RESTORE,
 	ORIGIN_SEED,
 } from "../../src/sync/origins";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("recovery-amplifier");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -113,7 +103,7 @@ const FAKE_PROVIDER = { __kind: "fake-provider" };
 
 // ── Test 1: diskMirror dispatch — recovery origins skip writeback ─────────────
 
-console.log("\n--- Test 1: all recovery origins are classified local (no diskMirror writeback) ---");
+s.section("Test 1: all recovery origins are classified local (no diskMirror writeback)");
 {
 	const recoveryOrigins = [
 		ORIGIN_DISK_SYNC,
@@ -125,14 +115,14 @@ console.log("\n--- Test 1: all recovery origins are classified local (no diskMir
 	];
 
 	for (const origin of recoveryOrigins) {
-		assert(
+		s.check(
 			diskMirrorDecision(origin, FAKE_PROVIDER) === "skip",
 			`"${origin}" → diskMirror skips writeback (local origin)`,
 		);
 	}
 
 	// Verify the set hasn't drifted from what we enumerated above
-	assert(
+	s.check(
 		recoveryOrigins.every((o) => isLocalStringOrigin(o)),
 		"all enumerated recovery origins are in LOCAL_REPAIR_ORIGINS",
 	);
@@ -140,17 +130,17 @@ console.log("\n--- Test 1: all recovery origins are classified local (no diskMir
 
 // ── Test 2: provider origin schedules writeback ──────────────────────────────
 
-console.log("\n--- Test 2: provider (remote) origin triggers diskMirror writeback ---");
+s.section("Test 2: provider (remote) origin triggers diskMirror writeback");
 {
-	assert(
+	s.check(
 		diskMirrorDecision(FAKE_PROVIDER, FAKE_PROVIDER) === "schedule-write",
 		"provider-origin transaction → diskMirror schedules writeback",
 	);
-	assert(
+	s.check(
 		diskMirrorDecision("not-a-known-origin", FAKE_PROVIDER) === "schedule-write",
 		"unknown string origin → diskMirror schedules writeback (not silently local)",
 	);
-	assert(
+	s.check(
 		diskMirrorDecision(null, FAKE_PROVIDER) === "skip",
 		"null origin (local transact() without origin) → skip",
 	);
@@ -158,7 +148,7 @@ console.log("\n--- Test 2: provider (remote) origin triggers diskMirror writebac
 
 // ── Test 3: disk recovery wins over stale CRDT ───────────────────────────────
 
-console.log("\n--- Test 3: disk recovery sets CRDT to disk content ---");
+s.section("Test 3: disk recovery sets CRDT to disk content");
 {
 	const staleCrdt = "stale CRDT content from before external edit";
 	const diskContent = "fresh disk content after external editor saved it";
@@ -166,14 +156,14 @@ console.log("\n--- Test 3: disk recovery sets CRDT to disk content ---");
 	const { doc, ytext } = makeText(staleCrdt);
 	applyDiffToYText(ytext, staleCrdt, diskContent, ORIGIN_DISK_SYNC_RECOVER_BOUND);
 
-	assert(ytext.toString() === diskContent, "CRDT reflects disk content after recovery");
-	assert(ytext.toString() !== staleCrdt, "stale CRDT content is gone");
+	s.check(ytext.toString() === diskContent, "CRDT reflects disk content after recovery");
+	s.check(ytext.toString() !== staleCrdt, "stale CRDT content is gone");
 	doc.destroy();
 }
 
 // ── Test 4: recovery is idempotent (second pass is no-op) ────────────────────
 
-console.log("\n--- Test 4: second recovery pass produces no delta (amplifier loop is dead) ---");
+s.section("Test 4: second recovery pass produces no delta (amplifier loop is dead)");
 {
 	const staleCrdt = "---\nfrontmatter: old\n---\nbody text\n";
 	const diskContent = "---\nfrontmatter: new\n---\nbody text\n";
@@ -184,29 +174,29 @@ console.log("\n--- Test 4: second recovery pass produces no delta (amplifier loo
 	const sv1 = Y.encodeStateVector(doc);
 	applyDiffToYText(ytext, staleCrdt, diskContent, ORIGIN_DISK_SYNC_RECOVER_BOUND);
 
-	assert(hasChangeSince(doc, sv1), "first recovery pass advances state vector (content changed)");
-	assert(ytext.toString() === diskContent, "first recovery sets correct content");
+	s.check(hasChangeSince(doc, sv1), "first recovery pass advances state vector (content changed)");
+	s.check(ytext.toString() === diskContent, "first recovery sets correct content");
 
 	// Second pass: same content → applyDiffToYText returns early (oldText === newText)
 	// → no transaction, state vector unchanged → idempotent, loop cannot start
 	const sv2 = Y.encodeStateVector(doc);
 	applyDiffToYText(ytext, diskContent, diskContent, ORIGIN_DISK_SYNC_RECOVER_BOUND);
 
-	assert(noChangeSince(doc, sv2), "second recovery pass leaves state vector unchanged (no-op)");
-	assert(ytext.toString() === diskContent, "content unchanged after second pass");
+	s.check(noChangeSince(doc, sv2), "second recovery pass leaves state vector unchanged (no-op)");
+	s.check(ytext.toString() === diskContent, "content unchanged after second pass");
 
 	// Third pass: just to be sure
 	const sv3 = Y.encodeStateVector(doc);
 	applyDiffToYText(ytext, diskContent, diskContent, ORIGIN_DISK_SYNC_RECOVER_BOUND);
 
-	assert(noChangeSince(doc, sv3), "third recovery pass is also a no-op");
+	s.check(noChangeSince(doc, sv3), "third recovery pass is also a no-op");
 
 	doc.destroy();
 }
 
 // ── Test 5: three-authority scenario — disk wins, repair is no-op ────────────
 
-console.log("\n--- Test 5: three-authority scenario (disk / CRDT / editor) ---");
+s.section("Test 5: three-authority scenario (disk / CRDT / editor)");
 {
 	// The scenario that triggered real user reports:
 	//   disk    = "A" (user just saved externally)
@@ -224,26 +214,26 @@ console.log("\n--- Test 5: three-authority scenario (disk / CRDT / editor) ---")
 
 	// Step 1: recovery applies disk content to CRDT
 	applyDiffToYText(ytext, staleCrdt, diskContent, ORIGIN_DISK_SYNC_RECOVER_BOUND);
-	assert(ytext.toString() === diskContent, "after recovery: CRDT = disk content");
+	s.check(ytext.toString() === diskContent, "after recovery: CRDT = disk content");
 
 	// Step 2: repair path — CRDT content would be pushed to editor view.
 	// Repair does NOT change Y.Text; it updates the CM6 editor to match.
 	// Simulate: "editor is now updated to crdtContent" (no Y.Text write).
 	const updatedEditorContent = ytext.toString(); // editor now shows disk content
-	assert(updatedEditorContent === diskContent, "repair path: editor updated to match CRDT");
+	s.check(updatedEditorContent === diskContent, "repair path: editor updated to match CRDT");
 
 	// Step 3: a second recovery with the same disk content is a no-op
 	const sv = Y.encodeStateVector(doc);
 	applyDiffToYText(ytext, diskContent, diskContent, ORIGIN_DISK_SYNC_RECOVER_BOUND);
-	assert(noChangeSince(doc, sv), "second recovery after repair is still a no-op");
-	assert(ytext.toString() === diskContent, "CRDT still holds disk content after repair+recovery");
+	s.check(noChangeSince(doc, sv), "second recovery after repair is still a no-op");
+	s.check(ytext.toString() === diskContent, "CRDT still holds disk content after repair+recovery");
 
 	doc.destroy();
 }
 
 // ── Test 6: documenting the heal() contamination — why repair() must be used ─
 
-console.log("\n--- Test 6: heal() contamination documents the amplifier class ---");
+s.section("Test 6: heal() contamination documents the amplifier class");
 {
 	// This test deliberately shows what HAPPENS if the wrong path (heal: editor→CRDT)
 	// is taken instead of the correct path (repair: CRDT→editor). It proves the
@@ -259,13 +249,13 @@ console.log("\n--- Test 6: heal() contamination documents the amplifier class --
 	// Correct path: disk recovery + repair (CRDT→editor)
 	applyDiffToYText(ytextCorrect, staleCrdt,    diskContent,   ORIGIN_DISK_SYNC_RECOVER_BOUND);
 	// "repair()" would push ytextCorrect.toString() to editor view — no Y.Text write.
-	assert(ytextCorrect.toString() === diskContent, "correct path: CRDT = disk after recovery");
+	s.check(ytextCorrect.toString() === diskContent, "correct path: CRDT = disk after recovery");
 
 	// Buggy path: disk recovery + heal (editor→CRDT) — the amplifier
 	applyDiffToYText(ytextBug, staleCrdt,    diskContent,   ORIGIN_DISK_SYNC_RECOVER_BOUND);
 	applyDiffToYText(ytextBug, diskContent,  editorContent, ORIGIN_EDITOR_HEALTH_HEAL);
-	assert(ytextBug.toString() === editorContent, "buggy heal() path overwrites disk recovery with editor content");
-	assert(ytextBug.toString() !== diskContent,   "buggy heal() path destroys disk authority");
+	s.check(ytextBug.toString() === editorContent, "buggy heal() path overwrites disk recovery with editor content");
+	s.check(ytextBug.toString() !== diskContent,   "buggy heal() path destroys disk authority");
 
 	// Critically: after heal() ran and wrote editorContent to CRDT via ORIGIN_EDITOR_HEALTH_HEAL,
 	// the diskMirror classifies ORIGIN_EDITOR_HEALTH_HEAL as LOCAL (Phase 1.1 fix),
@@ -273,7 +263,7 @@ console.log("\n--- Test 6: heal() contamination documents the amplifier class --
 	// BUT: this does not make heal() safe. Calling heal() in a recovery cycle is still
 	// a correctness bug — it overwrites disk authority with stale editor content.
 	// "No disk-write loop" ≠ "no corruption." The fix is using repair() instead of heal().
-	assert(
+	s.check(
 		diskMirrorDecision(ORIGIN_EDITOR_HEALTH_HEAL, FAKE_PROVIDER) === "skip",
 		"even the buggy heal() origin is local — diskMirror does not loop on it",
 	);
@@ -284,7 +274,7 @@ console.log("\n--- Test 6: heal() contamination documents the amplifier class --
 
 // ── Test 7: recovery amplifier loop can't start — diskMirror skips all phases ─
 
-console.log("\n--- Test 7: simulated observer loop — recovery never triggers a write cycle ---");
+s.section("Test 7: simulated observer loop — recovery never triggers a write cycle");
 {
 	// Simulate what happens in a recovery cycle at the observer level:
 	//  1. Provider applies remote update (REMOTE → diskMirror schedules write)
@@ -322,22 +312,22 @@ console.log("\n--- Test 7: simulated observer loop — recovery never triggers a
 	applyDiffToYText(ytext, diskContent, diskContent, ORIGIN_DISK_SYNC_RECOVER_BOUND);
 
 	// Only the provider remote update should have triggered a write
-	assert(
+	s.check(
 		writes.filter((w) => w === "(object)").length === 1,
 		"exactly one write scheduled — for the remote provider update",
 	);
-	assert(
+	s.check(
 		writes.filter((w) => w === ORIGIN_DISK_SYNC_RECOVER_BOUND).length === 0,
 		"recovery origin never triggers a write — amplifier loop cannot start",
 	);
-	assert(ytext.toString() === diskContent, "CRDT holds disk content after simulated recovery cycle");
+	s.check(ytext.toString() === diskContent, "CRDT holds disk content after simulated recovery cycle");
 
 	doc.destroy();
 }
 
 // ── Test 8: all repair origins survive repeated cycles without growing ────────
 
-console.log("\n--- Test 8: repeated recovery cycles across all repair origins stay bounded ---");
+s.section("Test 8: repeated recovery cycles across all repair origins stay bounded");
 {
 	const initial = "initial content";
 	const target  = "target content after recovery";
@@ -355,8 +345,8 @@ console.log("\n--- Test 8: repeated recovery cycles across all repair origins st
 			current = ytext.toString();
 		}
 
-		assert(ytext.toString() === target, `repeated recovery via "${origin}" converges to target`);
-		assert(
+		s.check(ytext.toString() === target, `repeated recovery via "${origin}" converges to target`);
+		s.check(
 			ytext.toString().length === target.length,
 			`"${origin}" does not grow content over 10 cycles`,
 		);
@@ -366,7 +356,7 @@ console.log("\n--- Test 8: repeated recovery cycles across all repair origins st
 
 // ── Test 9: controller-shaped recovery picks one authority and second pass no-ops
 
-console.log("\n--- Test 9: controller-shaped disk/CRDT/editor recovery is stable ---");
+s.section("Test 9: controller-shaped disk/CRDT/editor recovery is stable");
 {
 	const diskInitial = "# Disk authority\nSaved externally.";
 	const crdtInitial = "# Old CRDT\nBefore external save.";
@@ -401,27 +391,20 @@ console.log("\n--- Test 9: controller-shaped disk/CRDT/editor recovery is stable
 	}
 
 	reconcileOnce();
-	assert(ytext.toString() === diskInitial, "first pass: CRDT adopts disk authority");
-	assert(editor === diskInitial, "first pass: editor repaired from CRDT/disk authority");
-	assert(repairCount === 1, "first pass: repair path used once");
-	assert(noActionCount === 0, "first pass: no-op path not reached yet");
-	assert(scheduledWrites.length === 0, "first pass: recovery origin schedules no disk write");
+	s.check(ytext.toString() === diskInitial, "first pass: CRDT adopts disk authority");
+	s.check(editor === diskInitial, "first pass: editor repaired from CRDT/disk authority");
+	s.check(repairCount === 1, "first pass: repair path used once");
+	s.check(noActionCount === 0, "first pass: no-op path not reached yet");
+	s.check(scheduledWrites.length === 0, "first pass: recovery origin schedules no disk write");
 
 	const svAfterFirstPass = Y.encodeStateVector(doc);
 	reconcileOnce();
-	assert(noChangeSince(doc, svAfterFirstPass), "second pass: CRDT state vector unchanged");
-	assert(editor === disk, "second pass: editor remains aligned");
-	assert(repairCount === 1, "second pass: no extra repair");
-	assert(noActionCount === 1, "second pass: no-op path reached without CRDT mutation");
-	assert(scheduledWrites.length === 0, "second pass: still no disk write scheduled");
+	s.check(noChangeSince(doc, svAfterFirstPass), "second pass: CRDT state vector unchanged");
+	s.check(editor === disk, "second pass: editor remains aligned");
+	s.check(repairCount === 1, "second pass: no extra repair");
+	s.check(noActionCount === 1, "second pass: no-op path reached without CRDT mutation");
+	s.check(scheduledWrites.length === 0, "second pass: still no disk write scheduled");
 
 	doc.destroy();
 }
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

@@ -9,21 +9,9 @@ import {
 	parsePrepareVaultArgs,
 	prepareVault,
 } from "../../qa/scripts/prepare-vault-lib";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-async function test(name: string, body: () => Promise<void>): Promise<void> {
-	try {
-		await body();
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} catch (error) {
-		console.error(`  FAIL  ${name}`);
-		console.error(error);
-		failed++;
-	}
-}
+const s = suite("prepare-vault");
 
 async function expectPrepareError(action: () => Promise<unknown>, includes: string): Promise<void> {
 	await assert.rejects(action, (error: unknown) =>
@@ -75,16 +63,16 @@ function containsMarkdownLeafOrFilePath(value: unknown): boolean {
 	});
 }
 
-console.log("\n--- QA vault preparation regressions ---");
+s.section("QA vault preparation regressions");
 
-await test("rejects --clean before any filesystem mutation", async () => {
+s.test("rejects --clean before any filesystem mutation", async () => {
 	assert.throws(
 		() => parsePrepareVaultArgs(["--fixture", "001-known", "--dest", "/tmp/new-vault", "--clean"]),
 		(error: unknown) => error instanceof PrepareVaultError && error.message.includes("never deletes"),
 	);
 });
 
-await test("never merges into or overwrites existing destinations", async () => {
+s.test("never merges into or overwrites existing destinations", async () => {
 	const { paths, vaultParent } = await makeLayout();
 	const destination = join(vaultParent, "already-there");
 	const sibling = join(vaultParent, "unrelated-sibling.txt");
@@ -114,7 +102,7 @@ await test("never merges into or overwrites existing destinations", async () => 
 	);
 });
 
-await test("rejects traversal and path-like fixture IDs without creating a destination", async () => {
+s.test("rejects traversal and path-like fixture IDs without creating a destination", async () => {
 	const { paths, vaultParent } = await makeLayout();
 	const traversalDestination = join(vaultParent, "traversal-target");
 	await expectPrepareError(
@@ -131,7 +119,7 @@ await test("rejects traversal and path-like fixture IDs without creating a desti
 	await assert.rejects(async () => readFile(pathLikeDestination), { code: "ENOENT" });
 });
 
-await test("writes the checked-in blank workspace bytes without file state or vault paths", async () => {
+s.test("writes the checked-in blank workspace bytes without file state or vault paths", async () => {
 	const { paths, vaultParent, workspaceBytes } = await makeLayout();
 	const destination = join(vaultParent, "workspace-vault");
 	await prepareVault({ fixture: "001-known", dest: destination }, paths);
@@ -145,7 +133,7 @@ await test("writes the checked-in blank workspace bytes without file state or va
 	assert.equal(containsMarkdownLeafOrFilePath(workspace), false);
 });
 
-await test("creates fresh random vault IDs while keeping plugin order deterministic", async () => {
+s.test("creates fresh random vault IDs while keeping plugin order deterministic", async () => {
 	const { paths, vaultParent } = await makeLayout();
 	const first = await prepareVault({ fixture: "001-known", dest: join(vaultParent, "first") }, paths);
 	const second = await prepareVault({ fixture: "001-known", dest: join(vaultParent, "second") }, paths);
@@ -158,6 +146,4 @@ await test("creates fresh random vault IDs while keeping plugin order determinis
 	assert.equal(firstSettings.vaultId, first.vaultId);
 	assert.deepEqual(enabledPlugins, ["yaos", "yaos-qa-harness"]);
 });
-
-console.log(`\nResults: ${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

@@ -30,6 +30,7 @@ import {
 	SERVER_MAX_SCHEMA_VERSION,
 	SERVER_MIN_SCHEMA_VERSION,
 } from "../../server/src/version";
+import { suite } from "../harness.ts";
 
 // The single schema version the server admits. Every request in this suite that
 // is meant to reach the room must declare it, or it is refused at admission
@@ -40,21 +41,10 @@ const PINNED_SCHEMA_VERSION = SERVER_MAX_SCHEMA_VERSION;
 // Helpers
 // ---------------------------------------------------------------------------
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("ws-ticket-auth");
 
 function assertEqual(actual: unknown, expected: unknown, msg: string): void {
-	assert(
+	s.check(
 		actual === expected,
 		`${msg} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`,
 	);
@@ -89,41 +79,41 @@ function makeTrapEnv(extra: Partial<Env> = {}): Env {
 // createTicket / verifyTicket round-trip
 // ---------------------------------------------------------------------------
 
-console.log("\n--- createTicket / verifyTicket: round-trip (env mode) ---");
+s.section("createTicket / verifyTicket: round-trip (env mode)");
 {
 	const { ticket, expiresAt } = await createTicket(ENV_AUTH, VAULT_ID);
 
-	assert(typeof ticket === "string" && ticket.includes("."), "ticket is a dot-separated string");
-	assert(expiresAt > Date.now(), "expiresAt is in the future");
-	assert(expiresAt <= Date.now() + TICKET_TTL_MS + 1000, "expiresAt within TTL");
+	s.check(typeof ticket === "string" && ticket.includes("."), "ticket is a dot-separated string");
+	s.check(expiresAt > Date.now(), "expiresAt is in the future");
+	s.check(expiresAt <= Date.now() + TICKET_TTL_MS + 1000, "expiresAt within TTL");
 
 	const valid = await verifyTicket(ticket, ENV_AUTH, VAULT_ID);
-	assert(valid, "valid ticket verifies correctly");
+	s.check(valid, "valid ticket verifies correctly");
 }
 
-console.log("\n--- createTicket / verifyTicket: round-trip (claim mode) ---");
+s.section("createTicket / verifyTicket: round-trip (claim mode)");
 {
 	const { ticket } = await createTicket(CLAIM_AUTH, VAULT_ID);
 	const valid = await verifyTicket(ticket, CLAIM_AUTH, VAULT_ID);
-	assert(valid, "claim-mode ticket verifies correctly");
+	s.check(valid, "claim-mode ticket verifies correctly");
 }
 
-console.log("\n--- verifyTicket: expired ticket is rejected ---");
+s.section("verifyTicket: expired ticket is rejected");
 {
 	// Create a ticket that expires immediately.
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID, -1);
 	const valid = await verifyTicket(ticket, ENV_AUTH, VAULT_ID);
-	assert(!valid, "expired ticket (ttlMs=-1) is rejected");
+	s.check(!valid, "expired ticket (ttlMs=-1) is rejected");
 }
 
-console.log("\n--- verifyTicket: wrong vaultId is rejected ---");
+s.section("verifyTicket: wrong vaultId is rejected");
 {
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 	const valid = await verifyTicket(ticket, ENV_AUTH, OTHER_VAULT_ID);
-	assert(!valid, "ticket for VAULT_ID does not validate for OTHER_VAULT_ID");
+	s.check(!valid, "ticket for VAULT_ID does not validate for OTHER_VAULT_ID");
 }
 
-console.log("\n--- verifyTicket: tampered payload is rejected ---");
+s.section("verifyTicket: tampered payload is rejected");
 {
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 	const [payload, sig] = ticket.split(".");
@@ -131,10 +121,10 @@ console.log("\n--- verifyTicket: tampered payload is rejected ---");
 	const tamperedPayload = payload!.slice(0, -1) + (payload!.endsWith("a") ? "b" : "a");
 	const tampered = `${tamperedPayload}.${sig}`;
 	const valid = await verifyTicket(tampered, ENV_AUTH, VAULT_ID);
-	assert(!valid, "tampered payload is rejected");
+	s.check(!valid, "tampered payload is rejected");
 }
 
-console.log("\n--- verifyTicket: tampered signature is rejected ---");
+s.section("verifyTicket: tampered signature is rejected");
 {
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 	const [payload, sig] = ticket.split(".");
@@ -146,18 +136,18 @@ console.log("\n--- verifyTicket: tampered signature is rejected ---");
 	const tamperedSig = sig!.slice(0, idx) + (sig![idx] === "a" ? "b" : "a") + sig!.slice(idx + 1);
 	const tampered = `${payload}.${tamperedSig}`;
 	const valid = await verifyTicket(tampered, ENV_AUTH, VAULT_ID);
-	assert(!valid, "tampered signature is rejected");
+	s.check(!valid, "tampered signature is rejected");
 }
 
-console.log("\n--- verifyTicket: wrong auth secret is rejected ---");
+s.section("verifyTicket: wrong auth secret is rejected");
 {
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 	const wrongAuth: AuthState = { mode: "env", claimed: true, envToken: "different-secret" };
 	const valid = await verifyTicket(ticket, wrongAuth, VAULT_ID);
-	assert(!valid, "ticket signed with one secret does not verify under a different secret");
+	s.check(!valid, "ticket signed with one secret does not verify under a different secret");
 }
 
-console.log("\n--- verifyTicket: malformed ticket strings are rejected ---");
+s.section("verifyTicket: malformed ticket strings are rejected");
 {
 	const cases: [string, string][] = [
 		["", "empty string"],
@@ -168,7 +158,7 @@ console.log("\n--- verifyTicket: malformed ticket strings are rejected ---");
 	];
 	for (const [input, label] of cases) {
 		const valid = await verifyTicket(input, ENV_AUTH, VAULT_ID);
-		assert(!valid, `${label} → rejected`);
+		s.check(!valid, `${label} → rejected`);
 	}
 }
 
@@ -176,7 +166,7 @@ console.log("\n--- verifyTicket: malformed ticket strings are rejected ---");
 // handleTicketRoute HTTP handler
 // ---------------------------------------------------------------------------
 
-console.log("\n--- handleTicketRoute: issues ticket for authenticated caller ---");
+s.section("handleTicketRoute: issues ticket for authenticated caller");
 {
 	const req = new Request("https://example.test/vault/test-vault/auth/ticket", {
 		method: "POST",
@@ -184,19 +174,19 @@ console.log("\n--- handleTicketRoute: issues ticket for authenticated caller ---
 	const res = await handleTicketRoute(req, ENV_AUTH, VAULT_ID, json);
 	assertEqual(res.status, 200, "ticket route returns 200");
 	const body = await res.json() as { ticket?: unknown; expiresAt?: unknown; ttlMs?: unknown };
-	assert(typeof body.ticket === "string", "response includes ticket string");
-	assert(typeof body.expiresAt === "number", "response includes expiresAt number");
-	assert(typeof body.ttlMs === "number", "response includes ttlMs number");
+	s.check(typeof body.ticket === "string", "response includes ticket string");
+	s.check(typeof body.expiresAt === "number", "response includes expiresAt number");
+	s.check(typeof body.ttlMs === "number", "response includes ttlMs number");
 	// Verify the issued ticket is actually valid.
 	const valid = await verifyTicket(body.ticket as string, ENV_AUTH, VAULT_ID);
-	assert(valid, "issued ticket verifies correctly");
+	s.check(valid, "issued ticket verifies correctly");
 }
 
 // ---------------------------------------------------------------------------
 // WebSocket route: ticket path (pre-DO-wake invariant)
 // ---------------------------------------------------------------------------
 
-console.log("\n--- WS route: valid ticket passes auth gate (does not produce 401/503) ---");
+s.section("WS route: valid ticket passes auth gate (does not produce 401/503)");
 {
 	// The test harness mocks partyserver.getServerByName to throw with
 	// "INV-SEC-01 violation" on any DO access.  For a *valid* ticket, auth
@@ -229,10 +219,10 @@ console.log("\n--- WS route: valid ticket passes auth gate (does not produce 401
 			throw err; // genuinely unexpected — re-throw
 		}
 	}
-	assert(!authGateRejected, "valid ticket is not rejected at the auth gate");
+	s.check(!authGateRejected, "valid ticket is not rejected at the auth gate");
 }
 
-console.log("\n--- WS route: expired ticket rejected before DO wake ---");
+s.section("WS route: expired ticket rejected before DO wake");
 {
 	const trapEnv = makeTrapEnv();
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID, -1);
@@ -248,12 +238,12 @@ console.log("\n--- WS route: expired ticket rejected before DO wake ---");
 		assertEqual(res.status, 401, "expired ticket returns 401");
 	} catch (err) {
 		doTouched = true;
-		assert(false, `DO was touched before auth (threw: ${String(err)})`);
+		s.check(false, `DO was touched before auth (threw: ${String(err)})`);
 	}
-	assert(!doTouched, "expired ticket: DO namespace not touched");
+	s.check(!doTouched, "expired ticket: DO namespace not touched");
 }
 
-console.log("\n--- WS route: tampered ticket rejected before DO wake ---");
+s.section("WS route: tampered ticket rejected before DO wake");
 {
 	const trapEnv = makeTrapEnv();
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
@@ -270,12 +260,12 @@ console.log("\n--- WS route: tampered ticket rejected before DO wake ---");
 		assertEqual(res.status, 401, "tampered ticket returns 401");
 	} catch {
 		doTouched = true;
-		assert(false, "DO was touched for tampered ticket");
+		s.check(false, "DO was touched for tampered ticket");
 	}
-	assert(!doTouched, "tampered ticket: DO namespace not touched");
+	s.check(!doTouched, "tampered ticket: DO namespace not touched");
 }
 
-console.log("\n--- WS route: ticket for wrong vaultId rejected before DO wake ---");
+s.section("WS route: ticket for wrong vaultId rejected before DO wake");
 {
 	const trapEnv = makeTrapEnv();
 	const { ticket } = await createTicket(ENV_AUTH, OTHER_VAULT_ID);
@@ -289,12 +279,12 @@ console.log("\n--- WS route: ticket for wrong vaultId rejected before DO wake --
 		assertEqual(res.status, 401, "wrong-vault ticket returns 401");
 	} catch {
 		doTouched = true;
-		assert(false, "DO was touched for wrong-vault ticket");
+		s.check(false, "DO was touched for wrong-vault ticket");
 	}
-	assert(!doTouched, "wrong-vault ticket: DO namespace not touched");
+	s.check(!doTouched, "wrong-vault ticket: DO namespace not touched");
 }
 
-console.log("\n--- WS route: legacy ?token= still accepted (migration path) ---");
+s.section("WS route: legacy ?token= still accepted (migration path)");
 {
 	// Same harness constraint: partyserver throws post-auth.  Call
 	// handleSyncSocketRoute directly and catch the expected throw.
@@ -319,10 +309,10 @@ console.log("\n--- WS route: legacy ?token= still accepted (migration path) ---"
 			throw err;
 		}
 	}
-	assert(!authGateRejected, "legacy ?token= passes auth gate (migration path)");
+	s.check(!authGateRejected, "legacy ?token= passes auth gate (migration path)");
 }
 
-console.log("\n--- WS route: no ticket and no token → rejected before DO wake ---");
+s.section("WS route: no ticket and no token → rejected before DO wake");
 {
 	const trapEnv = makeTrapEnv();
 	const req = new Request(
@@ -335,12 +325,12 @@ console.log("\n--- WS route: no ticket and no token → rejected before DO wake 
 		assertEqual(res.status, 401, "no auth → 401");
 	} catch {
 		doTouched = true;
-		assert(false, "DO was touched for unauthenticated request");
+		s.check(false, "DO was touched for unauthenticated request");
 	}
-	assert(!doTouched, "no auth: DO namespace not touched");
+	s.check(!doTouched, "no auth: DO namespace not touched");
 }
 
-console.log("\n--- WS route: the pinned schema is enforced by equality and never probes a Durable Object ---");
+s.section("WS route: the pinned schema is enforced by equality and never probes a Durable Object");
 {
 	assertEqual(
 		SERVER_MIN_SCHEMA_VERSION,
@@ -388,7 +378,7 @@ console.log("\n--- WS route: the pinned schema is enforced by equality and never
 		assertEqual(unauthenticated.status, 401, `unauthenticated schema v${schemaVersion} returns 401, not 426`);
 		const unauthenticatedBody = await unauthenticated.json() as Record<string, unknown>;
 		assertEqual(unauthenticatedBody.error, "unauthorized", "authentication rejection takes precedence over the schema pin");
-		assert(!("reason" in unauthenticatedBody), "unauthenticated rejection does not disclose schema-pin details");
+		s.check(!("reason" in unauthenticatedBody), "unauthenticated rejection does not disclose schema-pin details");
 		assertEqual(
 			getGetServerByNameCallCount(),
 			0,
@@ -397,7 +387,7 @@ console.log("\n--- WS route: the pinned schema is enforced by equality and never
 	}
 }
 
-console.log("\n--- WS route: an undeclared schema is rejected, never defaulted to a legacy version ---");
+s.section("WS route: an undeclared schema is rejected, never defaulted to a legacy version");
 {
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 	const undeclaredRequests = [
@@ -431,60 +421,60 @@ console.log("\n--- WS route: an undeclared schema is rejected, never defaulted t
 // authenticateSocketRequest — pure auth helper
 // ---------------------------------------------------------------------------
 
-console.log("\n--- authenticateSocketRequest: valid ticket → ok, method: ticket ---");
+s.section("authenticateSocketRequest: valid ticket → ok, method: ticket");
 {
 	const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 	const result = await authenticateSocketRequest(ticket, null, ENV_AUTH, VAULT_ID, false);
-	assert(result.ok, "valid ticket → ok");
-	assert(result.ok && result.method === "ticket", "valid ticket → method is ticket");
+	s.check(result.ok, "valid ticket → ok");
+	s.check(result.ok && result.method === "ticket", "valid ticket → method is ticket");
 }
 
-console.log("\n--- authenticateSocketRequest: invalid ticket → not ok, unauthorized ---");
+s.section("authenticateSocketRequest: invalid ticket → not ok, unauthorized");
 {
 	const result = await authenticateSocketRequest("bad.ticket", null, ENV_AUTH, VAULT_ID, false);
-	assert(!result.ok, "bad ticket → not ok");
-	assert(!result.ok && result.reason === "unauthorized", "bad ticket → reason unauthorized");
+	s.check(!result.ok, "bad ticket → not ok");
+	s.check(!result.ok && result.reason === "unauthorized", "bad ticket → reason unauthorized");
 }
 
-console.log("\n--- authenticateSocketRequest: no ticket, valid token → ok, method: legacy-token ---");
+s.section("authenticateSocketRequest: no ticket, valid token → ok, method: legacy-token");
 {
 	const result = await authenticateSocketRequest(null, ENV_AUTH.envToken, ENV_AUTH, VAULT_ID, false);
-	assert(result.ok, "valid token → ok");
-	assert(result.ok && result.method === "legacy-token", "valid token → method is legacy-token");
+	s.check(result.ok, "valid token → ok");
+	s.check(result.ok && result.method === "legacy-token", "valid token → method is legacy-token");
 }
 
-console.log("\n--- authenticateSocketRequest: no ticket, invalid token → not ok ---");
+s.section("authenticateSocketRequest: no ticket, invalid token → not ok");
 {
 	const result = await authenticateSocketRequest(null, "wrong-token", ENV_AUTH, VAULT_ID, false);
-	assert(!result.ok, "wrong token → not ok");
+	s.check(!result.ok, "wrong token → not ok");
 }
 
-console.log("\n--- authenticateSocketRequest: no ticket, valid token, legacy disabled → not ok ---");
+s.section("authenticateSocketRequest: no ticket, valid token, legacy disabled → not ok");
 {
 	const result = await authenticateSocketRequest(null, ENV_AUTH.envToken, ENV_AUTH, VAULT_ID, true);
-	assert(!result.ok, "legacy disabled → not ok even with valid token");
-	assert(!result.ok && result.reason === "unauthorized", "legacy disabled → reason unauthorized");
+	s.check(!result.ok, "legacy disabled → not ok even with valid token");
+	s.check(!result.ok && result.reason === "unauthorized", "legacy disabled → reason unauthorized");
 }
 
-console.log("\n--- authenticateSocketRequest: unclaimed server → not ok, unclaimed ---");
+s.section("authenticateSocketRequest: unclaimed server → not ok, unclaimed");
 {
 	const unclaimed: AuthState = { mode: "unclaimed", claimed: false };
 	const result = await authenticateSocketRequest(null, "token", unclaimed, VAULT_ID, false);
-	assert(!result.ok && result.reason === "unclaimed", "unclaimed server → reason unclaimed");
+	s.check(!result.ok && result.reason === "unclaimed", "unclaimed server → reason unclaimed");
 }
 
-console.log("\n--- authenticateSocketRequest: server_misconfigured → not ok ---");
+s.section("authenticateSocketRequest: server_misconfigured → not ok");
 {
 	const misconfigured: AuthState = { mode: "env", claimed: true, envToken: "" };
 	const result = await authenticateSocketRequest(null, "token", misconfigured, VAULT_ID, false);
-	assert(!result.ok && result.reason === "server_misconfigured", "empty envToken → server_misconfigured");
+	s.check(!result.ok && result.reason === "server_misconfigured", "empty envToken → server_misconfigured");
 }
 
 // ---------------------------------------------------------------------------
 // Legacy disable switch (YAOS_DISABLE_LEGACY_WS_TOKEN)
 // ---------------------------------------------------------------------------
 
-console.log("\n--- WS route: legacy ?token= rejected when YAOS_DISABLE_LEGACY_WS_TOKEN is set ---");
+s.section("WS route: legacy ?token= rejected when YAOS_DISABLE_LEGACY_WS_TOKEN is set");
 {
 	const trapEnv = makeTrapEnv({ YAOS_DISABLE_LEGACY_WS_TOKEN: "true" });
 	const req = new Request(
@@ -497,12 +487,12 @@ console.log("\n--- WS route: legacy ?token= rejected when YAOS_DISABLE_LEGACY_WS
 		assertEqual(res.status, 401, "legacy token rejected when disable flag is set");
 	} catch {
 		doTouched = true;
-		assert(false, "DO touched when legacy token disabled");
+		s.check(false, "DO touched when legacy token disabled");
 	}
-	assert(!doTouched, "legacy-disabled rejection: DO not touched");
+	s.check(!doTouched, "legacy-disabled rejection: DO not touched");
 }
 
-console.log("\n--- WS route: legacy warning logged on successful legacy auth ---");
+s.section("WS route: legacy warning logged on successful legacy auth");
 {
 	// Call handleSyncSocketRoute directly with a valid legacy token.
 	// The warning fires inside the route after auth succeeds.
@@ -535,11 +525,11 @@ console.log("\n--- WS route: legacy warning logged on successful legacy auth ---
 		console.warn = originalWarn;
 	}
 
-	assert(
+	s.check(
 		warnMessages.some((m) => m.includes("legacy") && m.includes("?token=")),
 		"route emits legacy ?token= warning on successful legacy auth",
 	);
-	assert(
+	s.check(
 		!warnMessages.some((m) => m.includes(ENV_AUTH.envToken)),
 		"legacy warning does not leak the actual token value",
 	);
@@ -549,43 +539,43 @@ console.log("\n--- WS route: legacy warning logged on successful legacy auth ---
 // isTicketEndpointUnsupported — classifies errors correctly
 // ---------------------------------------------------------------------------
 
-console.log("\n--- isTicketEndpointUnsupported: 404/405/501 → true ---");
+s.section("isTicketEndpointUnsupported: 404/405/501 → true");
 {
-	assert(isTicketEndpointUnsupported(new SocketTicketHttpError(404)), "404 → unsupported");
-	assert(isTicketEndpointUnsupported(new SocketTicketHttpError(405)), "405 → unsupported");
-	assert(isTicketEndpointUnsupported(new SocketTicketHttpError(501)), "501 → unsupported");
+	s.check(isTicketEndpointUnsupported(new SocketTicketHttpError(404)), "404 → unsupported");
+	s.check(isTicketEndpointUnsupported(new SocketTicketHttpError(405)), "405 → unsupported");
+	s.check(isTicketEndpointUnsupported(new SocketTicketHttpError(501)), "501 → unsupported");
 }
 
-console.log("\n--- isTicketEndpointUnsupported: 401/403/500/network → false ---");
+s.section("isTicketEndpointUnsupported: 401/403/500/network → false");
 {
-	assert(!isTicketEndpointUnsupported(new SocketTicketHttpError(401)), "401 → not unsupported (auth failure)");
-	assert(!isTicketEndpointUnsupported(new SocketTicketHttpError(403)), "403 → not unsupported");
-	assert(!isTicketEndpointUnsupported(new SocketTicketHttpError(500)), "500 → not unsupported (server error)");
-	assert(!isTicketEndpointUnsupported(new Error("fetch failed")), "plain Error → not unsupported");
-	assert(!isTicketEndpointUnsupported(new Error("socket ticket response malformed")), "malformed response → not unsupported");
+	s.check(!isTicketEndpointUnsupported(new SocketTicketHttpError(401)), "401 → not unsupported (auth failure)");
+	s.check(!isTicketEndpointUnsupported(new SocketTicketHttpError(403)), "403 → not unsupported");
+	s.check(!isTicketEndpointUnsupported(new SocketTicketHttpError(500)), "500 → not unsupported (server error)");
+	s.check(!isTicketEndpointUnsupported(new Error("fetch failed")), "plain Error → not unsupported");
+	s.check(!isTicketEndpointUnsupported(new Error("socket ticket response malformed")), "malformed response → not unsupported");
 	// Crucially: a plain Error with '(404)' in the message is NOT matched —
 	// only SocketTicketHttpError instances are treated as typed signals.
-	assert(!isTicketEndpointUnsupported(new Error("socket ticket request failed (404)")), "plain Error with (404) → not unsupported (must be typed)");
+	s.check(!isTicketEndpointUnsupported(new Error("socket ticket request failed (404)")), "plain Error with (404) → not unsupported (must be typed)");
 }
 
 // ---------------------------------------------------------------------------
 // patchTicketInUrl — URL manipulation for proactive refresh
 // ---------------------------------------------------------------------------
 
-console.log("\n--- patchTicketInUrl: replaces ticket, removes token, preserves other params ---");
+s.section("patchTicketInUrl: replaces ticket, removes token, preserves other params");
 {
 	const original = "wss://example.test/vault/sync/vaultA?_pk=abc123&ticket=OLD_TICKET&schemaVersion=2&device=mydevice";
 	const patched = patchTicketInUrl(original, "NEW_TICKET");
 	const u = new URL(patched);
 
 	assertEqual(u.searchParams.get("ticket"), "NEW_TICKET", "ticket param updated to new value");
-	assert(!u.searchParams.has("token"), "token param absent after patch");
+	s.check(!u.searchParams.has("token"), "token param absent after patch");
 	assertEqual(u.searchParams.get("schemaVersion"), "2", "schemaVersion preserved");
 	assertEqual(u.searchParams.get("device"), "mydevice", "device param preserved");
 	assertEqual(u.searchParams.get("_pk"), "abc123", "connection id _pk preserved");
 }
 
-console.log("\n--- patchTicketInUrl: removes legacy ?token= when patching to ticket auth ---");
+s.section("patchTicketInUrl: removes legacy ?token= when patching to ticket auth");
 {
 	// Simulate a URL that was built with the legacy token (old server, then upgraded).
 	const withToken = "wss://example.test/vault/sync/vaultA?_pk=xyz&token=MY_SECRET_TOKEN&schemaVersion=2";
@@ -593,25 +583,25 @@ console.log("\n--- patchTicketInUrl: removes legacy ?token= when patching to tic
 	const u = new URL(patched);
 
 	assertEqual(u.searchParams.get("ticket"), "FRESH_TICKET", "ticket inserted");
-	assert(!u.searchParams.has("token"), "token stripped when ticket applied");
+	s.check(!u.searchParams.has("token"), "token stripped when ticket applied");
 	assertEqual(u.searchParams.get("schemaVersion"), "2", "schemaVersion preserved");
 }
 
-console.log("\n--- patchTicketInUrl: handles URL with no prior ticket ---");
+s.section("patchTicketInUrl: handles URL with no prior ticket");
 {
 	const bare = "wss://example.test/vault/sync/vaultA?_pk=001&schemaVersion=2";
 	const patched = patchTicketInUrl(bare, "FIRST_TICKET");
 	const u = new URL(patched);
 
 	assertEqual(u.searchParams.get("ticket"), "FIRST_TICKET", "ticket added to URL with no prior ticket");
-	assert(!u.searchParams.has("token"), "no token in result");
+	s.check(!u.searchParams.has("token"), "no token in result");
 }
 
 // ---------------------------------------------------------------------------
 // 500 ticket endpoint → no token fallback
 // ---------------------------------------------------------------------------
 
-console.log("\n--- 500 from ticket endpoint: isTicketEndpointUnsupported is false → error propagates ---");
+s.section("500 from ticket endpoint: isTicketEndpointUnsupported is false → error propagates");
 {
 	// The safety property: a 500 from the ticket endpoint must NOT be treated
 	// as "server doesn't support tickets" and must NOT cause silent fallback to
@@ -628,12 +618,12 @@ console.log("\n--- 500 from ticket endpoint: isTicketEndpointUnsupported is fals
 	//   }
 
 	const err500 = new SocketTicketHttpError(500);
-	assert(!isTicketEndpointUnsupported(err500), "500 → not unsupported (must not trigger token fallback)");
+	s.check(!isTicketEndpointUnsupported(err500), "500 → not unsupported (must not trigger token fallback)");
 
 	// Verify the classification table is exhaustive for all 5xx codes that
 	// could plausibly appear.
 	for (const status of [500, 502, 503, 504]) {
-		assert(
+		s.check(
 			!isTicketEndpointUnsupported(new SocketTicketHttpError(status)),
 			`${status} → not unsupported (server error, propagates)`,
 		);
@@ -642,7 +632,7 @@ console.log("\n--- 500 from ticket endpoint: isTicketEndpointUnsupported is fals
 	// Confirm that the only codes that DO trigger fallback are the
 	// "endpoint missing" signals: 404, 405, 501.
 	for (const status of [404, 405, 501]) {
-		assert(
+		s.check(
 			isTicketEndpointUnsupported(new SocketTicketHttpError(status)),
 			`${status} → unsupported (endpoint missing, fallback allowed)`,
 		);
@@ -650,7 +640,7 @@ console.log("\n--- 500 from ticket endpoint: isTicketEndpointUnsupported is fals
 
 	// Auth failures must also propagate (not fall back).
 	for (const status of [401, 403]) {
-		assert(
+		s.check(
 			!isTicketEndpointUnsupported(new SocketTicketHttpError(status)),
 			`${status} → not unsupported (auth failure, propagates)`,
 		);
@@ -661,7 +651,7 @@ console.log("\n--- 500 from ticket endpoint: isTicketEndpointUnsupported is fals
 // Capabilities
 // ---------------------------------------------------------------------------
 
-console.log("\n--- capabilities: socketTicketAuth: true is advertised ---");
+s.section("capabilities: socketTicketAuth: true is advertised");
 {
 	const env = { YAOS_BUCKET: {} } as unknown as Env;
 	const auth: AuthState = { mode: "env", claimed: true, envToken: "token" };
@@ -669,7 +659,7 @@ console.log("\n--- capabilities: socketTicketAuth: true is advertised ---");
 	assertEqual(caps.socketTicketAuth, true, "capabilities include socketTicketAuth: true");
 }
 
-console.log("\n--- capabilities route: socketTicketAuth visible unauthenticated ---");
+s.section("capabilities route: socketTicketAuth visible unauthenticated");
 {
 	const env: Env = {
 		SYNC_TOKEN: "correct-token",
@@ -688,15 +678,4 @@ console.log("\n--- capabilities route: socketTicketAuth visible unauthenticated 
 	const caps = await res.json() as Record<string, unknown>;
 	assertEqual(caps.socketTicketAuth, true, "public capabilities include socketTicketAuth");
 }
-
-// ---------------------------------------------------------------------------
-// Summary
-// ---------------------------------------------------------------------------
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

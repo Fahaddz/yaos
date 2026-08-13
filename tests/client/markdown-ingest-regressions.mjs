@@ -1,15 +1,6 @@
-let passed = 0;
-let failed = 0;
+import { suite } from "../harness.mjs";
 
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("markdown-ingest-regressions");
 
 class MarkdownIngestHarness {
 	constructor() {
@@ -99,7 +90,7 @@ class MarkdownIngestHarness {
 	}
 }
 
-console.log("\n--- Test: markdown dirty-set coalesces modify bursts under backpressure ---");
+s.section("Test: markdown dirty-set coalesces modify bursts under backpressure");
 {
 	const harness = new MarkdownIngestHarness();
 	const path = "burst.md";
@@ -138,37 +129,30 @@ console.log("\n--- Test: markdown dirty-set coalesces modify bursts under backpr
 	}
 
 	console.log(`  INFO  queued 100 modify events in ${burstDurationMs}ms`);
-	assert(harness.processCount === 2, `coalesced burst into 2 drain passes (got ${harness.processCount})`);
-	assert(
+	s.check(harness.processCount === 2, `coalesced burst into 2 drain passes (got ${harness.processCount})`);
+	s.check(
 		harness.getSynced(path) === "version-100",
 		"final synced content matches the latest disk content",
 	);
-	assert(harness.dirtyMarkdownPaths.size === 0, "dirty map empty after drain settles");
+	s.check(harness.dirtyMarkdownPaths.size === 0, "dirty map empty after drain settles");
 }
 
-console.log("\n--- Test: tombstoned paths revive on create intent (not modify) ---");
+s.section("Test: tombstoned paths revive on create intent (not modify)");
 {
 	const harness = new MarkdownIngestHarness();
 	const path = "restore.md";
 
 	harness.setDisk(path, "v1");
 	await harness.markMarkdownDirty(path, "create");
-	assert(harness.getSynced(path) === "v1", "initial create synced");
+	s.check(harness.getSynced(path) === "v1", "initial create synced");
 
 	harness.tombstonePath(path);
 	harness.setDisk(path, "v2");
 
 	await harness.markMarkdownDirty(path, "modify");
-	assert(harness.getSynced(path) === "v1", "modify event keeps tombstoned path blocked");
+	s.check(harness.getSynced(path) === "v1", "modify event keeps tombstoned path blocked");
 
 	await harness.markMarkdownDirty(path, "create");
-	assert(harness.getSynced(path) === "v2", "create event revives tombstoned path");
+	s.check(harness.getSynced(path) === "v2", "create event revives tombstoned path");
 }
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

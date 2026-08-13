@@ -8,19 +8,9 @@
 
 import * as Y from "yjs";
 import { isStateVectorGe } from "../../src/sync/stateVectorAck";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("state-vector-ack");
 
 function makeSv(entries: [number, number][]): Uint8Array {
 	const doc = new Y.Doc({ gc: false });
@@ -90,38 +80,38 @@ function buildMultiClientSv(clients: [number, number][]): Uint8Array {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-console.log("\n--- Test 1: equal state vectors ---");
+s.section("Test 1: equal state vectors");
 {
 	const sv = buildMultiClientSv([[100, 3], [200, 5]]);
-	assert(isStateVectorGe(sv, sv), "equal SVs => true");
+	s.check(isStateVectorGe(sv, sv), "equal SVs => true");
 	const sv2 = buildMultiClientSv([[100, 3], [200, 5]]);
-	assert(isStateVectorGe(sv, sv2), "identical SVs (separate instances) => true");
-	assert(isStateVectorGe(sv2, sv), "symmetric: also true");
+	s.check(isStateVectorGe(sv, sv2), "identical SVs (separate instances) => true");
+	s.check(isStateVectorGe(sv2, sv), "symmetric: also true");
 }
 
-console.log("\n--- Test 2: server ahead of candidate ---");
+s.section("Test 2: server ahead of candidate");
 {
 	const candidate = buildMultiClientSv([[100, 3]]);
 	const server = buildMultiClientSv([[100, 5]]);
-	assert(isStateVectorGe(server, candidate), "server clock 5 >= candidate clock 3 => true");
-	assert(!isStateVectorGe(candidate, server), "candidate clock 3 < server clock 5 => false");
+	s.check(isStateVectorGe(server, candidate), "server clock 5 >= candidate clock 3 => true");
+	s.check(!isStateVectorGe(candidate, server), "candidate clock 3 < server clock 5 => false");
 }
 
-console.log("\n--- Test 3: server missing client present in candidate ---");
+s.section("Test 3: server missing client present in candidate");
 {
 	const candidate = buildMultiClientSv([[100, 3], [200, 2]]);
 	const server = buildMultiClientSv([[100, 3]]);
-	assert(!isStateVectorGe(server, candidate), "server missing client 200 => false");
+	s.check(!isStateVectorGe(server, candidate), "server missing client 200 => false");
 }
 
-console.log("\n--- Test 4: server has extra client not in candidate ---");
+s.section("Test 4: server has extra client not in candidate");
 {
 	const candidate = buildMultiClientSv([[100, 3]]);
 	const server = buildMultiClientSv([[100, 3], [999, 10]]);
-	assert(isStateVectorGe(server, candidate), "server extra client doesn't invalidate => true");
+	s.check(isStateVectorGe(server, candidate), "server extra client doesn't invalidate => true");
 }
 
-console.log("\n--- Test 5: empty state vectors ---");
+s.section("Test 5: empty state vectors");
 {
 	// A valid empty SV is Y.encodeStateVector(new Y.Doc()) = Uint8Array([0]).
 	// new Uint8Array(0) is malformed input and fails closed (false) — see Test 7.
@@ -129,70 +119,63 @@ console.log("\n--- Test 5: empty state vectors ---");
 	const emptySv = Y.encodeStateVector(emptyDoc);
 	emptyDoc.destroy();
 	const nonEmpty = buildMultiClientSv([[100, 3]]);
-	assert(isStateVectorGe(emptySv, emptySv), "empty SV vs empty SV => true (vacuously)");
-	assert(!isStateVectorGe(emptySv, nonEmpty), "empty server SV vs non-empty candidate => false");
-	assert(isStateVectorGe(nonEmpty, emptySv), "non-empty server vs empty candidate SV => true (vacuously)");
+	s.check(isStateVectorGe(emptySv, emptySv), "empty SV vs empty SV => true (vacuously)");
+	s.check(!isStateVectorGe(emptySv, nonEmpty), "empty server SV vs non-empty candidate => false");
+	s.check(isStateVectorGe(nonEmpty, emptySv), "non-empty server vs empty candidate SV => true (vacuously)");
 	// Truly malformed (zero bytes) fails closed:
-	assert(!isStateVectorGe(new Uint8Array(0), new Uint8Array(0)), "zero-byte input: malformed => false");
+	s.check(!isStateVectorGe(new Uint8Array(0), new Uint8Array(0)), "zero-byte input: malformed => false");
 }
 
-console.log("\n--- Test 6: server behind on one of multiple clients ---");
+s.section("Test 6: server behind on one of multiple clients");
 {
 	const candidate = buildMultiClientSv([[100, 5], [200, 3]]);
 	const server = buildMultiClientSv([[100, 5], [200, 2]]);
-	assert(!isStateVectorGe(server, candidate), "server behind on client 200 => false");
+	s.check(!isStateVectorGe(server, candidate), "server behind on client 200 => false");
 }
 
-console.log("\n--- Test 7: malformed input fails closed ---");
+s.section("Test 7: malformed input fails closed");
 {
 	const valid = buildMultiClientSv([[100, 3]]);
 	const garbage = new Uint8Array([255, 255, 255, 255, 0]); // not valid varint encoding
-	assert(!isStateVectorGe(garbage, valid), "malformed server SV => false (fail closed)");
-	assert(!isStateVectorGe(valid, garbage), "malformed candidate SV => false (fail closed)");
-	assert(!isStateVectorGe(garbage, garbage), "both malformed => false (fail closed)");
+	s.check(!isStateVectorGe(garbage, valid), "malformed server SV => false (fail closed)");
+	s.check(!isStateVectorGe(valid, garbage), "malformed candidate SV => false (fail closed)");
+	s.check(!isStateVectorGe(garbage, garbage), "both malformed => false (fail closed)");
 }
 
-console.log("\n--- Test 8: old client ID from a prior Y.Doc session ---");
+s.section("Test 8: old client ID from a prior Y.Doc session");
 {
 	// Client 100 had clock 5 in a prior session. The new server doc has client
 	// 100 at clock 5 (same data, possibly same or different session restart).
 	const candidateWithOldId = buildMultiClientSv([[100, 5], [777, 2]]);
 	const serverMissingOldClient = buildMultiClientSv([[100, 5]]);
-	assert(
+	s.check(
 		!isStateVectorGe(serverMissingOldClient, candidateWithOldId),
 		"server missing old client 777 from prior session => false",
 	);
 
 	const serverWithOldClientAtCorrectClock = buildMultiClientSv([[100, 5], [777, 2]]);
-	assert(
+	s.check(
 		isStateVectorGe(serverWithOldClientAtCorrectClock, candidateWithOldId),
 		"server has old client 777 at correct clock => true",
 	);
 
 	const serverWithOldClientBehind = buildMultiClientSv([[100, 5], [777, 1]]);
-	assert(
+	s.check(
 		!isStateVectorGe(serverWithOldClientBehind, candidateWithOldId),
 		"server has old client 777 but clock behind => false",
 	);
 }
 
-console.log("\n--- Test 9: multi-client mixed scenarios ---");
+s.section("Test 9: multi-client mixed scenarios");
 {
 	const candidate = buildMultiClientSv([[1, 10], [2, 5], [3, 3]]);
 	const serverMissingOne = buildMultiClientSv([[1, 10], [2, 5]]);
-	assert(!isStateVectorGe(serverMissingOne, candidate), "server missing client 3 => false");
+	s.check(!isStateVectorGe(serverMissingOne, candidate), "server missing client 3 => false");
 
 	const serverAheadOnAll = buildMultiClientSv([[1, 11], [2, 6], [3, 4]]);
-	assert(isStateVectorGe(serverAheadOnAll, candidate), "server ahead on all => true");
+	s.check(isStateVectorGe(serverAheadOnAll, candidate), "server ahead on all => true");
 
 	const serverBehindOnOne = buildMultiClientSv([[1, 9], [2, 5], [3, 3]]);
-	assert(!isStateVectorGe(serverBehindOnOne, candidate), "server behind on client 1 => false");
+	s.check(!isStateVectorGe(serverBehindOnOne, candidate), "server behind on client 1 => false");
 }
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

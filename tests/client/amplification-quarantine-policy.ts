@@ -20,26 +20,16 @@ import {
 	AMPLIFICATION_WINDOW_MS,
 	type AmplificationEntry,
 } from "../../src/runtime/reconcile/amplificationQuarantinePolicy";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
+const s = suite("amplification-quarantine-policy");
 
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+s.section("Test 1: Constants are correct");
+s.check(AMPLIFICATION_HISTORY_MAX_ENTRIES === 5, "max entries is 5");
+s.check(AMPLIFICATION_QUARANTINE_THRESHOLD === 3, "threshold is 3");
+s.check(AMPLIFICATION_WINDOW_MS === 15_000, "window is 15 seconds");
 
-console.log("\n--- Test 1: Constants are correct ---");
-assert(AMPLIFICATION_HISTORY_MAX_ENTRIES === 5, "max entries is 5");
-assert(AMPLIFICATION_QUARANTINE_THRESHOLD === 3, "threshold is 3");
-assert(AMPLIFICATION_WINDOW_MS === 15_000, "window is 15 seconds");
-
-console.log("\n--- Test 2: First entry does not quarantine ---");
+s.section("Test 2: First entry does not quarantine");
 {
 	const result = evaluateAmplificationQuarantine({
 		prevLen: 100,
@@ -47,15 +37,15 @@ console.log("\n--- Test 2: First entry does not quarantine ---");
 		now: 1000,
 		history: [],
 	});
-	assert(result.quarantined === false, "first entry not quarantined");
+	s.check(result.quarantined === false, "first entry not quarantined");
 	if (!result.quarantined) {
-		assert(result.newHistory.length === 1, "history has 1 entry");
-		assert(result.newHistory[0]!.prevLen === 100, "prevLen stored");
-		assert(result.newHistory[0]!.nextLen === 110, "nextLen stored");
+		s.check(result.newHistory.length === 1, "history has 1 entry");
+		s.check(result.newHistory[0]!.prevLen === 100, "prevLen stored");
+		s.check(result.newHistory[0]!.nextLen === 110, "nextLen stored");
 	}
 }
 
-console.log("\n--- Test 3: Two entries does not quarantine ---");
+s.section("Test 3: Two entries does not quarantine");
 {
 	const history: AmplificationEntry[] = [{ prevLen: 100, nextLen: 110, at: 1000 }];
 	const result = evaluateAmplificationQuarantine({
@@ -64,13 +54,13 @@ console.log("\n--- Test 3: Two entries does not quarantine ---");
 		now: 2000,
 		history,
 	});
-	assert(result.quarantined === false, "two entries not quarantined");
+	s.check(result.quarantined === false, "two entries not quarantined");
 	if (!result.quarantined) {
-		assert(result.newHistory.length === 2, "history has 2 entries");
+		s.check(result.newHistory.length === 2, "history has 2 entries");
 	}
 }
 
-console.log("\n--- Test 4: Three monotonic growth entries triggers quarantine ---");
+s.section("Test 4: Three monotonic growth entries triggers quarantine");
 {
 	const history: AmplificationEntry[] = [
 		{ prevLen: 100, nextLen: 110, at: 1000 },
@@ -82,16 +72,16 @@ console.log("\n--- Test 4: Three monotonic growth entries triggers quarantine --
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === true, "three monotonic growth entries quarantined");
+	s.check(result.quarantined === true, "three monotonic growth entries quarantined");
 	if (result.quarantined) {
-		assert(result.triggerSlice.length === 3, "trigger slice has 3 entries");
-		assert(result.firstPrevLen === 100, "firstPrevLen correct");
-		assert(result.lastNextLen === 130, "lastNextLen correct");
-		assert(result.consistentDelta === true, "consistent delta (all +10)");
+		s.check(result.triggerSlice.length === 3, "trigger slice has 3 entries");
+		s.check(result.firstPrevLen === 100, "firstPrevLen correct");
+		s.check(result.lastNextLen === 130, "lastNextLen correct");
+		s.check(result.consistentDelta === true, "consistent delta (all +10)");
 	}
 }
 
-console.log("\n--- Test 5: Entries outside window do not trigger ---");
+s.section("Test 5: Entries outside window do not trigger");
 {
 	const history: AmplificationEntry[] = [
 		{ prevLen: 100, nextLen: 110, at: 1000 },
@@ -104,10 +94,10 @@ console.log("\n--- Test 5: Entries outside window do not trigger ---");
 		now: 1000 + AMPLIFICATION_WINDOW_MS + 1000, // 16+ seconds later
 		history,
 	});
-	assert(result.quarantined === false, "entries outside window not quarantined");
+	s.check(result.quarantined === false, "entries outside window not quarantined");
 }
 
-console.log("\n--- Test 6: Non-positive delta does not trigger ---");
+s.section("Test 6: Non-positive delta does not trigger");
 {
 	const history: AmplificationEntry[] = [
 		{ prevLen: 100, nextLen: 110, at: 1000 },
@@ -120,10 +110,10 @@ console.log("\n--- Test 6: Non-positive delta does not trigger ---");
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === false, "negative delta not quarantined");
+	s.check(result.quarantined === false, "negative delta not quarantined");
 }
 
-console.log("\n--- Test 7: Zero delta does not trigger ---");
+s.section("Test 7: Zero delta does not trigger");
 {
 	const history: AmplificationEntry[] = [
 		{ prevLen: 100, nextLen: 110, at: 1000 },
@@ -136,10 +126,10 @@ console.log("\n--- Test 7: Zero delta does not trigger ---");
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === false, "zero delta not quarantined");
+	s.check(result.quarantined === false, "zero delta not quarantined");
 }
 
-console.log("\n--- Test 8: Non-monotonic prevLen does not trigger ---");
+s.section("Test 8: Non-monotonic prevLen does not trigger");
 {
 	const history: AmplificationEntry[] = [
 		{ prevLen: 100, nextLen: 110, at: 1000 },
@@ -151,10 +141,10 @@ console.log("\n--- Test 8: Non-monotonic prevLen does not trigger ---");
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === false, "non-monotonic prevLen not quarantined");
+	s.check(result.quarantined === false, "non-monotonic prevLen not quarantined");
 }
 
-console.log("\n--- Test 9: Non-monotonic nextLen does not trigger ---");
+s.section("Test 9: Non-monotonic nextLen does not trigger");
 {
 	const history: AmplificationEntry[] = [
 		{ prevLen: 100, nextLen: 110, at: 1000 },
@@ -166,10 +156,10 @@ console.log("\n--- Test 9: Non-monotonic nextLen does not trigger ---");
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === false, "non-monotonic nextLen not quarantined");
+	s.check(result.quarantined === false, "non-monotonic nextLen not quarantined");
 }
 
-console.log("\n--- Test 10: No genuine growth does not trigger ---");
+s.section("Test 10: No genuine growth does not trigger");
 {
 	// All entries have same prevLen/nextLen (stationary, not growing)
 	const history: AmplificationEntry[] = [
@@ -182,10 +172,10 @@ console.log("\n--- Test 10: No genuine growth does not trigger ---");
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === false, "stationary (no growth) not quarantined");
+	s.check(result.quarantined === false, "stationary (no growth) not quarantined");
 }
 
-console.log("\n--- Test 11a: History is capped at max entries (no quarantine, non-monotonic nextLen in last-3 slice) ---");
+s.section("Test 11a: History is capped at max entries (no quarantine, non-monotonic nextLen in last-3 slice)");
 {
 	// Feed 5 entries where the 4th entry has a LOWER nextLen than the 3rd.
 	// After appending the new entry and capping, the last-3 slice includes
@@ -207,14 +197,14 @@ console.log("\n--- Test 11a: History is capped at max entries (no quarantine, no
 		now: 600,
 		history,
 	});
-	assert(result.quarantined === false, "non-monotonic nextLen in last-3 slice prevents quarantine");
+	s.check(result.quarantined === false, "non-monotonic nextLen in last-3 slice prevents quarantine");
 	if (!result.quarantined) {
-		assert(result.newHistory.length === 5, "history capped at max entries (5)");
-		assert(result.newHistory[0]!.prevLen === 20, "oldest entry (prevLen=10) evicted");
+		s.check(result.newHistory.length === 5, "history capped at max entries (5)");
+		s.check(result.newHistory[0]!.prevLen === 20, "oldest entry (prevLen=10) evicted");
 	}
 }
 
-console.log("\n--- Test 11b: History capping also occurs before a quarantine decision ---");
+s.section("Test 11b: History capping also occurs before a quarantine decision");
 {
 	// Feed a full 5-entry monotonic history. Adding one more should cap to 5 AND
 	// trigger quarantine on the resulting slice. We confirm quarantine fires AND
@@ -234,19 +224,19 @@ console.log("\n--- Test 11b: History capping also occurs before a quarantine dec
 		now: 600,
 		history,
 	});
-	assert(result.quarantined === true, "monotonic growth on full history quarantines");
+	s.check(result.quarantined === true, "monotonic growth on full history quarantines");
 	if (result.quarantined) {
 		// The trigger slice is the last 3 entries of the capped history.
 		// After capping, the 5 entries are [20→30, 30→40, 40→50, 50→60, 60→70].
 		// Slice of last 3: [40→50, 50→60, 60→70].
-		assert(result.triggerSlice.length === 3, "trigger slice has 3 entries");
-		assert(result.triggerSlice[0]!.prevLen === 40, "oldest evicted; slice starts at prevLen=40");
-		assert(result.firstPrevLen === 40, "firstPrevLen reflects post-eviction slice");
-		assert(result.lastNextLen === 70, "lastNextLen is the new entry");
+		s.check(result.triggerSlice.length === 3, "trigger slice has 3 entries");
+		s.check(result.triggerSlice[0]!.prevLen === 40, "oldest evicted; slice starts at prevLen=40");
+		s.check(result.firstPrevLen === 40, "firstPrevLen reflects post-eviction slice");
+		s.check(result.lastNextLen === 70, "lastNextLen is the new entry");
 	}
 }
 
-console.log("\n--- Test 12: Inconsistent deltas still quarantine but reported ---");
+s.section("Test 12: Inconsistent deltas still quarantine but reported");
 {
 	const history: AmplificationEntry[] = [
 		{ prevLen: 100, nextLen: 105, at: 1000 }, // delta +5
@@ -258,20 +248,20 @@ console.log("\n--- Test 12: Inconsistent deltas still quarantine but reported --
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === true, "inconsistent deltas still quarantine");
+	s.check(result.quarantined === true, "inconsistent deltas still quarantine");
 	if (result.quarantined) {
-		assert(result.consistentDelta === false, "consistentDelta is false");
+		s.check(result.consistentDelta === false, "consistentDelta is false");
 	}
 }
 
-console.log("\n--- Test 13: findOldestAmplificationEntry on empty map ---");
+s.section("Test 13: findOldestAmplificationEntry on empty map");
 {
 	const entries = new Map<string, AmplificationEntry[]>();
 	const oldest = findOldestAmplificationEntry(entries);
-	assert(oldest === null, "returns null for empty map");
+	s.check(oldest === null, "returns null for empty map");
 }
 
-console.log("\n--- Test 14: findOldestAmplificationEntry finds oldest ---");
+s.section("Test 14: findOldestAmplificationEntry finds oldest");
 {
 	const entries = new Map<string, AmplificationEntry[]>([
 		["path/a.md", [{ prevLen: 100, nextLen: 110, at: 3000 }]],
@@ -279,10 +269,10 @@ console.log("\n--- Test 14: findOldestAmplificationEntry finds oldest ---");
 		["path/c.md", [{ prevLen: 100, nextLen: 110, at: 2000 }]],
 	]);
 	const oldest = findOldestAmplificationEntry(entries);
-	assert(oldest === "path/b.md", "finds entry with smallest lastAt");
+	s.check(oldest === "path/b.md", "finds entry with smallest lastAt");
 }
 
-console.log("\n--- Test 15: findOldestAmplificationEntry respects excludePath ---");
+s.section("Test 15: findOldestAmplificationEntry respects excludePath");
 {
 	const entries = new Map<string, AmplificationEntry[]>([
 		["path/a.md", [{ prevLen: 100, nextLen: 110, at: 3000 }]],
@@ -290,10 +280,10 @@ console.log("\n--- Test 15: findOldestAmplificationEntry respects excludePath --
 		["path/c.md", [{ prevLen: 100, nextLen: 110, at: 2000 }]], // second oldest
 	]);
 	const oldest = findOldestAmplificationEntry(entries, "path/b.md");
-	assert(oldest === "path/c.md", "skips excluded path, finds second oldest");
+	s.check(oldest === "path/c.md", "skips excluded path, finds second oldest");
 }
 
-console.log("\n--- Test 16: Only prevLen growing but not nextLen does not trigger ---");
+s.section("Test 16: Only prevLen growing but not nextLen does not trigger");
 {
 	// prevLen grows but nextLen stays same (not genuine amplification)
 	const history: AmplificationEntry[] = [
@@ -306,10 +296,10 @@ console.log("\n--- Test 16: Only prevLen growing but not nextLen does not trigge
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === false, "prevLen-only growth not quarantined");
+	s.check(result.quarantined === false, "prevLen-only growth not quarantined");
 }
 
-console.log("\n--- Test 17: Quarantine decision does NOT return newHistory ---");
+s.section("Test 17: Quarantine decision does NOT return newHistory");
 {
 	// When quarantined, the policy returns triggerSlice but NOT newHistory.
 	// This is intentional: the caller should DELETE the history, not update it.
@@ -324,17 +314,17 @@ console.log("\n--- Test 17: Quarantine decision does NOT return newHistory ---")
 		now: 3000,
 		history,
 	});
-	assert(result.quarantined === true, "quarantine triggered");
+	s.check(result.quarantined === true, "quarantine triggered");
 	if (result.quarantined) {
 		// TypeScript enforces this, but let's be explicit:
 		// @ts-expect-error — newHistory does not exist on quarantined decision
 		const hasNewHistory = "newHistory" in result;
-		assert(!hasNewHistory, "quarantine decision has no newHistory (caller should delete)");
-		assert("triggerSlice" in result, "quarantine decision has triggerSlice");
+		s.check(!hasNewHistory, "quarantine decision has no newHistory (caller should delete)");
+		s.check("triggerSlice" in result, "quarantine decision has triggerSlice");
 	}
 }
 
-console.log("\n--- Test 18: Non-quarantine decision returns newHistory ---");
+s.section("Test 18: Non-quarantine decision returns newHistory");
 {
 	// When NOT quarantined, the policy returns newHistory for the caller to store.
 	const history: AmplificationEntry[] = [
@@ -346,15 +336,10 @@ console.log("\n--- Test 18: Non-quarantine decision returns newHistory ---");
 		now: 2000,
 		history,
 	});
-	assert(result.quarantined === false, "not quarantined");
+	s.check(result.quarantined === false, "not quarantined");
 	if (!result.quarantined) {
-		assert("newHistory" in result, "non-quarantine decision has newHistory");
-		assert(result.newHistory.length === 2, "newHistory includes new entry");
+		s.check("newHistory" in result, "non-quarantine decision has newHistory");
+		s.check(result.newHistory.length === 2, "newHistory includes new entry");
 	}
 }
-
-console.log("\n───────────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("───────────────────────────────────────────────────────\n");
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

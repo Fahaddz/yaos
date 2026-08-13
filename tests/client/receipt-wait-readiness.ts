@@ -10,19 +10,9 @@ import {
 	type ReceiptWaitCheckpoint,
 	type ReceiptWaitState,
 } from "../../qa/harness/receiptWaitReadiness";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, message: string): void {
-	if (condition) {
-		console.log(`  PASS  ${message}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${message}`);
-		failed++;
-	}
-}
+const s = suite("receipt-wait-readiness");
 
 function receipt(overrides: Partial<ReceiptWaitState>): ReceiptWaitState {
 	return {
@@ -44,7 +34,7 @@ function checkpoint(overrides: Partial<ReceiptWaitCheckpoint>): ReceiptWaitCheck
 	};
 }
 
-console.log("\n--- Receipt wait readiness ---");
+s.section("Receipt wait readiness");
 
 {
 	const ready = isReceiptWaitReadyAfter(100, receipt({
@@ -54,7 +44,7 @@ console.log("\n--- Receipt wait readiness ---");
 		lastConfirmedAt: 120,
 		hasUnconfirmedCandidate: true,
 	}));
-	assert(!ready, "historical A confirmation cannot satisfy pending B");
+	s.check(!ready, "historical A confirmation cannot satisfy pending B");
 }
 
 {
@@ -65,7 +55,7 @@ console.log("\n--- Receipt wait readiness ---");
 		lastConfirmedAt: 120,
 		hasUnconfirmedCandidate: false,
 	}));
-	assert(ready, "matching B confirmation satisfies the candidate-ID proof");
+	s.check(ready, "matching B confirmation satisfies the candidate-ID proof");
 }
 
 {
@@ -73,7 +63,7 @@ console.log("\n--- Receipt wait readiness ---");
 		lastConfirmedAt: 120,
 		hasUnconfirmedCandidate: false,
 	}));
-	assert(!ready, "timestamp-only confirmation never satisfies an action-relative wait");
+	s.check(!ready, "timestamp-only confirmation never satisfies an action-relative wait");
 }
 
 {
@@ -84,10 +74,10 @@ console.log("\n--- Receipt wait readiness ---");
 		lastConfirmedAt: 120,
 		hasUnconfirmedCandidate: false,
 	}));
-	assert(!ready, "strict waits reject a candidate captured at the boundary");
+	s.check(!ready, "strict waits reject a candidate captured at the boundary");
 }
 
-console.log("\n--- Receipt checkpoint readiness ---");
+s.section("Receipt checkpoint readiness");
 
 {
 	const ready = isReceiptWaitReadyAfterCheckpoint(
@@ -100,7 +90,7 @@ console.log("\n--- Receipt checkpoint readiness ---");
 			hasUnconfirmedCandidate: false,
 		}),
 	);
-	assert(ready, "a candidate pending at checkpoint can confirm after it");
+	s.check(ready, "a candidate pending at checkpoint can confirm after it");
 }
 
 {
@@ -114,7 +104,7 @@ console.log("\n--- Receipt checkpoint readiness ---");
 			hasUnconfirmedCandidate: false,
 		}),
 	);
-	assert(!ready, "an already-confirmed candidate or delayed duplicate echo cannot pass");
+	s.check(!ready, "an already-confirmed candidate or delayed duplicate echo cannot pass");
 }
 
 {
@@ -128,7 +118,7 @@ console.log("\n--- Receipt checkpoint readiness ---");
 			hasUnconfirmedCandidate: false,
 		}),
 	);
-	assert(ready, "a new candidate captured after checkpoint can confirm");
+	s.check(ready, "a new candidate captured after checkpoint can confirm");
 }
 
 {
@@ -142,7 +132,7 @@ console.log("\n--- Receipt checkpoint readiness ---");
 			hasUnconfirmedCandidate: false,
 		}),
 	);
-	assert(!ready, "a mismatched confirmation candidate cannot pass a checkpoint wait");
+	s.check(!ready, "a mismatched confirmation candidate cannot pass a checkpoint wait");
 }
 
 {
@@ -156,7 +146,7 @@ console.log("\n--- Receipt checkpoint readiness ---");
 			hasUnconfirmedCandidate: false,
 		}),
 	);
-	assert(!ready, "checkpoint waits reject a new candidate captured at the strict boundary");
+	s.check(!ready, "checkpoint waits reject a new candidate captured at the strict boundary");
 }
 
 {
@@ -171,8 +161,6 @@ console.log("\n--- Receipt checkpoint readiness ---");
 			hasUnconfirmedCandidate: false,
 		}),
 	);
-	assert(!ready, "an id-less restored checkpoint fails closed despite a later confirmed candidate");
+	s.check(!ready, "an id-less restored checkpoint fails closed despite a later confirmed candidate");
 }
-
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed === 0 ? 0 : 1);
+await s.done();

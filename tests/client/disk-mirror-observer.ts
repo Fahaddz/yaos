@@ -50,19 +50,9 @@ import {
 	type MetaChangeBatch,
 } from "../../src/sync/fileMeta";
 import { isLocalOrigin } from "../../src/sync/origins";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("disk-mirror-observer");
 
 // ── Harness ───────────────────────────────────────────────────────────────────
 
@@ -149,7 +139,7 @@ function clearTimers(m: DiskMirror): void {
 
 // ── Test 1: afterTransaction (closed file) — recovery origins skip write ──────
 
-console.log("\n--- Test 1: afterTransaction — recovery origins do not schedule write (closed file) ---");
+s.section("Test 1: afterTransaction — recovery origins do not schedule write (closed file)");
 {
 	const { doc, ytext, mirror } = makeHarness();
 	mirror.startMapObservers();
@@ -168,30 +158,30 @@ console.log("\n--- Test 1: afterTransaction — recovery origins do not schedule
 		doc.transact(() => { ytext.insert(0, "x"); }, origin);
 		doc.transact(() => { ytext.delete(0, 1); }, origin);
 
-		assert(
+		s.check(
 			debounceTimerCount(mirror) === 0,
 			`"${origin}" → afterTxn: no debounce timer set (closed file, write skipped)`,
 		);
 	}
 
-	assert(writeQueueSize(mirror) === 0, "writeQueue empty after all recovery origins");
+	s.check(writeQueueSize(mirror) === 0, "writeQueue empty after all recovery origins");
 	doc.destroy();
 }
 
 // ── Test 2: afterTransaction (closed file) — provider origin schedules write ──
 
-console.log("\n--- Test 2: afterTransaction — provider (remote) origin schedules write (closed file) ---");
+s.section("Test 2: afterTransaction — provider (remote) origin schedules write (closed file)");
 {
 	const { doc, ytext, fakeProvider, mirror } = makeHarness();
 	mirror.startMapObservers();
 
 	doc.transact(() => { ytext.insert(0, "remote content"); }, fakeProvider);
 
-	assert(
+	s.check(
 		debounceTimerCount(mirror) === 1,
 		"provider origin → afterTxn: debounce timer set (write will be scheduled)",
 	);
-	assert(writeQueueSize(mirror) === 0, "write still debouncing — not yet in writeQueue");
+	s.check(writeQueueSize(mirror) === 0, "write still debouncing — not yet in writeQueue");
 
 	clearTimers(mirror);
 	doc.destroy();
@@ -199,7 +189,7 @@ console.log("\n--- Test 2: afterTransaction — provider (remote) origin schedul
 
 // ── Test 3: per-file text observer (open file) — recovery origins skip write ──
 
-console.log("\n--- Test 3: per-file text observer — recovery origins do not schedule write (open file) ---");
+s.section("Test 3: per-file text observer — recovery origins do not schedule write (open file)");
 {
 	const { doc, ytext, mirror } = makeHarness();
 	mirror.notifyFileOpened(FILE_PATH);
@@ -210,7 +200,7 @@ console.log("\n--- Test 3: per-file text observer — recovery origins do not sc
 		doc.transact(() => { ytext.insert(0, "x"); }, origin);
 		doc.transact(() => { ytext.delete(0, 1); }, origin);
 
-		assert(
+		s.check(
 			pendingOpenWriteCount(mirror) === 0,
 			`"${origin}" → text observer: no pending open write (open file, write skipped)`,
 		);
@@ -222,14 +212,14 @@ console.log("\n--- Test 3: per-file text observer — recovery origins do not sc
 
 // ── Test 4: per-file text observer (open file) — provider origin schedules ────
 
-console.log("\n--- Test 4: per-file text observer — provider origin schedules write (open file) ---");
+s.section("Test 4: per-file text observer — provider origin schedules write (open file)");
 {
 	const { doc, ytext, fakeProvider, mirror } = makeHarness();
 	mirror.notifyFileOpened(FILE_PATH);
 
 	doc.transact(() => { ytext.insert(0, "remote content"); }, fakeProvider);
 
-	assert(
+	s.check(
 		pendingOpenWriteCount(mirror) === 1,
 		"provider origin → text observer: pending open write scheduled (open file)",
 	);
@@ -240,7 +230,7 @@ console.log("\n--- Test 4: per-file text observer — provider origin schedules 
 
 // ── Test 5: mixed cycle — recovery then remote — only remote triggers write ───
 
-console.log("\n--- Test 5: mixed cycle — recovery then provider — only provider triggers write ---");
+s.section("Test 5: mixed cycle — recovery then provider — only provider triggers write");
 {
 	const { doc, ytext, fakeProvider, mirror } = makeHarness();
 	mirror.startMapObservers();
@@ -248,27 +238,20 @@ console.log("\n--- Test 5: mixed cycle — recovery then provider — only provi
 	// Recovery pass — simulates disk reconciliation
 	doc.transact(() => { ytext.insert(0, "reconciled disk content"); }, ORIGIN_DISK_SYNC_RECOVER_BOUND);
 
-	assert(debounceTimerCount(mirror) === 0, "after recovery pass: no debounce timer");
-	assert(writeQueueSize(mirror) === 0, "after recovery pass: writeQueue empty");
+	s.check(debounceTimerCount(mirror) === 0, "after recovery pass: no debounce timer");
+	s.check(writeQueueSize(mirror) === 0, "after recovery pass: writeQueue empty");
 
 	// Second recovery pass is no-op (same content) — no write
 	doc.transact(() => { ytext.delete(0, ytext.length); ytext.insert(0, "reconciled disk content"); }, ORIGIN_DISK_SYNC_RECOVER_BOUND);
 
-	assert(debounceTimerCount(mirror) === 0, "after second recovery pass: still no debounce timer");
+	s.check(debounceTimerCount(mirror) === 0, "after second recovery pass: still no debounce timer");
 
 	// Remote update from another device — this SHOULD schedule a write
 	doc.transact(() => { ytext.delete(0, ytext.length); ytext.insert(0, "update from another device"); }, fakeProvider);
 
-	assert(debounceTimerCount(mirror) === 1, "after provider update: debounce timer set");
+	s.check(debounceTimerCount(mirror) === 1, "after provider update: debounce timer set");
 
 	clearTimers(mirror);
 	doc.destroy();
 }
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

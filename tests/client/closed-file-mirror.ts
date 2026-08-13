@@ -15,6 +15,7 @@
  * Usage: bun run test-closed-file-mirror.ts
  */
 import * as Y from "yjs";
+import { suite } from "../harness.ts";
 
 const ORIGIN_SEED = "vault-crdt-seed";
 const LOCAL_ORIGINS = new Set(["y-codemirror.next", ORIGIN_SEED, "disk-sync"]);
@@ -162,65 +163,54 @@ const metaB = docB.getMap<{ path: string; deleted?: boolean; mtime?: number }>(
 );
 
 // ── Test helpers ────────────────────────────────────────────────────────
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, name: string) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("closed-file-mirror");
 
 // ── Test 1: remote edit to OPEN file ────────────────────────────────────
-console.log("\n--- Test 1: remote edit to open file ---");
+s.section("Test 1: remote edit to open file");
 resetTracking();
 
 const openIdB = pathToIdB.get("open-file.md")!;
 const openTextB = idToTextB.get(openIdB)!;
 openTextB.insert(openTextB.length, "\n\nRemote edit to open file.");
 
-assert(
+s.check(
 	scheduledWrites.includes("open-file.md"),
 	"open file: write scheduled via Y.Text observer",
 );
 
 // Verify CRDT state actually merged on A
 const openTextA = idToTextA.get(pathToIdA.get("open-file.md")!)!;
-assert(
+s.check(
 	openTextA.toString().includes("Remote edit to open file."),
 	"open file: CRDT content merged on Device A",
 );
 
 // ── Test 2: remote edit to CLOSED file ──────────────────────────────────
-console.log("\n--- Test 2: remote edit to closed file ---");
+s.section("Test 2: remote edit to closed file");
 resetTracking();
 
 const closedIdB = pathToIdB.get("closed-file.md")!;
 const closedTextB = idToTextB.get(closedIdB)!;
 closedTextB.insert(closedTextB.length, "\n\nRemote edit to closed file.");
 
-assert(
+s.check(
 	scheduledWrites.includes("closed-file.md"),
 	"closed file: write scheduled via afterTransaction handler",
 );
 
 // Verify CRDT state merged but NO per-file observer fired
 const closedTextA = idToTextA.get(pathToIdA.get("closed-file.md")!)!;
-assert(
+s.check(
 	closedTextA.toString().includes("Remote edit to closed file."),
 	"closed file: CRDT content merged on Device A",
 );
-assert(
+s.check(
 	!textObservers.has("closed-file.md"),
 	"closed file: no per-file Y.Text observer attached (still closed)",
 );
 
 // ── Test 3: LOCAL edit to closed file → should NOT schedule write ────────
-console.log("\n--- Test 3: local edit (origin filtering) ---");
+s.section("Test 3: local edit (origin filtering)");
 resetTracking();
 
 // Simulate a local disk-sync write (e.g., syncFileFromDisk)
@@ -229,7 +219,7 @@ docA.transact(() => {
 	closedTextA2.insert(closedTextA2.length, "\n\nLocal disk-sync edit.");
 }, "disk-sync");
 
-assert(
+s.check(
 	!scheduledWrites.includes("closed-file.md"),
 	'local disk-sync origin: no write scheduled (correctly filtered)',
 );
@@ -239,13 +229,13 @@ docA.transact(() => {
 	closedTextA2.insert(closedTextA2.length, "\n\nLocal CM edit.");
 }, "y-codemirror.next");
 
-assert(
+s.check(
 	!scheduledWrites.includes("closed-file.md"),
 	'local y-codemirror.next origin: no write scheduled (correctly filtered)',
 );
 
 // ── Test 4: remote new file → detected via map observer ─────────────────
-console.log("\n--- Test 4: remote new file creation ---");
+s.section("Test 4: remote new file creation");
 resetTracking();
 
 docB.transact(() => {
@@ -257,13 +247,13 @@ docB.transact(() => {
 	metaB.set(id, { path: "new-remote-file.md", mtime: Date.now() });
 });
 
-assert(
+s.check(
 	scheduledWrites.includes("new-remote-file.md"),
 	"new file: write scheduled via pathToId map observer",
 );
 
 // ── Test 5: remote delete → detected via meta observer ──────────────────
-console.log("\n--- Test 5: remote delete (tombstone) ---");
+s.section("Test 5: remote delete (tombstone)");
 resetTracking();
 
 docB.transact(() => {
@@ -276,13 +266,13 @@ docB.transact(() => {
 	});
 });
 
-assert(
+s.check(
 	scheduledDeletes.includes("new-remote-file.md"),
 	"delete: scheduled via pathToId delete + meta tombstone",
 );
 
 // ── Test 6: verify afterTransaction doesn't double-fire for open files ──
-console.log("\n--- Test 6: no double-fire for open files ---");
+s.section("Test 6: no double-fire for open files");
 resetTracking();
 
 const openTextB2 = idToTextB.get(pathToIdB.get("open-file.md")!)!;
@@ -291,17 +281,11 @@ openTextB2.insert(openTextB2.length, "\n\nAnother remote edit.");
 // The per-file observer fires (1 write), afterTransaction skips it
 // because textObservers.has("open-file.md") is true.
 const openFileWrites = scheduledWrites.filter((p) => p === "open-file.md");
-assert(
+s.check(
 	openFileWrites.length === 1,
 	"open file: exactly 1 write (Y.Text observer only, afterTransaction skipped)",
 );
 
-// ── Summary ─────────────────────────────────────────────────────────────
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
 docA.destroy();
 docB.destroy();
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

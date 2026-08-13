@@ -2,19 +2,9 @@ import * as Y from "yjs";
 import { normalizePath } from "obsidian";
 import { VaultSync } from "../../src/sync/vaultSync";
 import { createNestedActiveMeta, type MetaSemanticChange } from "../../src/sync/fileMeta";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, message: string): void {
-	if (condition) {
-		console.log(`  PASS  ${message}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${message}`);
-	failed++;
-}
+const s = suite("path-index-collision");
 
 function makeVaultSyncFixture(): VaultSync {
 	const vaultSync = Object.create(VaultSync.prototype) as VaultSync & Record<string, unknown>;
@@ -40,7 +30,7 @@ function makeVaultSyncFixture(): VaultSync {
 	return vaultSync as VaultSync;
 }
 
-console.log("\n--- Path-index collision invalidation ---");
+s.section("Path-index collision invalidation");
 
 {
 	const vaultSync = makeVaultSyncFixture();
@@ -54,8 +44,8 @@ console.log("\n--- Path-index collision invalidation ---");
 		invalidatePathIndexesForMetaChanges: (changes: readonly MetaSemanticChange[]) => void;
 	}).invalidatePathIndexesForMetaChanges.bind(vaultSync);
 
-	assert(vaultSync.getFileId(path) === "id-b", "higher initial mtime wins the collision");
-	assert(
+	s.check(vaultSync.getFileId(path) === "id-b", "higher initial mtime wins the collision");
+	s.check(
 		(vaultSync as unknown as { _pathIndexesDirty: boolean })._pathIndexesDirty === false,
 		"initial lookup leaves the lazy index clean",
 	);
@@ -65,23 +55,21 @@ console.log("\n--- Path-index collision invalidation ---");
 	});
 	invalidate([{ kind: "mtime-changed", fileId: "id-a", path }]);
 
-	assert(
+	s.check(
 		(vaultSync as unknown as { _pathIndexesDirty: boolean })._pathIndexesDirty === true,
 		"mtime-only change dirties an index whose winner depends on mtime",
 	);
-	assert(vaultSync.getFileId(path) === "id-a", "next lazy lookup recomputes the new mtime winner");
+	s.check(vaultSync.getFileId(path) === "id-a", "next lazy lookup recomputes the new mtime winner");
 
 	vaultSync.ydoc.transact(() => {
 		(vaultSync.meta.get("id-a") as Y.Map<unknown>).set("device", "device-a2");
 	});
 	invalidate([{ kind: "device-changed", fileId: "id-a", path }]);
 
-	assert(
+	s.check(
 		(vaultSync as unknown as { _pathIndexesDirty: boolean })._pathIndexesDirty === false,
 		"device-only change does not dirty the path index",
 	);
-	assert(vaultSync.getFileId(normalizePath(path)) === "id-a", "device-only change preserves the current winner");
+	s.check(vaultSync.getFileId(normalizePath(path)) === "id-a", "device-only change preserves the current winner");
 }
-
-console.log(`\nResults: ${passed} passed, ${failed} failed`);
-if (failed > 0) process.exit(1);
+await s.done();

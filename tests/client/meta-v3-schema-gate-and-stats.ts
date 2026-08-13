@@ -17,25 +17,22 @@ import {
 	SERVER_MAX_SCHEMA_VERSION,
 } from "../../server/src/version";
 import { SCHEMA_VERSION } from "../../src/sync/schema";
+import { suite } from "../harness.ts";
 
 // Both client and server must agree on the target schema version.
 const EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION;
 
 // ── Test runner ─────────────────────────────────────────────────────────────
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) { passed++; } else { failed++; console.error(`  FAIL: ${msg}`); }
-}
+const s = suite("meta-v3-schema-gate-and-stats");
 
 function assertEqual<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) { passed++; } else { failed++; console.error(`  FAIL: ${msg} — got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`); }
-}
-
-function section(name: string): void {
-	console.log(`\n── ${name} ──`);
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg} — got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`,
+	);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -94,7 +91,7 @@ function simulateServerIsMetaDeleted(value: unknown): boolean {
 // Schema Gate Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Schema gate: server pins exactly one schema version");
+s.section("Schema gate: server pins exactly one schema version");
 
 {
 	// Admission is an equality test, not a range test: the server accepts the
@@ -105,14 +102,14 @@ section("Schema gate: server pins exactly one schema version");
 	assertEqual(SERVER_MAX_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_MAX_SCHEMA_VERSION === SCHEMA_VERSION");
 	assertEqual(SERVER_MIN_SCHEMA_VERSION, SERVER_MAX_SCHEMA_VERSION, "the published envelope is a single value (min === max)");
 	for (const version of [EXPECTED_SCHEMA_VERSION - 1, EXPECTED_SCHEMA_VERSION + 1]) {
-		assert(
+		s.check(
 			version !== SERVER_MIN_SCHEMA_VERSION && version !== SERVER_MAX_SCHEMA_VERSION,
 			`schema v${version} is outside the pinned server version`,
 		);
 	}
 }
 
-section("Schema gate: room schema skew is rejected in both directions");
+s.section("Schema gate: room schema skew is rejected in both directions");
 
 {
 	// Mirrors handleSyncSocketRoute: a room is admissible only when its recorded
@@ -147,7 +144,7 @@ section("Schema gate: room schema skew is rejected in both directions");
 	);
 }
 
-section("Schema gate: markSchemaV3 is idempotent");
+s.section("Schema gate: markSchemaV3 is idempotent");
 
 {
 	const doc = new Y.Doc();
@@ -174,7 +171,7 @@ section("Schema gate: markSchemaV3 is idempotent");
 	assertEqual(sys.get("schemaUpdatedAt"), before, "second call is no-op");
 }
 
-section("Schema gate: concurrent v3 marker writes converge");
+s.section("Schema gate: concurrent v3 marker writes converge");
 
 {
 	const doc1 = new Y.Doc({ gc: false });
@@ -200,7 +197,7 @@ section("Schema gate: concurrent v3 marker writes converge");
 // Server Stats Dual-Read Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Server stats: flat-only room");
+s.section("Server stats: flat-only room");
 
 {
 	const doc = new Y.Doc();
@@ -220,7 +217,7 @@ section("Server stats: flat-only room");
 	assertEqual(tombstoneCount, 20, "server counts 20 tombstones from flat");
 }
 
-section("Server stats: nested-only room");
+s.section("Server stats: nested-only room");
 
 {
 	const doc = new Y.Doc();
@@ -250,7 +247,7 @@ section("Server stats: nested-only room");
 	assertEqual(tombstoneCount, 10, "server counts 10 tombstones from nested");
 }
 
-section("Server stats: mixed flat+nested room");
+s.section("Server stats: mixed flat+nested room");
 
 {
 	const doc = new Y.Doc();
@@ -279,7 +276,7 @@ section("Server stats: mixed flat+nested room");
 	assertEqual(invalidCount, 0, "no invalid entries in mixed room");
 }
 
-section("Server stats: invalid metadata does not crash");
+s.section("Server stats: invalid metadata does not crash");
 
 {
 	const doc = new Y.Doc();
@@ -304,7 +301,7 @@ section("Server stats: invalid metadata does not crash");
 	assertEqual(invalid, 3, "3 invalid entries detected");
 }
 
-section("Server stats: v2 persisted room boots under v3 server");
+s.section("Server stats: v2 persisted room boots under v3 server");
 
 {
 	// Simulate: server loads a doc that was persisted at schema v2
@@ -327,7 +324,7 @@ section("Server stats: v2 persisted room boots under v3 server");
 // computeMetaShapeStats Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("computeMetaShapeStats: mixed room");
+s.section("computeMetaShapeStats: mixed room");
 
 {
 	const doc = new Y.Doc();
@@ -355,7 +352,7 @@ section("computeMetaShapeStats: mixed room");
 // Realistic Vault Test
 // ═══════════════════════════════════════════════════════════════════════════
 
-section("Realistic vault: 200 active + 1500 tombstones, touch 5, SQL round-trip");
+s.section("Realistic vault: 200 active + 1500 tombstones, touch 5, SQL round-trip");
 
 {
 	const doc = new Y.Doc();
@@ -388,7 +385,7 @@ section("Realistic vault: 200 active + 1500 tombstones, touch 5, SQL round-trip"
 	assertEqual(afterStats.tombstoneMetaEntries, 1500, "after touch: still 1500 tombstones");
 
 	// Update size is bounded (not proportional to 1700 entries)
-	assert(updateSize < 3000, `update size bounded: ${updateSize} bytes < 3000`);
+	s.check(updateSize < 3000, `update size bounded: ${updateSize} bytes < 3000`);
 
 	// Simulate SQL persistence round-trip
 	const encoded = Y.encodeStateAsUpdate(doc);
@@ -405,11 +402,11 @@ section("Realistic vault: 200 active + 1500 tombstones, touch 5, SQL round-trip"
 
 	// Verify a nested entry survived correctly
 	const entry0 = meta2.get("active-0");
-	assert(entry0 instanceof Y.Map, "round-trip: entry-0 is still Y.Map");
+	s.check(entry0 instanceof Y.Map, "round-trip: entry-0 is still Y.Map");
 	assertEqual(getMetaPath(entry0), "notes/file-0.md", "round-trip: entry-0 path correct");
 }
 
-section("Realistic vault: reconnect after lazy conversion");
+s.section("Realistic vault: reconnect after lazy conversion");
 
 {
 	// Simulate: device A touches some entries, persists, device B loads the state
@@ -452,13 +449,4 @@ section("Realistic vault: reconnect after lazy conversion");
 	assertEqual(finalStats.nestedMetaEntries, 4, "after sync: 4 nested total");
 	assertEqual(finalStats.flatMetaEntries, 146, "after sync: 146 flat remaining");
 }
-
-// ── Report ──────────────────────────────────────────────────────────────────
-
-console.log(`\n${"═".repeat(60)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"═".repeat(60)}`);
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

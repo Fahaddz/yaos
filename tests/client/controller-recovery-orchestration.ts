@@ -19,8 +19,6 @@
  * heal() after applyDiffToYText.
  */
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { MarkdownView, TFile } from "obsidian";
 import * as Y from "yjs";
 import { ReconciliationController } from "../../src/runtime/reconciliationController";
@@ -36,28 +34,17 @@ import {
 	isLocalStringOrigin,
 	LOCAL_REPAIR_ORIGINS,
 } from "../../src/sync/origins";
+import { readSource, suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("controller-recovery-orchestration");
 
 function assertEq<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`);
-	failed++;
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`,
+	);
 }
 
 function makeTFile(path: string): TFile {
@@ -299,7 +286,7 @@ function buildFixture(initial: {
 // Test 0 — taxonomy + flight kinds present
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 0: flight taxonomy bumped and new kinds present ---");
+s.section("Test 0: flight taxonomy bumped and new kinds present");
 {
 	assertEq(FLIGHT_TAXONOMY_VERSION, 12, "FLIGHT_TAXONOMY_VERSION === 12");
 	assertEq(FLIGHT_KIND.recoverySkipped, "recovery.skipped", "FLIGHT_KIND.recoverySkipped");
@@ -311,17 +298,17 @@ console.log("\n--- Test 0: flight taxonomy bumped and new kinds present ---");
 // Test 1 — round-trip suppression invariant: recovery origin is local
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 1: ORIGIN_DISK_SYNC_RECOVER_BOUND is a local origin ---");
+s.section("Test 1: ORIGIN_DISK_SYNC_RECOVER_BOUND is a local origin");
 {
-	assert(
+	s.check(
 		isLocalStringOrigin(ORIGIN_DISK_SYNC_RECOVER_BOUND),
 		"isLocalStringOrigin(ORIGIN_DISK_SYNC_RECOVER_BOUND) === true",
 	);
-	assert(
+	s.check(
 		isLocalOrigin(ORIGIN_DISK_SYNC_RECOVER_BOUND, /* provider */ undefined),
 		"isLocalOrigin(ORIGIN_DISK_SYNC_RECOVER_BOUND, undefined) === true",
 	);
-	assert(
+	s.check(
 		LOCAL_REPAIR_ORIGINS.includes(ORIGIN_DISK_SYNC_RECOVER_BOUND),
 		"LOCAL_REPAIR_ORIGINS includes ORIGIN_DISK_SYNC_RECOVER_BOUND",
 	);
@@ -331,7 +318,7 @@ console.log("\n--- Test 1: ORIGIN_DISK_SYNC_RECOVER_BOUND is a local origin ---"
 // Test 2 — orchestration: localOnly recovery emits the expected sequence
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 2: localOnly recovery flight-event timeline ---");
+s.section("Test 2: localOnly recovery flight-event timeline");
 {
 	const fix = buildFixture({
 		path: "Notes/orch-test.md",
@@ -346,26 +333,26 @@ console.log("\n--- Test 2: localOnly recovery flight-event timeline ---");
 		.filter((e) => e.layer === "recovery" || e.layer === "editor")
 		.map((e) => e.kind);
 
-	assert(
+	s.check(
 		recoveryKinds[0] === FLIGHT_KIND.recoveryDecision,
 		"first recovery/editor event is recovery.decision",
 	);
-	assert(
+	s.check(
 		recoveryKinds[1] === FLIGHT_KIND.recoveryApplyStart,
 		"second recovery/editor event is recovery.apply.start",
 	);
-	assert(
+	s.check(
 		recoveryKinds[2] === FLIGHT_KIND.recoveryApplyDone,
 		"third recovery/editor event is recovery.apply.done",
 	);
-	assert(
+	s.check(
 		recoveryKinds[3] === FLIGHT_KIND.editorRepairApplied,
 		"fourth recovery/editor event is editor.repair.applied",
 	);
 	assertEq(recoveryKinds.length, 4, "exactly 4 recovery/editor events");
 
 	const decision = fix.captured.find((e) => e.kind === FLIGHT_KIND.recoveryDecision);
-	assert(decision !== undefined, "recovery.decision present");
+	s.check(decision !== undefined, "recovery.decision present");
 	assertEq(decision?.data.reason, "bound-file-local-only-divergence", "decision.reason");
 	assertEq(decision?.data.action, "apply-diff", "decision.action");
 	assertEq(decision?.data.editorEqualsDisk, true, "decision.editorEqualsDisk === true");
@@ -392,7 +379,7 @@ console.log("\n--- Test 2: localOnly recovery flight-event timeline ---");
 
 	assertEq(fix.ytext.toString(), "DDDD", "Y.Text postcondition matches disk");
 
-	assert(
+	s.check(
 		fix.transactionOrigins.includes(ORIGIN_DISK_SYNC_RECOVER_BOUND),
 		"recovery transaction carried ORIGIN_DISK_SYNC_RECOVER_BOUND",
 	);
@@ -402,7 +389,7 @@ console.log("\n--- Test 2: localOnly recovery flight-event timeline ---");
 // Test 3 — second pass on converged file emits recovery.skipped only
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 3: second pass on converged file emits only recovery.skipped ---");
+s.section("Test 3: second pass on converged file emits only recovery.skipped");
 {
 	const fix = buildFixture({
 		path: "Notes/skip-test.md",
@@ -413,7 +400,7 @@ console.log("\n--- Test 3: second pass on converged file emits only recovery.ski
 
 	await fix.ingestDiskFileNow("modify");
 	const firstPassCount = fix.captured.length;
-	assert(firstPassCount > 0, "first pass produced events");
+	s.check(firstPassCount > 0, "first pass produced events");
 
 	// Clear the bound recovery lock so the lock-active bail does not fire.
 	(fix.controller as unknown as { boundRecoveryLocks: Map<string, number> })
@@ -442,7 +429,7 @@ console.log("\n--- Test 3: second pass on converged file emits only recovery.ski
 // Test 4 — bound recovery lock active emits recovery.skipped
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 4: recovery-lock-active bail emits recovery.skipped ---");
+s.section("Test 4: recovery-lock-active bail emits recovery.skipped");
 {
 	const fix = buildFixture({
 		path: "Notes/lock-test.md",
@@ -472,7 +459,7 @@ console.log("\n--- Test 4: recovery-lock-active bail emits recovery.skipped ---"
 		"recovery-lock-active",
 		"recovery.skipped reason is recovery-lock-active",
 	);
-	assert(
+	s.check(
 		typeof secondPassEvents[0]?.data.lockRemainingMs === "number" &&
 		(secondPassEvents[0].data.lockRemainingMs as number) > 0,
 		"recovery.skipped includes lockRemainingMs > 0",
@@ -486,7 +473,7 @@ console.log("\n--- Test 4: recovery-lock-active bail emits recovery.skipped ---"
 // Test 5 — crdtOnly idle-grace bail emits recovery.skipped
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 5: crdtOnly idle-grace bail emits recovery.skipped ---");
+s.section("Test 5: crdtOnly idle-grace bail emits recovery.skipped");
 {
 	const fix = buildFixture({
 		path: "Notes/idle-test.md",
@@ -511,9 +498,9 @@ console.log("\n--- Test 5: crdtOnly idle-grace bail emits recovery.skipped ---")
 	}
 
 	const skipped = fix.captured.find((e) => e.kind === FLIGHT_KIND.recoverySkipped);
-	assert(skipped !== undefined, "recovery.skipped emitted");
+	s.check(skipped !== undefined, "recovery.skipped emitted");
 	assertEq(skipped?.data.reason, "recent-editor-activity", "reason is recent-editor-activity");
-	assert(
+	s.check(
 		typeof skipped?.data.idleMs === "number" &&
 		(skipped!.data.idleMs as number) >= 0 &&
 		(skipped!.data.idleMs as number) < 1200,
@@ -532,7 +519,7 @@ console.log("\n--- Test 5: crdtOnly idle-grace bail emits recovery.skipped ---")
 // Test 6 — quarantine after three identical attempts
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 6: third identical recovery is quarantined ---");
+s.section("Test 6: third identical recovery is quarantined");
 {
 	const fix = buildFixture({
 		path: "Notes/quarantine-test.md",
@@ -574,7 +561,7 @@ console.log("\n--- Test 6: third identical recovery is quarantined ---");
 		"bound-file-local-only-divergence",
 		"quarantined.reason",
 	);
-	assert(
+	s.check(
 		typeof quarantined[0]?.data.signature === "string" &&
 		(quarantined[0].data.signature as string).length > 0,
 		"quarantined.signature is non-empty string",
@@ -594,7 +581,7 @@ console.log("\n--- Test 6: third identical recovery is quarantined ---");
 		.filter((e) => e.layer === "recovery")
 		.map((e) => e.kind);
 	const lastDecisionIdx = recoveryLayerKinds.lastIndexOf(FLIGHT_KIND.recoveryDecision);
-	assert(lastDecisionIdx >= 0, "third recovery.decision present");
+	s.check(lastDecisionIdx >= 0, "third recovery.decision present");
 	assertEq(
 		recoveryLayerKinds[lastDecisionIdx + 1],
 		FLIGHT_KIND.recoveryQuarantined,
@@ -624,7 +611,7 @@ console.log("\n--- Test 6: third identical recovery is quarantined ---");
 // Test 7 — round-trip suppression: bound recovery does not emit disk.write.*
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 7: bound recovery does not round-trip as disk.write ---");
+s.section("Test 7: bound recovery does not round-trip as disk.write");
 {
 	const fix = buildFixture({
 		path: "Notes/round-trip-test.md",
@@ -653,19 +640,16 @@ console.log("\n--- Test 7: bound recovery does not round-trip as disk.write ---"
 // Test 8 — source-grep regressions on src/sync/editorBinding.ts
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 8: source-grep regressions on EditorBindingManager emit sites ---");
+s.section("Test 8: source-grep regressions on EditorBindingManager emit sites");
 {
-	const bindingSourcePath = fileURLToPath(
-		new URL("../../src/sync/editorBinding.ts", import.meta.url),
-	);
-	const src = readFileSync(bindingSourcePath, "utf8");
+	const src = readSource("src/sync/editorBinding.ts");
 
 	// Constructor accepts the optional flight callback.
-	assert(
+	s.check(
 		src.includes("private recordFlightPathEvent?: (event: ProductFlightPathEventInput) => void"),
 		"constructor accepts optional recordFlightPathEvent callback",
 	);
-	assert(
+	s.check(
 		src.includes('import type { ProductFlightPathEventInput } from "../observability/traceSink"'),
 		"ProductFlightPathEventInput imported from observability",
 	);
@@ -674,13 +658,13 @@ console.log("\n--- Test 8: source-grep regressions on EditorBindingManager emit 
 	const applyBindingIdx = src.indexOf(
 		"private applyBinding(",
 	);
-	assert(applyBindingIdx > 0, "applyBinding method present");
+	s.check(applyBindingIdx > 0, "applyBinding method present");
 	const applyBindingTail = src.slice(applyBindingIdx, applyBindingIdx + 4500);
-	assert(
+	s.check(
 		applyBindingTail.includes("PRODUCT_EVENT_KIND.editorRepairApplied"),
 		"applyBinding emits PRODUCT_EVENT_KIND.editorRepairApplied",
 	);
-	assert(
+	s.check(
 		applyBindingTail.includes('if (action === "repair")'),
 		"applyBinding gates emission on action===\"repair\"",
 	);
@@ -692,13 +676,13 @@ console.log("\n--- Test 8: source-grep regressions on EditorBindingManager emit 
 	const healIdx = src.indexOf(
 		"heal(view: MarkdownView, deviceName: string, reason: string): boolean {",
 	);
-	assert(healIdx > 0, "heal method present");
+	s.check(healIdx > 0, "heal method present");
 	const healBody = src.slice(healIdx, healIdx + 2500);
 	const applyDiffIdx = healBody.indexOf("applyDiffToYText(target.ytext, crdtContent, currentContent, ORIGIN_EDITOR_HEALTH_HEAL)");
 	const healEmitIdx = healBody.indexOf("PRODUCT_EVENT_KIND.editorHealApplied");
-	assert(applyDiffIdx > 0, "heal() calls applyDiffToYText with ORIGIN_EDITOR_HEALTH_HEAL");
-	assert(healEmitIdx > 0, "heal() emits PRODUCT_EVENT_KIND.editorHealApplied");
-	assert(
+	s.check(applyDiffIdx > 0, "heal() calls applyDiffToYText with ORIGIN_EDITOR_HEALTH_HEAL");
+	s.check(healEmitIdx > 0, "heal() emits PRODUCT_EVENT_KIND.editorHealApplied");
+	s.check(
 		healEmitIdx > applyDiffIdx,
 		"PRODUCT_EVENT_KIND.editorHealApplied emit follows applyDiffToYText",
 	);
@@ -707,16 +691,16 @@ console.log("\n--- Test 8: source-grep regressions on EditorBindingManager emit 
 	// checking that the emit index is past the closing brace of the diff
 	// branch. The diff branch is short (just the log + applyDiffToYText) so
 	// we can detect it textually.
-	assert(
+	s.check(
 		healBody.includes("const diffApplied = crdtContent !== currentContent"),
 		"heal() computes diffApplied flag",
 	);
-	assert(
+	s.check(
 		healBody.includes("diffApplied,"),
 		"heal() emit data carries diffApplied flag",
 	);
 	const ifBranchIdx = healBody.indexOf("if (diffApplied) {");
-	assert(ifBranchIdx > 0, "heal() has if(diffApplied) block");
+	s.check(ifBranchIdx > 0, "heal() has if(diffApplied) block");
 	// The emit must NOT be inside the if(diffApplied) block. Find the
 	// closing brace of that block by walking braces.
 	let depth = 0;
@@ -729,8 +713,8 @@ console.log("\n--- Test 8: source-grep regressions on EditorBindingManager emit 
 			if (depth === 0) { closeIdx = i; break; }
 		}
 	}
-	assert(closeIdx > 0, "heal() if(diffApplied) block closing brace found");
-	assert(
+	s.check(closeIdx > 0, "heal() if(diffApplied) block closing brace found");
+	s.check(
 		healEmitIdx > closeIdx,
 		"PRODUCT_EVENT_KIND.editorHealApplied emit is OUTSIDE if(diffApplied) block (fires on every successful entry)",
 	);
@@ -740,32 +724,28 @@ console.log("\n--- Test 8: source-grep regressions on EditorBindingManager emit 
 // Test 9 — production code has no new heal() callers
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 9: heal() retains zero production callers ---");
+s.section("Test 9: heal() retains zero production callers");
 {
-	const bindingSourcePath = fileURLToPath(
-		new URL("../../src/sync/editorBinding.ts", import.meta.url),
-	);
-	const bindingSrc = readFileSync(bindingSourcePath, "utf8");
+	const bindingSrc = readSource("src/sync/editorBinding.ts");
 
 	// Grep production sources outside editorBinding.ts itself for `.heal(`.
 	const productionFiles = [
-		"../../src/main.ts",
-		"../../src/runtime/reconciliationController.ts",
-		"../../src/runtime/editorWorkspaceOrchestrator.ts",
-		"../../src/sync/diskMirror.ts",
+		"src/main.ts",
+		"src/runtime/reconciliationController.ts",
+		"src/runtime/editorWorkspaceOrchestrator.ts",
+		"src/sync/diskMirror.ts",
 	];
 
 	for (const rel of productionFiles) {
-		const url = new URL(rel, import.meta.url);
 		try {
-			const text = readFileSync(fileURLToPath(url), "utf8");
+			const text = readSource(rel);
 			// editorBindings.heal( or .heal( on something resembling a manager.
 			// Allow editorBindings?.heal? in trace strings, but not as a call.
 			const callMatches = text.match(/editorBindings(?:\??\s*\.\s*|\s*\.\s*)heal\s*\(/g);
 			assertEq(
 				callMatches,
 				null,
-				`no editorBindings.heal( call in ${rel.replace("../../", "")}`,
+				`no editorBindings.heal( call in ${rel}`,
 			);
 		} catch (err) {
 			// File missing is fine for editorWorkspaceOrchestrator.ts in
@@ -776,20 +756,9 @@ console.log("\n--- Test 9: heal() retains zero production callers ---");
 
 	// And inside editorBinding.ts itself, heal() should still call repair()
 	// and not be invoked by validateOpenBindings, bind, or maybeHealBinding.
-	assert(
+	s.check(
 		!bindingSrc.match(/this\.heal\s*\(/),
 		"no this.heal( call inside editorBinding.ts (repair flows do not invoke heal)",
 	);
 }
-
-// -------------------------------------------------------------------
-// Wrap up
-// -------------------------------------------------------------------
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

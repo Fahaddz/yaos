@@ -14,27 +14,15 @@
 // test fails and the regression is caught at CI time, before another
 // quota-burning deploy hits production.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { readSource, suite } from "../harness.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const indexPath = resolve(here, "../../server/src/index.ts");
-const authPath = resolve(here, "../../server/src/routes/auth.ts");
-const syncSocketPath = resolve(here, "../../server/src/routes/syncSocket.ts");
+// Repo-root-relative, resolved by the harness: these paths no longer have to
+// know how deep under tests/ this suite happens to live.
+const indexPath = "server/src/index.ts";
+const authPath = "server/src/routes/auth.ts";
+const syncSocketPath = "server/src/routes/syncSocket.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("server-pre-auth-trace");
 
 /**
  * Extract the body of a top-level `function name(...) {...}` declaration.
@@ -63,35 +51,35 @@ function extractFunctionBody(source, functionName) {
 	return null;
 }
 
-console.log("\n--- Test 1: rejectUnauthorizedVaultRequest (auth.ts) contains no recordVaultTrace calls ---");
+s.section("Test 1: rejectUnauthorizedVaultRequest (auth.ts) contains no recordVaultTrace calls");
 {
 	// rejectUnauthorizedVaultRequest was moved to auth.ts (Obsidian-free, no DO deps)
 	// so it can be imported and tested directly in runtime tests (FU-4).
-	const source = readFileSync(authPath, "utf8");
+	const source = readSource(authPath);
 	const body = extractFunctionBody(source, "rejectUnauthorizedVaultRequest");
-	assert(body !== null, "rejectUnauthorizedVaultRequest declaration is parseable in auth.ts");
-	assert(
+	s.check(body !== null, "rejectUnauthorizedVaultRequest declaration is parseable in auth.ts");
+	s.check(
 		body !== null && !/recordVaultTrace\s*\(/.test(body),
 		"rejectUnauthorizedVaultRequest body does not call recordVaultTrace (INV-SEC-01)",
 	);
 }
 
-console.log("\n--- Test 1b: rejectAndLogUnauthorizedVaultRequest (index.ts) logs but does not trace ---");
+s.section("Test 1b: rejectAndLogUnauthorizedVaultRequest (index.ts) logs but does not trace");
 {
-	const source = readFileSync(indexPath, "utf8");
+	const source = readSource(indexPath);
 	const body = extractFunctionBody(source, "rejectAndLogUnauthorizedVaultRequest");
-	assert(body !== null, "rejectAndLogUnauthorizedVaultRequest declaration is parseable in index.ts");
-	assert(
+	s.check(body !== null, "rejectAndLogUnauthorizedVaultRequest declaration is parseable in index.ts");
+	s.check(
 		body !== null && !/recordVaultTrace\s*\(/.test(body),
 		"rejectAndLogUnauthorizedVaultRequest body does not call recordVaultTrace (INV-SEC-01)",
 	);
 }
 
-console.log("\n--- Test 2: handleSyncSocketRoute has no recordVaultTrace calls at all ---");
+s.section("Test 2: handleSyncSocketRoute has no recordVaultTrace calls at all");
 {
-	const source = readFileSync(syncSocketPath, "utf8");
+	const source = readSource(syncSocketPath);
 	const body = extractFunctionBody(source, "handleSyncSocketRoute");
-	assert(body !== null, "handleSyncSocketRoute declaration is parseable");
+	s.check(body !== null, "handleSyncSocketRoute declaration is parseable");
 
 	// Issue #40 Phase 2 fix: ALL WebSocket admission events (ws-connected,
 	// ws-rejected) were moved to console-only logging.  The function must
@@ -101,70 +89,65 @@ console.log("\n--- Test 2: handleSyncSocketRoute has no recordVaultTrace calls a
 	// Historical note: the function previously called recordVaultTrace for
 	// ws-connected (every successful connect) and ws-rejected (post-auth
 	// schema-skew).  Both were removed in the issue #40 amplification fix.
-	assert(
+	s.check(
 		body !== null && !/recordVaultTrace\s*\(/.test(body),
 		"handleSyncSocketRoute body contains no recordVaultTrace calls (INV-SEC-01, INV-OBS-02)",
 	);
 
 	// Redundantly verify the pre-auth slice specifically — belt-and-suspenders.
 	const preAuthSlice = body?.split(/if\s*\(\s*!\s*clientSchema\s*\)/)[0] ?? "";
-	assert(
+	s.check(
 		preAuthSlice.length > 0,
 		"pre-auth slice is non-empty (split landed at the post-auth boundary)",
 	);
-	assert(
+	s.check(
 		!/recordVaultTrace\s*\(/.test(preAuthSlice),
 		"pre-auth socket rejection branches do not call recordVaultTrace (INV-SEC-01)",
 	);
 }
 
-console.log("\n--- Test 3: rejection paths still produce log output (telemetry retained) ---");
+s.section("Test 3: rejection paths still produce log output (telemetry retained)");
 {
 	// Logging lives in rejectAndLogUnauthorizedVaultRequest (index.ts wrapper)
-	const indexSource = readFileSync(indexPath, "utf8");
+	const indexSource = readSource(indexPath);
 	const indexBody = extractFunctionBody(indexSource, "rejectAndLogUnauthorizedVaultRequest");
-	assert(
+	s.check(
 		indexBody !== null && /logVaultRejection\s*\(/.test(indexBody),
 		"rejectAndLogUnauthorizedVaultRequest emits structured log via logVaultRejection",
 	);
 
-	const socketSource = readFileSync(syncSocketPath, "utf8");
+	const socketSource = readSource(syncSocketPath);
 	const socketBody = extractFunctionBody(socketSource, "handleSyncSocketRoute");
-	assert(
+	s.check(
 		socketBody !== null && /logSocketRejection\s*\(/.test(socketBody),
 		"handleSyncSocketRoute emits structured log via logSocketRejection",
 	);
 }
 
-console.log("\n--- Test 4: log helpers use console.warn (worker logs), not DO storage ---");
+s.section("Test 4: log helpers use console.warn (worker logs), not DO storage");
 {
-	const indexSource = readFileSync(indexPath, "utf8");
+	const indexSource = readSource(indexPath);
 	const indexHelper = extractFunctionBody(indexSource, "logVaultRejection");
-	assert(indexHelper !== null, "logVaultRejection declaration is parseable");
-	assert(
+	s.check(indexHelper !== null, "logVaultRejection declaration is parseable");
+	s.check(
 		indexHelper !== null && /console\.warn\s*\(/.test(indexHelper),
 		"logVaultRejection writes via console.warn",
 	);
-	assert(
+	s.check(
 		indexHelper !== null && !/recordVaultTrace|getServerByName|stub\.fetch/.test(indexHelper),
 		"logVaultRejection does not contact the Durable Object",
 	);
 
-	const socketSource = readFileSync(syncSocketPath, "utf8");
+	const socketSource = readSource(syncSocketPath);
 	const socketHelper = extractFunctionBody(socketSource, "logSocketRejection");
-	assert(socketHelper !== null, "logSocketRejection declaration is parseable");
-	assert(
+	s.check(socketHelper !== null, "logSocketRejection declaration is parseable");
+	s.check(
 		socketHelper !== null && /console\.warn\s*\(/.test(socketHelper),
 		"logSocketRejection writes via console.warn",
 	);
-	assert(
+	s.check(
 		socketHelper !== null && !/recordVaultTrace|getServerByName|stub\.fetch/.test(socketHelper),
 		"logSocketRejection does not contact the Durable Object",
 	);
 }
-
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

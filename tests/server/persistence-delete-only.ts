@@ -23,19 +23,9 @@
 
 import * as Y from "yjs";
 import { PersistenceCoordinator, type DocStore, type DocStoreCoalesceResult, type DocStoreJournalStats } from "../../server/src/persistenceCoordinator";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  \x1b[32mPASS\x1b[0m  ${msg}`);
-		passed++;
-	} else {
-		console.log(`  \x1b[31mFAIL\x1b[0m  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("persistence-delete-only");
 
 /** Minimal in-memory DocStore: one snapshot blob plus an append-only journal. */
 class MemoryDocStore implements DocStore {
@@ -96,7 +86,7 @@ const svHex = (doc: Y.Doc): string => Buffer.from(Y.encodeStateVector(doc)).toSt
 
 // ---------------------------------------------------------------------------
 
-console.log("\n--- Test 1: deleting all text is persisted and survives cold load ---");
+s.section("Test 1: deleting all text is persisted and survives cold load");
 {
 	const { doc, store, coordinator } = makeDoc("hello world, this is the body of a note");
 	await coordinator.enqueueSave();
@@ -108,43 +98,43 @@ console.log("\n--- Test 1: deleting all text is persisted and survives cold load
 
 	// The precondition that made the old gate wrong.  If this ever stops being
 	// true the test is no longer exercising the bug.
-	assert(before === after, "state vector is UNCHANGED by a delete-only edit (precondition)");
+	s.check(before === after, "state vector is UNCHANGED by a delete-only edit (precondition)");
 
 	const result = await coordinator.enqueueSave();
-	assert(result.success, "save reports success");
-	assert(result.method !== "skipped", `save was NOT skipped (method=${result.method})`);
+	s.check(result.success, "save reports success");
+	s.check(result.method !== "skipped", `save was NOT skipped (method=${result.method})`);
 
 	const replayed = store.replay();
 	const replayedText = replayed.getMap("idToText").get("file-1") as Y.Text | undefined;
-	assert(replayedText !== undefined, "replayed doc still has the file entry");
-	assert(replayedText?.toString() === "", `deletion survived cold load (got ${JSON.stringify(replayedText?.toString())})`);
+	s.check(replayedText !== undefined, "replayed doc still has the file entry");
+	s.check(replayedText?.toString() === "", `deletion survived cold load (got ${JSON.stringify(replayedText?.toString())})`);
 
 	coordinator.dispose();
 	doc.destroy();
 	replayed.destroy();
 }
 
-console.log("\n--- Test 2: deleting a map key is persisted and survives cold load ---");
+s.section("Test 2: deleting a map key is persisted and survives cold load");
 {
 	const { doc, store, coordinator } = makeDoc("body text");
 	await coordinator.enqueueSave();
 
 	const before = svHex(doc);
 	doc.transact(() => { doc.getMap("idToText").delete("file-1"); });
-	assert(before === svHex(doc), "state vector unchanged by map.delete (precondition)");
+	s.check(before === svHex(doc), "state vector unchanged by map.delete (precondition)");
 
 	const result = await coordinator.enqueueSave();
-	assert(result.method !== "skipped", `save was NOT skipped (method=${result.method})`);
+	s.check(result.method !== "skipped", `save was NOT skipped (method=${result.method})`);
 
 	const replayed = store.replay();
-	assert(!replayed.getMap("idToText").has("file-1"), "key deletion survived cold load");
+	s.check(!replayed.getMap("idToText").has("file-1"), "key deletion survived cold load");
 
 	coordinator.dispose();
 	doc.destroy();
 	replayed.destroy();
 }
 
-console.log("\n--- Test 3: reaping a tombstoned body reclaims encoded bytes durably ---");
+s.section("Test 3: reaping a tombstoned body reclaims encoded bytes durably");
 {
 	// The shape the reaper will produce: meta keeps the tombstone, the body goes.
 	const doc = new Y.Doc();
@@ -162,35 +152,35 @@ console.log("\n--- Test 3: reaping a tombstoned body reclaims encoded bytes dura
 
 	doc.transact(() => { idToText.delete("f1"); });
 	const result = await coordinator.enqueueSave();
-	assert(result.method !== "skipped", `reap save was NOT skipped (method=${result.method})`);
+	s.check(result.method !== "skipped", `reap save was NOT skipped (method=${result.method})`);
 
 	const encodedAfter = Y.encodeStateAsUpdate(doc).byteLength;
-	assert(encodedAfter < encodedBefore / 10, `reap collapsed the body in memory (${encodedBefore} -> ${encodedAfter})`);
+	s.check(encodedAfter < encodedBefore / 10, `reap collapsed the body in memory (${encodedBefore} -> ${encodedAfter})`);
 
 	const replayed = store.replay();
-	assert(Y.encodeStateAsUpdate(replayed).byteLength < encodedBefore / 10, "reclamation survived cold load");
-	assert(replayed.getMap("meta").has("f1"), "tombstone preserved after reap (resurrection still blocked)");
+	s.check(Y.encodeStateAsUpdate(replayed).byteLength < encodedBefore / 10, "reclamation survived cold load");
+	s.check(replayed.getMap("meta").has("f1"), "tombstone preserved after reap (resurrection still blocked)");
 
 	coordinator.dispose();
 	doc.destroy();
 	replayed.destroy();
 }
 
-console.log("\n--- Test 4: a genuinely unchanged document still skips ---");
+s.section("Test 4: a genuinely unchanged document still skips");
 {
 	const { doc, store, coordinator } = makeDoc("unchanged");
 	await coordinator.enqueueSave();
 	const journalBefore = store.journal.length;
 
 	const result = await coordinator.enqueueSave();
-	assert(result.method === "skipped", "second save with no changes is skipped");
-	assert(store.journal.length === journalBefore, "no journal entry written for a clean document");
+	s.check(result.method === "skipped", "second save with no changes is skipped");
+	s.check(store.journal.length === journalBefore, "no journal entry written for a clean document");
 
 	coordinator.dispose();
 	doc.destroy();
 }
 
-console.log("\n--- Test 5: a failed save leaves the document dirty for retry ---");
+s.section("Test 5: a failed save leaves the document dirty for retry");
 {
 	const { doc, store, coordinator } = makeDoc("retry me");
 	await coordinator.enqueueSave();
@@ -201,25 +191,25 @@ console.log("\n--- Test 5: a failed save leaves the document dirty for retry ---
 	doc.transact(() => { ytext.delete(0, 4); });
 
 	const failedResult = await coordinator.enqueueSave();
-	assert(!failedResult.success, "save fails while the store is broken");
-	assert(coordinator.health.dirty, "document remains dirty after a failed save");
+	s.check(!failedResult.success, "save fails while the store is broken");
+	s.check(coordinator.health.dirty, "document remains dirty after a failed save");
 
 	store.failAppend = false;
 	store.failCheckpoint = false;
 	const retry = await coordinator.enqueueSave();
-	assert(retry.success, "retry succeeds once the store recovers");
-	assert(retry.method !== "skipped", `retry actually wrote (method=${retry.method})`);
+	s.check(retry.success, "retry succeeds once the store recovers");
+	s.check(retry.method !== "skipped", `retry actually wrote (method=${retry.method})`);
 
 	const replayed = store.replay();
 	const replayedText = replayed.getMap("idToText").get("file-1") as Y.Text;
-	assert(replayedText.toString() === "y me", `deletion persisted on retry (got ${JSON.stringify(replayedText.toString())})`);
+	s.check(replayedText.toString() === "y me", `deletion persisted on retry (got ${JSON.stringify(replayedText.toString())})`);
 
 	coordinator.dispose();
 	doc.destroy();
 	replayed.destroy();
 }
 
-console.log("\n--- Test 6: a change landing mid-save is not swallowed ---");
+s.section("Test 6: a change landing mid-save is not swallowed");
 {
 	// The dirty flag is cleared BEFORE the delta is encoded, so a change that
 	// arrives while the write is in flight must leave the document dirty again
@@ -237,28 +227,21 @@ console.log("\n--- Test 6: a change landing mid-save is not swallowed ---");
 
 	doc.transact(() => { ytext.delete(4, 1); });     // "firs"
 	const first = await coordinator.enqueueSave();
-	assert(first.method !== "skipped", `initial change was written (method=${first.method})`);
-	assert(injected, "a change was injected while the save was in flight");
-	assert(coordinator.health.dirty, "mid-save change left the document dirty");
+	s.check(first.method !== "skipped", `initial change was written (method=${first.method})`);
+	s.check(injected, "a change was injected while the save was in flight");
+	s.check(coordinator.health.dirty, "mid-save change left the document dirty");
 
 	store.onAppend = null;
 	const second = await coordinator.enqueueSave();
-	assert(second.method !== "skipped", `mid-save change was then written (method=${second.method})`);
+	s.check(second.method !== "skipped", `mid-save change was then written (method=${second.method})`);
 
 	const replayed = store.replay();
 	const replayedText = replayed.getMap("idToText").get("file-1") as Y.Text;
 	const liveText = ytext.toString();
-	assert(replayedText.toString() === liveText, `persisted state matches live doc (${JSON.stringify(replayedText.toString())} vs ${JSON.stringify(liveText)})`);
+	s.check(replayedText.toString() === liveText, `persisted state matches live doc (${JSON.stringify(replayedText.toString())} vs ${JSON.stringify(liveText)})`);
 
 	coordinator.dispose();
 	doc.destroy();
 	replayed.destroy();
 }
-
-// ---------------------------------------------------------------------------
-
-console.log(`\n${"─".repeat(56)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(56)}\n`);
-
-if (failed > 0) process.exit(1);
+await s.done();

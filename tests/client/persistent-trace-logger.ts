@@ -1,17 +1,7 @@
 import { PersistentTraceLogger } from "../../src/telemetry/debug/trace";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("persistent-trace-logger");
 
 function makeFakeApp() {
 	const writes = new Map<string, string>();
@@ -35,7 +25,7 @@ function makeFakeApp() {
 	};
 }
 
-console.log("\n--- Test 1: persistent trace logger drops instead of growing unbounded ---");
+s.section("Test 1: persistent trace logger drops instead of growing unbounded");
 {
 	const fake = makeFakeApp();
 	const logger = new PersistentTraceLogger(fake.app as any, {
@@ -56,15 +46,8 @@ console.log("\n--- Test 1: persistent trace logger drops instead of growing unbo
 		.map((line) => JSON.parse(line))
 		.find((event) => event.msg === "trace-events-dropped");
 
-	assert(Boolean(dropped), "trace storm emits a dropped-event marker");
-	assert(dropped?.details?.count > 0, "dropped-event marker reports how many events were dropped");
-	assert(lines.length <= 2_002, "trace storm log stays bounded after marker and shutdown event");
+	s.check(Boolean(dropped), "trace storm emits a dropped-event marker");
+	s.check(dropped?.details?.count > 0, "dropped-event marker reports how many events were dropped");
+	s.check(lines.length <= 2_002, "trace storm log stays bounded after marker and shutdown event");
 }
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

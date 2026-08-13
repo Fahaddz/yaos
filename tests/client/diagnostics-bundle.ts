@@ -45,19 +45,9 @@ import {
 	type TraceHeaderStateInput,
 	type TraceHeaderTraceFacts,
 } from "../../src/telemetry/diagnostics/diagnosticsBundle";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("diagnostics-bundle");
 
 // ── SHA-256 via Node webcrypto ─────────────────────────────────────────────────
 
@@ -231,7 +221,7 @@ function makeInput(overrides: Partial<TraceHeaderInput> = {}): TraceHeaderInput 
 
 // ── Test 0: server receipt startup validation is explained in prose ──────────
 
-console.log("\n--- Test 0: server receipt startup validation detail ---");
+s.section("Test 0: server receipt startup validation detail");
 {
 	const { header } = await buildTraceHeader(makeInput({
 		state: makeState({
@@ -242,7 +232,7 @@ console.log("\n--- Test 0: server receipt startup validation detail ---");
 		}),
 	}));
 	const syncState = header.syncState as Record<string, unknown>;
-	assert(
+	s.check(
 		syncState.serverReceiptStartupValidationExplanation ===
 			"skipped: local Yjs cache did not finish loading; persisted receipt candidate was not trusted this session",
 		"header explains that skipped startup validation means the persisted candidate was not trusted",
@@ -251,14 +241,14 @@ console.log("\n--- Test 0: server receipt startup validation detail ---");
 
 // ── Test 1: redaction is the default ─────────────────────────────────────────
 
-console.log("\n--- Test 1: redaction is opt-out, not opt-in ---");
+s.section("Test 1: redaction is opt-out, not opt-in");
 {
 	const { header } = await buildTraceHeader(makeInput());
 	const settings = header.settingsSnapshot as Record<string, unknown>;
 
-	assert(header.redacted === true, "an export that passes no options is redacted");
-	assert(settings.serverHost === "(redacted)", "default: serverHost is (redacted)");
-	assert(
+	s.check(header.redacted === true, "an export that passes no options is redacted");
+	s.check(settings.serverHost === "(redacted)", "default: serverHost is (redacted)");
+	s.check(
 		!JSON.stringify(header).includes(KNOWN_PATH_1),
 		"default: known vault paths are absent",
 	);
@@ -266,21 +256,21 @@ console.log("\n--- Test 1: redaction is opt-out, not opt-in ---");
 
 // ── Test 2: redacted — sensitive settings are withheld ───────────────────────
 
-console.log("\n--- Test 2: redacted — settings snapshot ---");
+s.section("Test 2: redacted — settings snapshot");
 {
 	const { header } = await buildTraceHeader(makeInput(), { redacted: true });
 	const settings = header.settingsSnapshot as Record<string, unknown>;
 
-	assert(settings.serverHost === "(redacted)", "redacted: serverHost is (redacted)");
-	assert(settings.vaultId === "(redacted)", "redacted: vaultId is (redacted)");
-	assert(settings.deviceName === "(redacted)", "redacted: deviceName is (redacted)");
-	assert(settings.tokenConfigured === true, "redacted: tokenConfigured is a bare boolean");
-	assert(
+	s.check(settings.serverHost === "(redacted)", "redacted: serverHost is (redacted)");
+	s.check(settings.vaultId === "(redacted)", "redacted: vaultId is (redacted)");
+	s.check(settings.deviceName === "(redacted)", "redacted: deviceName is (redacted)");
+	s.check(settings.tokenConfigured === true, "redacted: tokenConfigured is a bare boolean");
+	s.check(
 		!JSON.stringify(settings).includes("secret-token"),
 		"redacted: the token value itself never appears",
 	);
-	assert(settings.debugModeEnabled === true, "settings snapshot records that debug was on");
-	assert(
+	s.check(settings.debugModeEnabled === true, "settings snapshot records that debug was on");
+	s.check(
 		settings.externalEditPolicy === "always",
 		"settings snapshot keeps non-sensitive policy values verbatim",
 	);
@@ -288,86 +278,86 @@ console.log("\n--- Test 2: redacted — settings snapshot ---");
 
 // ── Test 3: redacted — known vault paths do not appear ───────────────────────
 
-console.log("\n--- Test 3: redacted — vault paths absent ---");
+s.section("Test 3: redacted — vault paths absent");
 {
 	const { header, leakDetected } = await buildTraceHeader(makeInput(), { redacted: true });
 	const serialized = JSON.stringify(header);
 
-	assert(!serialized.includes(KNOWN_PATH_1), `redacted: "${KNOWN_PATH_1}" not in header`);
-	assert(!serialized.includes(KNOWN_PATH_2), `redacted: "${KNOWN_PATH_2}" not in header`);
-	assert(!leakDetected, "redacted: leakDetected is false when paths are redacted");
-	assert(header.pathDirectory === null, "redacted: pathDirectory is withheld");
+	s.check(!serialized.includes(KNOWN_PATH_1), `redacted: "${KNOWN_PATH_1}" not in header`);
+	s.check(!serialized.includes(KNOWN_PATH_2), `redacted: "${KNOWN_PATH_2}" not in header`);
+	s.check(!leakDetected, "redacted: leakDetected is false when paths are redacted");
+	s.check(header.pathDirectory === null, "redacted: pathDirectory is withheld");
 }
 
 // ── Test 4: redacted — host/vault/device not in serialized header ────────────
 
-console.log("\n--- Test 4: redacted — server URL, vault ID, device name absent ---");
+s.section("Test 4: redacted — server URL, vault ID, device name absent");
 {
 	const { header } = await buildTraceHeader(makeInput(), { redacted: true });
 	const serialized = JSON.stringify(header);
 
-	assert(!serialized.includes(SENSITIVE_HOST), "redacted: server URL not in header");
-	assert(!serialized.includes(SENSITIVE_VAULT), "redacted: vault ID not in header");
-	assert(!serialized.includes(SENSITIVE_DEVICE), "redacted: device name not in header");
+	s.check(!serialized.includes(SENSITIVE_HOST), "redacted: server URL not in header");
+	s.check(!serialized.includes(SENSITIVE_VAULT), "redacted: vault ID not in header");
+	s.check(!serialized.includes(SENSITIVE_DEVICE), "redacted: device name not in header");
 }
 
 // ── Test 5: the header is self-describing ────────────────────────────────────
 
-console.log("\n--- Test 5: header identifies itself to a reader with no repo access ---");
+s.section("Test 5: header identifies itself to a reader with no repo access");
 {
 	const { header } = await buildTraceHeader(makeInput(), { redacted: true });
 
-	assert(header.recordType === "trace-header", "header declares recordType");
-	assert(
+	s.check(header.recordType === "trace-header", "header declares recordType");
+	s.check(
 		header.traceHeaderFormatVersion === TRACE_HEADER_FORMAT_VERSION,
 		"header declares its own format version",
 	);
-	assert(
+	s.check(
 		typeof header.readme === "string" && (header.readme as string).includes("seq"),
 		"readme explains the NDJSON layout and the causal seq ordering",
 	);
 
 	const versions = header.versions as Record<string, unknown>;
-	assert(versions.pluginVersion === "1.6.1", "versions carry the plugin version");
-	assert(versions.serverVersion === "2026.05.01", "versions carry the server version");
-	assert(
+	s.check(versions.pluginVersion === "1.6.1", "versions carry the plugin version");
+	s.check(versions.serverVersion === "2026.05.01", "versions carry the server version");
+	s.check(
 		versions.documentSchemaVersionSupportedByClient === 2 &&
 			versions.documentSchemaVersionStoredInDocument === 2,
 		"versions carry both document schema versions",
 	);
-	assert(
+	s.check(
 		versions.flightEventSchemaVersion === 2 && versions.flightEventTaxonomyVersion === 3,
 		"versions carry the event schema and taxonomy versions",
 	);
 
 	const platform = header.platform as Record<string, unknown>;
-	assert(platform.operatingSystem === "darwin" && platform.isMobile === false, "platform is reported");
+	s.check(platform.operatingSystem === "darwin" && platform.isMobile === false, "platform is reported");
 
 	const contents = header.traceContents as Record<string, unknown>;
-	assert(contents.eventCount === 12, "traceContents reports how many events follow");
-	assert(contents.droppedEventCount === 0, "traceContents reports dropped events");
+	s.check(contents.eventCount === 12, "traceContents reports how many events follow");
+	s.check(contents.droppedEventCount === 0, "traceContents reports dropped events");
 }
 
 // ── Test 6: the pathId namespace is described well enough to merge traces ────
 
-console.log("\n--- Test 6: pathId namespace is self-describing ---");
+s.section("Test 6: pathId namespace is self-describing");
 {
 	const { header } = await buildTraceHeader(makeInput(), { redacted: true });
 
 	const identity = header.traceIdentity as Record<string, unknown>;
-	assert(identity.traceId === "trace-test-001", "traceIdentity carries the traceId");
-	assert(
+	s.check(identity.traceId === "trace-test-001", "traceIdentity carries the traceId");
+	s.check(
 		identity.pathPseudonymSaltFingerprint === "f".repeat(32),
 		"traceIdentity publishes the salt fingerprint so two traces can be matched",
 	);
 
 	const scheme = header.pathPseudonymization as Record<string, unknown>;
-	assert(
+	s.check(
 		typeof scheme.scheme === "string" && (scheme.scheme as string).includes("sha256"),
 		"the pseudonymization scheme is spelled out",
 	);
-	assert(scheme.saltScope === "vault", "the salt scope is stated as vault");
-	assert(
+	s.check(scheme.saltScope === "vault", "the salt scope is stated as vault");
+	s.check(
 		scheme.stableAcrossDevicesOfSameVault === true,
 		"the header states that pathIds correlate across devices of one vault",
 	);
@@ -375,7 +365,7 @@ console.log("\n--- Test 6: pathId namespace is self-describing ---");
 
 // ── Test 7: leak detection fires when a path survives redaction ──────────────
 
-console.log("\n--- Test 7: leakDetected fires on a real redaction escape ---");
+s.section("Test 7: leakDetected fires on a real redaction escape");
 {
 	// The deep walker redacts string *values*. A vault path used as an object
 	// *key* slips through — which is exactly the structural escape the
@@ -387,36 +377,36 @@ console.log("\n--- Test 7: leakDetected fires on a real redaction escape ---");
 	});
 
 	const { header, leakDetected } = await buildTraceHeader(leaky, { redacted: true });
-	assert(
+	s.check(
 		JSON.stringify(header).includes(KNOWN_PATH_1),
 		"precondition: a path used as an object key survives the deep walker",
 	);
-	assert(leakDetected, "leakDetected is true when a known path survives into the header");
+	s.check(leakDetected, "leakDetected is true when a known path survives into the header");
 
 	const { leakDetected: cleanRun } = await buildTraceHeader(makeInput(), { redacted: true });
-	assert(!cleanRun, "leakDetected is false on a correctly redacted header");
+	s.check(!cleanRun, "leakDetected is false on a correctly redacted header");
 
 	const { leakDetected: unredactedRun } = await buildTraceHeader(makeInput(), { redacted: false });
-	assert(!unredactedRun, "with filenames: no leak check is performed, so leakDetected is false");
+	s.check(!unredactedRun, "with filenames: no leak check is performed, so leakDetected is false");
 }
 
 // ── Test 8: with filenames — sensitive fields ARE present ────────────────────
 
-console.log("\n--- Test 8: with filenames — settings and directory included ---");
+s.section("Test 8: with filenames — settings and directory included");
 {
 	const { header } = await buildTraceHeader(makeInput(), { redacted: false });
 	const settings = header.settingsSnapshot as Record<string, unknown>;
 	const serialized = JSON.stringify(header);
 
-	assert(header.redacted === false, "header records that it is not redacted");
-	assert(settings.serverHost === SENSITIVE_HOST, "with filenames: serverHost is present");
-	assert(settings.vaultId === SENSITIVE_VAULT, "with filenames: vaultId is present");
-	assert(settings.deviceName === SENSITIVE_DEVICE, "with filenames: deviceName is present");
-	assert(serialized.includes(KNOWN_PATH_1), `with filenames: "${KNOWN_PATH_1}" is present`);
+	s.check(header.redacted === false, "header records that it is not redacted");
+	s.check(settings.serverHost === SENSITIVE_HOST, "with filenames: serverHost is present");
+	s.check(settings.vaultId === SENSITIVE_VAULT, "with filenames: vaultId is present");
+	s.check(settings.deviceName === SENSITIVE_DEVICE, "with filenames: deviceName is present");
+	s.check(serialized.includes(KNOWN_PATH_1), `with filenames: "${KNOWN_PATH_1}" is present`);
 
 	const directory = header.pathDirectory as Array<{ pathId: string; path: string }>;
-	assert(Array.isArray(directory) && directory.length === 2, "with filenames: pathDirectory is included");
-	assert(
+	s.check(Array.isArray(directory) && directory.length === 2, "with filenames: pathDirectory is included");
+	s.check(
 		directory.some((e) => e.pathId === PATH_ID_1 && e.path === KNOWN_PATH_1),
 		"pathDirectory maps each pathId back to its real vault path",
 	);
@@ -424,22 +414,22 @@ console.log("\n--- Test 8: with filenames — settings and directory included --
 
 // ── Test 9: vault vs CRDT comparison counts ──────────────────────────────────
 
-console.log("\n--- Test 9: vault vs CRDT comparison ---");
+s.section("Test 9: vault vs CRDT comparison");
 {
 	// KNOWN_PATH_2 is in diskHashes but not crdtHashes → missing in CRDT.
 	const { header, missingOnDiskCount, missingInCrdtCount, hashMismatchCount } =
 		await buildTraceHeader(makeInput(), { redacted: true });
 	const comparison = header.vaultVersusCrdtComparison as Record<string, unknown>;
 
-	assert(missingInCrdtCount === 1, "one path missing in CRDT (KNOWN_PATH_2)");
-	assert(missingOnDiskCount === 0, "no paths missing on disk");
-	assert(hashMismatchCount === 0, "no hash mismatches (KNOWN_PATH_1 matches)");
-	assert(comparison.comparedFileCount === 2, "comparedFileCount is 2");
-	assert(comparison.matchingFileCount === 1, "matchingFileCount is 1");
+	s.check(missingInCrdtCount === 1, "one path missing in CRDT (KNOWN_PATH_2)");
+	s.check(missingOnDiskCount === 0, "no paths missing on disk");
+	s.check(hashMismatchCount === 0, "no hash mismatches (KNOWN_PATH_1 matches)");
+	s.check(comparison.comparedFileCount === 2, "comparedFileCount is 2");
+	s.check(comparison.matchingFileCount === 1, "matchingFileCount is 1");
 
 	const missing = comparison.filesMissingInCrdt as Array<Record<string, unknown>>;
-	assert(missing.length === 1, "filesMissingInCrdt has one entry");
-	assert(
+	s.check(missing.length === 1, "filesMissingInCrdt has one entry");
+	s.check(
 		missing[0]?.pathId === PATH_ID_2 && missing[0]?.path === undefined,
 		"redacted comparison entries carry the pathId only, joinable against the event lines",
 	);
@@ -447,7 +437,7 @@ console.log("\n--- Test 9: vault vs CRDT comparison ---");
 	const { header: fullHeader } = await buildTraceHeader(makeInput(), { redacted: false });
 	const fullMissing = (fullHeader.vaultVersusCrdtComparison as Record<string, unknown>)
 		.filesMissingInCrdt as Array<Record<string, unknown>>;
-	assert(
+	s.check(
 		fullMissing[0]?.path === KNOWN_PATH_2,
 		"with filenames: comparison entries also carry the real path",
 	);
@@ -455,7 +445,7 @@ console.log("\n--- Test 9: vault vs CRDT comparison ---");
 
 // ── Test 10: unseeded paths in free-form text are redacted by regex ──────────
 
-console.log("\n--- Test 10: redacted — unseeded paths in log text ---");
+s.section("Test 10: redacted — unseeded paths in log text");
 {
 	// SERVER_TRACE_ONLY_PATH appears in the server trace as a quoted path string
 	// but is NOT in diskHashes or crdtHashes. Known-path seeding will not cover
@@ -463,58 +453,58 @@ console.log("\n--- Test 10: redacted — unseeded paths in log text ---");
 	const { header } = await buildTraceHeader(makeInput(), { redacted: true });
 	const serialized = JSON.stringify(header);
 
-	assert(
+	s.check(
 		!serialized.includes(SERVER_TRACE_ONLY_PATH),
 		`redacted: unseeded server trace path "${SERVER_TRACE_ONLY_PATH}" not in header`,
 	);
-	assert(
+	s.check(
 		!serialized.includes(HISTORICAL_EVENT_ONLY_PATH),
 		`redacted: stale historical log path "${HISTORICAL_EVENT_ONLY_PATH}" not in header`,
 	);
-	assert(
+	s.check(
 		!serialized.includes(STRUCTURED_TRACE_ONLY_PATH),
 		`redacted: structured trace path sample "${STRUCTURED_TRACE_ONLY_PATH}" not in header`,
 	);
-	assert(
+	s.check(
 		!serialized.includes(CONFLICT_PATH),
 		`redacted: conflictPath "${CONFLICT_PATH}" not in header`,
 	);
-	assert(
+	s.check(
 		!serialized.includes(NORMALIZED_PATH),
 		`redacted: normalizedPath "${NORMALIZED_PATH}" not in header`,
 	);
-	assert(
+	s.check(
 		!serialized.includes(FULL_CONTENT_HASH),
 		"redacted: full content hashes are truncated",
 	);
-	assert(
+	s.check(
 		serialized.includes(`${FULL_CONTENT_HASH.slice(0, 12)}…`),
 		"redacted: content hash prefix remains for correlation",
 	);
 
 	const { header: fullHeader } = await buildTraceHeader(makeInput(), { redacted: false });
 	const fullSerialized = JSON.stringify(fullHeader);
-	assert(
+	s.check(
 		fullSerialized.includes(SERVER_TRACE_ONLY_PATH),
 		`with filenames: unseeded server trace path "${SERVER_TRACE_ONLY_PATH}" is present`,
 	);
-	assert(
+	s.check(
 		fullSerialized.includes(HISTORICAL_EVENT_ONLY_PATH),
 		`with filenames: stale historical log path "${HISTORICAL_EVENT_ONLY_PATH}" is present`,
 	);
-	assert(
+	s.check(
 		fullSerialized.includes(STRUCTURED_TRACE_ONLY_PATH),
 		`with filenames: structured trace path sample "${STRUCTURED_TRACE_ONLY_PATH}" is present`,
 	);
-	assert(
+	s.check(
 		fullSerialized.includes(CONFLICT_PATH),
 		`with filenames: conflictPath "${CONFLICT_PATH}" is present`,
 	);
-	assert(
+	s.check(
 		fullSerialized.includes(NORMALIZED_PATH),
 		`with filenames: normalizedPath "${NORMALIZED_PATH}" is present`,
 	);
-	assert(
+	s.check(
 		fullSerialized.includes(FULL_CONTENT_HASH),
 		"with filenames: full content hashes are present",
 	);
@@ -522,23 +512,16 @@ console.log("\n--- Test 10: redacted — unseeded paths in log text ---");
 
 // ── Test 11: a trace exported before sync initialised still has a header ─────
 
-console.log("\n--- Test 11: null state still produces a usable header ---");
+s.section("Test 11: null state still produces a usable header");
 {
 	const { header, leakDetected } = await buildTraceHeader({ trace: makeTrace(), state: null });
 
-	assert(header.syncStateAvailable === false, "header says outright that sync state is unavailable");
-	assert(header.settingsSnapshot === null, "settingsSnapshot is null rather than invented");
-	assert(header.syncState === null, "syncState is null rather than invented");
-	assert(header.vaultVersusCrdtComparison === null, "comparison is null rather than invented");
-	assert(header.recordType === "trace-header", "header is still self-identifying");
-	assert(header.generatedAt === "2026-05-10T00:00:05.000Z", "generatedAt falls back to exportedAt");
-	assert(!leakDetected, "no state means no known paths and no leak");
+	s.check(header.syncStateAvailable === false, "header says outright that sync state is unavailable");
+	s.check(header.settingsSnapshot === null, "settingsSnapshot is null rather than invented");
+	s.check(header.syncState === null, "syncState is null rather than invented");
+	s.check(header.vaultVersusCrdtComparison === null, "comparison is null rather than invented");
+	s.check(header.recordType === "trace-header", "header is still self-identifying");
+	s.check(header.generatedAt === "2026-05-10T00:00:05.000Z", "generatedAt falls back to exportedAt");
+	s.check(!leakDetected, "no state means no known paths and no leak");
 }
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

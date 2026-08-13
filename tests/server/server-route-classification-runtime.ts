@@ -16,19 +16,9 @@ import {
 	getStoredServerConfigCached,
 	invalidateStoredServerConfigCache,
 } from "../../server/src/routes/auth";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("server-route-classification-runtime");
 
 // ── Trap env — any DO access throws ──────────────────────────────────────────
 
@@ -51,7 +41,7 @@ const trapEnv: Env = {
 };
 
 // ── Test 1: junk paths return 404 without touching any DO ─────────────────────
-console.log("\n--- Test 1: junk paths return 404 without touching YAOS_CONFIG or YAOS_SYNC ---");
+s.section("Test 1: junk paths return 404 without touching YAOS_CONFIG or YAOS_SYNC");
 {
 	const junkPaths = [
 		"/wp-login.php",
@@ -78,13 +68,13 @@ console.log("\n--- Test 1: junk paths return 404 without touching YAOS_CONFIG or
 			threw = true;
 			console.error(`  ERROR ${path}: ${err instanceof Error ? err.message : String(err)}`);
 		}
-		assert(!threw, `${path}: did not throw (DO namespace not touched)`);
-		assert(status === 404, `${path}: status is 404`);
+		s.check(!threw, `${path}: did not throw (DO namespace not touched)`);
+		s.check(status === 404, `${path}: status is 404`);
 	}
 }
 
 // ── Test 2: /vault/:id with no resource 404s without DO access ────────────────
-console.log("\n--- Test 2: vault-shaped garbage paths return 404 without DO access ---");
+s.section("Test 2: vault-shaped garbage paths return 404 without DO access");
 {
 	// These are the paths the reviewer explicitly flagged as still potentially
 	// hitting YAOS_CONFIG after the first pass of the fix:
@@ -116,8 +106,8 @@ console.log("\n--- Test 2: vault-shaped garbage paths return 404 without DO acce
 			threw = true;
 			console.error(`  ERROR ${path}: ${err instanceof Error ? err.message : String(err)}`);
 		}
-		assert(!threw, `${path}: did not throw (DO namespace not touched)`);
-		assert(status === 404, `${path}: status is 404`);
+		s.check(!threw, `${path}: did not throw (DO namespace not touched)`);
+		s.check(status === 404, `${path}: status is 404`);
 	}
 }
 
@@ -130,7 +120,7 @@ console.log("\n--- Test 2: vault-shaped garbage paths return 404 without DO acce
 // Both requests go through getAuthStateCached (one fetch) AND
 // handleCapabilities which reuses authState.config (zero extra fetch).
 // Total fetches for two requests: 1.  Before the fix it was 4 (2×2).
-console.log("\n--- Test 3: two claim-mode requests within TTL share one YAOS_CONFIG fetch ---");
+s.section("Test 3: two claim-mode requests within TTL share one YAOS_CONFIG fetch");
 {
 	invalidateStoredServerConfigCache();
 
@@ -168,8 +158,8 @@ console.log("\n--- Test 3: two claim-mode requests within TTL share one YAOS_CON
 		new Request("https://example.com/api/capabilities"),
 		countingEnv,
 	);
-	assert(resp.status === 200, "/api/capabilities in claim mode returns 200");
-	assert(fetchCount === 1, `/api/capabilities in claim mode called YAOS_CONFIG exactly once (got ${fetchCount})`);
+	s.check(resp.status === 200, "/api/capabilities in claim mode returns 200");
+	s.check(fetchCount === 1, `/api/capabilities in claim mode called YAOS_CONFIG exactly once (got ${fetchCount})`);
 
 	// Second request uses the TTL cache — zero additional DO calls.
 	fetchCount = 0;
@@ -177,8 +167,8 @@ console.log("\n--- Test 3: two claim-mode requests within TTL share one YAOS_CON
 		new Request("https://example.com/api/capabilities"),
 		countingEnv,
 	);
-	assert(resp2.status === 200, "/api/capabilities second request returns 200");
-	assert(fetchCount === 0, `second /api/capabilities within TTL uses cache (YAOS_CONFIG called ${fetchCount} times, expected 0)`);
+	s.check(resp2.status === 200, "/api/capabilities second request returns 200");
+	s.check(fetchCount === 0, `second /api/capabilities within TTL uses cache (YAOS_CONFIG called ${fetchCount} times, expected 0)`);
 
 	invalidateStoredServerConfigCache();
 }
@@ -187,7 +177,7 @@ console.log("\n--- Test 3: two claim-mode requests within TTL share one YAOS_CON
 //
 // In unclaimed mode, getAuthStateCached must NOT call YAOS_SYNC.  Auth
 // decisions happen entirely on YAOS_CONFIG config, before any vault routing.
-console.log("\n--- Test 4: unclaimed mode — vault routes rejected without YAOS_SYNC access ---");
+s.section("Test 4: unclaimed mode — vault routes rejected without YAOS_SYNC access");
 {
 	invalidateStoredServerConfigCache();
 
@@ -224,8 +214,8 @@ console.log("\n--- Test 4: unclaimed mode — vault routes rejected without YAOS
 		new Request("https://example.com/vault/some-vault/debug/recent"),
 		trapSyncEnv,
 	);
-	assert(resp.status === 503, "unclaimed mode: vault route returns 503");
-	assert(!syncTouched, "unclaimed mode: YAOS_SYNC was not touched");
+	s.check(resp.status === 503, "unclaimed mode: vault route returns 503");
+	s.check(!syncTouched, "unclaimed mode: YAOS_SYNC was not touched");
 
 	invalidateStoredServerConfigCache();
 }
@@ -236,7 +226,7 @@ console.log("\n--- Test 4: unclaimed mode — vault routes rejected without YAOS
 // resource-only whitelisting.  These have a valid resource segment but an
 // invalid method or subpath combination that the server never handles.
 // They must be rejected by isKnownVaultRouteShape() before auth.
-console.log("\n--- Test 5: valid resource + invalid shape returns 404 without YAOS_CONFIG ---");
+s.section("Test 5: valid resource + invalid shape returns 404 without YAOS_CONFIG");
 {
 	const invalidShapePaths: Array<[string, string]> = [
 		// method, path
@@ -262,8 +252,8 @@ console.log("\n--- Test 5: valid resource + invalid shape returns 404 without YA
 			threw = true;
 			console.error(`  ERROR ${method} ${path}: ${err instanceof Error ? err.message : String(err)}`);
 		}
-		assert(!threw, `${method} ${path}: did not throw (DO namespace not touched)`);
-		assert(status === 404, `${method} ${path}: status is 404`);
+		s.check(!threw, `${method} ${path}: did not throw (DO namespace not touched)`);
+		s.check(status === 404, `${method} ${path}: status is 404`);
 	}
 }
 
@@ -273,7 +263,7 @@ console.log("\n--- Test 5: valid resource + invalid shape returns 404 without YA
 // If the order were reversed, /vault/sync/my-vault would be parsed as
 // vaultId="sync", resource="my-vault" and rejected as not-found by the
 // resource whitelist — a silent breakage of sync connectivity.
-console.log("\n--- Test 6: /vault/sync/:vaultId is classified as sync-socket, not vault ---");
+s.section("Test 6: /vault/sync/:vaultId is classified as sync-socket, not vault");
 {
 	// The trap env throws on DO access.  A sync-socket route calls
 	// getServerByName(env.YAOS_SYNC) so it WOULD throw.  But the classifier
@@ -312,18 +302,13 @@ console.log("\n--- Test 6: /vault/sync/:vaultId is classified as sync-socket, no
 	// 426 means it reached the sync handler, not the 404 not-found path.
 	// 401 would mean it reached auth but was rejected (SYNC_TOKEN mismatch).
 	// 404 would mean parseSyncPath was skipped and it hit the resource whitelist.
-	assert(
+	s.check(
 		resp.status !== 404,
 		"/vault/sync/:vaultId is NOT classified as not-found (parseSyncPath runs first)",
 	);
-	assert(
+	s.check(
 		resp.status === 426 || resp.status === 401 || resp.status === 503,
 		`/vault/sync/:vaultId reaches the sync handler (status ${resp.status}, not 404)`,
 	);
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

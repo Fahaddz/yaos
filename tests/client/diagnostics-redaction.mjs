@@ -16,6 +16,7 @@
 // the explicit with-filenames action) leaves the bundle unchanged.
 
 import { webcrypto } from "node:crypto";
+import { suite } from "../harness.mjs";
 
 if (typeof globalThis.crypto === "undefined") {
 	globalThis.crypto = webcrypto;
@@ -29,18 +30,7 @@ const { createPathRedactor, createPassthroughRedactor, generateBundleSalt } = re
 const identityModule = await import("../../src/telemetry/debug/pathIdentity.ts");
 const { PathIdentityResolver } = identityModule.default ?? identityModule;
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("diagnostics-redaction");
 
 async function sha256Hex(text) {
 	const bytes = new TextEncoder().encode(text);
@@ -141,7 +131,7 @@ function flattenStrings(value, out = []) {
 	return out;
 }
 
-console.log("\n--- Test 1: safe-summary redaction removes every seeded path ---");
+s.section("Test 1: safe-summary redaction removes every seeded path");
 {
 	const salt = generateBundleSalt();
 	const redactor = await createPathRedactor(salt, sha256Hex, { knownPaths: KNOWN_PATHS });
@@ -149,14 +139,14 @@ console.log("\n--- Test 1: safe-summary redaction removes every seeded path ---"
 	const allStrings = flattenStrings(redacted);
 
 	for (const path of KNOWN_PATHS) {
-		assert(
+		s.check(
 			!allStrings.some((s) => s.includes(path)),
 			`output does not contain seeded path "${path}"`,
 		);
 	}
 }
 
-console.log("\n--- Test 2: redaction also catches non-seeded path-shaped strings ---");
+s.section("Test 2: redaction also catches non-seeded path-shaped strings");
 {
 	const salt = generateBundleSalt();
 	const redactor = await createPathRedactor(salt, sha256Hex, { knownPaths: KNOWN_PATHS });
@@ -164,51 +154,51 @@ console.log("\n--- Test 2: redaction also catches non-seeded path-shaped strings
 	const allStrings = flattenStrings(redacted);
 
 	for (const path of UNSEEDED_PATHS) {
-		assert(
+		s.check(
 			!allStrings.some((s) => s.includes(path)),
 			`output does not contain unseeded path "${path}"`,
 		);
 	}
 }
 
-console.log("\n--- Test 3: redaction is stable within one bundle (in-bundle correlation works) ---");
+s.section("Test 3: redaction is stable within one bundle (in-bundle correlation works)");
 {
 	const salt = generateBundleSalt();
 	const redactor = await createPathRedactor(salt, sha256Hex, { knownPaths: KNOWN_PATHS });
 	const tag1 = redactor.redactPath("Inbox/note.md");
 	const tag2 = redactor.redactPath("Inbox/note.md");
 	const tag3 = redactor.redactInText('scheduled write for "Inbox/note.md"').match(/p:[a-f0-9]{32}/)?.[0];
-	assert(tag1 === tag2, "redactPath is stable for the same path");
-	assert(tag1 === tag3, "redactPath and redactInText agree on the same path");
-	assert(tag1.startsWith("p:"), "redacted tag has the documented prefix");
+	s.check(tag1 === tag2, "redactPath is stable for the same path");
+	s.check(tag1 === tag3, "redactPath and redactInText agree on the same path");
+	s.check(tag1.startsWith("p:"), "redacted tag has the documented prefix");
 
 	// The header and the event lines have to share one pathId namespace, or an
 	// exported trace cannot be read: the header's file lists would name paths
 	// the events never mention. Same salt, same path, same tag — byte for byte.
 	const resolver = new PathIdentityResolver(sha256Hex, { salt });
 	const { pathId } = await resolver.getPathIdentity("Inbox/note.md");
-	assert(tag1 === pathId, "redactor tag is byte-identical to the recorder's pathId for the same salt");
+	s.check(tag1 === pathId, "redactor tag is byte-identical to the recorder's pathId for the same salt");
 }
 
-console.log("\n--- Test 4: redaction differs across bundles (no cross-bundle linkage) ---");
+s.section("Test 4: redaction differs across bundles (no cross-bundle linkage)");
 {
 	const r1 = await createPathRedactor(generateBundleSalt(), sha256Hex, { knownPaths: KNOWN_PATHS });
 	const r2 = await createPathRedactor(generateBundleSalt(), sha256Hex, { knownPaths: KNOWN_PATHS });
 	const tag1 = r1.redactPath("Inbox/note.md");
 	const tag2 = r2.redactPath("Inbox/note.md");
-	assert(tag1 !== tag2, "different bundle salts produce different hashes for the same path");
+	s.check(tag1 !== tag2, "different bundle salts produce different hashes for the same path");
 }
 
-console.log("\n--- Test 5: passthrough redactor (with-filenames mode) preserves the bundle ---");
+s.section("Test 5: passthrough redactor (with-filenames mode) preserves the bundle");
 {
 	const fixture = makeFixture();
 	const redactor = createPassthroughRedactor();
 	const out = redactor.redactDeep(fixture);
-	assert(redactor.active === false, "passthrough redactor reports active=false");
-	assert(JSON.stringify(out) === JSON.stringify(fixture), "passthrough leaves bundle byte-identical");
+	s.check(redactor.active === false, "passthrough redactor reports active=false");
+	s.check(JSON.stringify(out) === JSON.stringify(fixture), "passthrough leaves bundle byte-identical");
 }
 
-console.log("\n--- Test 6: structural fields are redacted even without an extension match ---");
+s.section("Test 6: structural fields are redacted even without an extension match");
 {
 	const salt = generateBundleSalt();
 	const redactor = await createPathRedactor(salt, sha256Hex, {
@@ -216,11 +206,11 @@ console.log("\n--- Test 6: structural fields are redacted even without an extens
 		knownPaths: ["No Extension Folder/file"],
 	});
 	const out = redactor.redactDeep({ path: "No Extension Folder/file" });
-	assert(out.path.startsWith("p:"), "structural path field is redacted via known-key path");
-	assert(out.path !== "No Extension Folder/file", "raw value does not survive");
+	s.check(out.path.startsWith("p:"), "structural path field is redacted via known-key path");
+	s.check(out.path !== "No Extension Folder/file", "raw value does not survive");
 }
 
-console.log("\n--- Test 7: server-trace and free-form strings get scanned ---");
+s.section("Test 7: server-trace and free-form strings get scanned");
 {
 	const salt = generateBundleSalt();
 	const redactor = await createPathRedactor(salt, sha256Hex, { knownPaths: KNOWN_PATHS });
@@ -229,32 +219,32 @@ console.log("\n--- Test 7: server-trace and free-form strings get scanned ---");
 			{ event: "x", diagnostic: '"Inbox/note.md" was loaded' },
 		],
 	});
-	assert(
+	s.check(
 		!out.serverTrace[0].diagnostic.includes("Inbox/note.md"),
 		"path embedded in server-trace free-form string is redacted",
 	);
-	assert(
+	s.check(
 		/p:[a-f0-9]{32}/.test(out.serverTrace[0].diagnostic),
 		"server-trace diagnostic now contains a redacted tag",
 	);
 }
 
-console.log("\n--- Test 8: salted hash is not the raw path even after JSON serialization ---");
+s.section("Test 8: salted hash is not the raw path even after JSON serialization");
 {
 	const salt = generateBundleSalt();
 	const redactor = await createPathRedactor(salt, sha256Hex, { knownPaths: KNOWN_PATHS });
 	const out = JSON.stringify(redactor.redactDeep(makeFixture()));
 
 	for (const path of [...KNOWN_PATHS, ...UNSEEDED_PATHS]) {
-		assert(
+		s.check(
 			!out.includes(path),
 			`serialized output does not contain raw path "${path}"`,
 		);
 	}
-	assert(!out.includes(salt), "serialized output does not contain the salt");
+	s.check(!out.includes(salt), "serialized output does not contain the salt");
 }
 
-console.log("\n--- Test 9: file extensions covered include all routed YAOS file types ---");
+s.section("Test 9: file extensions covered include all routed YAOS file types");
 {
 	const required = ["md", "canvas", "excalidraw", "base", "png", "jpg", "pdf"];
 	const salt = generateBundleSalt();
@@ -262,14 +252,14 @@ console.log("\n--- Test 9: file extensions covered include all routed YAOS file 
 	for (const ext of required) {
 		const sample = `Folder/sample.${ext}`;
 		const out = redactor.redactInText(`a path "${sample}" appears here`);
-		assert(
+		s.check(
 			!out.includes(sample),
 			`extension ".${ext}" is recognised as a quoted path suffix`,
 		);
 	}
 }
 
-console.log("\n--- Test 10: prose without quoted paths is not falsely redacted ---");
+s.section("Test 10: prose without quoted paths is not falsely redacted");
 {
 	// Free-form prose that mentions extensions but is not wrapped in
 	// quotes must NOT be redacted. The codebase's logging convention is
@@ -284,14 +274,14 @@ console.log("\n--- Test 10: prose without quoted paths is not falsely redacted -
 	];
 	for (const sample of samples) {
 		const out = redactor.redactInText(sample);
-		assert(
+		s.check(
 			!/p:[a-f0-9]{32}/.test(out),
 			`prose without quoted path is left alone: "${sample}"`,
 		);
 	}
 }
 
-console.log("\n--- Test 11: known paths are replaced even when unquoted (exact-replacement pass) ---");
+s.section("Test 11: known paths are replaced even when unquoted (exact-replacement pass)");
 {
 	// Pass 1 of redactInText replaces known (cached) paths wherever they
 	// appear in a string, even without surrounding quotes. This closes the
@@ -302,17 +292,17 @@ console.log("\n--- Test 11: known paths are replaced even when unquoted (exact-r
 	// Unquoted occurrence of a seeded path must be caught by Pass 1.
 	const sample = "writing Inbox/note.md to disk";
 	const out = redactor.redactInText(sample);
-	assert(
+	s.check(
 		!out.includes("Inbox/note.md"),
 		"seeded path in unquoted position is replaced by exact-replacement pass",
 	);
-	assert(
+	s.check(
 		/p:[a-f0-9]{32}/.test(out),
 		"exact-replacement inserts a redacted tag",
 	);
 }
 
-console.log("\n--- Test 12: safe-mode bundle shape — no tokenPrefix, vaultId, deviceName ---");
+s.section("Test 12: safe-mode bundle shape — no tokenPrefix, vaultId, deviceName");
 {
 	// Simulate the field shape that DiagnosticsService produces in both modes:
 	//   token: { present: boolean }  — no prefix, no length, in either mode
@@ -330,12 +320,12 @@ console.log("\n--- Test 12: safe-mode bundle shape — no tokenPrefix, vaultId, 
 		},
 	};
 	const out = redactor.redactDeep(safeBundle);
-	assert(out.settings.host === "(redacted)", "host stays redacted through redactDeep");
-	assert(out.settings.vaultId === "(redacted)", "vaultId stays redacted through redactDeep");
-	assert(out.settings.deviceName === "(redacted)", "deviceName stays redacted through redactDeep");
-	assert(out.settings.token.present === true, "token.present is preserved");
-	assert(!("length" in (out.settings.token ?? {})), "no token.length field (not needed)");
-	assert(!("prefix" in (out.settings.token ?? {})), "no tokenPrefix field in bundle");
+	s.check(out.settings.host === "(redacted)", "host stays redacted through redactDeep");
+	s.check(out.settings.vaultId === "(redacted)", "vaultId stays redacted through redactDeep");
+	s.check(out.settings.deviceName === "(redacted)", "deviceName stays redacted through redactDeep");
+	s.check(out.settings.token.present === true, "token.present is preserved");
+	s.check(!("length" in (out.settings.token ?? {})), "no token.length field (not needed)");
+	s.check(!("prefix" in (out.settings.token ?? {})), "no tokenPrefix field in bundle");
 
 	// Document the known design boundary: the path redactor handles path-shaped
 	// strings only. Identifier fields like token prefix and deviceName are NOT
@@ -350,17 +340,17 @@ console.log("\n--- Test 12: safe-mode bundle shape — no tokenPrefix, vaultId, 
 		},
 	};
 	const outLeaks = redactor.redactDeep(withLeaks);
-	assert(
+	s.check(
 		outLeaks.settings.token === "tok_abcdef01...",
 		"non-path token string is NOT altered by path redactor (service must scrub it explicitly)",
 	);
-	assert(
+	s.check(
 		outLeaks.settings.deviceName === "Kavin's MacBook Air",
 		"non-path deviceName is NOT altered by path redactor (service must set it to '(redacted)')",
 	);
 }
 
-console.log("\n--- Test 13: post-redaction leak check catches a missed path ---");
+s.section("Test 13: post-redaction leak check catches a missed path");
 {
 	// Simulate the service-side paranoid check: after redactDeep, serialize
 	// and assert no known path appears. If one slips through, export is aborted.
@@ -371,18 +361,13 @@ console.log("\n--- Test 13: post-redaction leak check catches a missed path ---"
 	const cleanBundle = redactor.redactDeep(makeFixture());
 	const cleanJson = JSON.stringify(cleanBundle);
 	const leaksAfterRedaction = KNOWN_PATHS.filter((p) => cleanJson.includes(p));
-	assert(leaksAfterRedaction.length === 0, "post-redaction leak check passes for a properly redacted bundle");
+	s.check(leaksAfterRedaction.length === 0, "post-redaction leak check passes for a properly redacted bundle");
 
 	// If redaction were broken (passthrough), the check would catch it.
 	const { createPassthroughRedactor: mkPassthrough } = redactorExports;
 	const broken = mkPassthrough().redactDeep(makeFixture());
 	const brokenJson = JSON.stringify(broken);
 	const leaksInBroken = KNOWN_PATHS.filter((p) => brokenJson.includes(p));
-	assert(leaksInBroken.length > 0, "post-redaction leak check catches paths that survived a broken redactor");
+	s.check(leaksInBroken.length > 0, "post-redaction leak check catches paths that survived a broken redactor");
 }
-
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

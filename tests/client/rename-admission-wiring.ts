@@ -10,19 +10,9 @@
 import { classifySyncPath } from "../../src/paths/pathCategory";
 import { planCategoryRenameAction } from "../../src/sync/policy/renameAdmissionPolicy";
 import type { RenameAction } from "../../src/sync/policy/renameAdmissionPolicy";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("rename-admission-wiring");
 
 const EXCLUDE = ["templates/"];
 const CONFIG = ".obsidian";
@@ -72,87 +62,82 @@ function simulateExecution(action: RenameAction) {
 	return calls;
 }
 
-console.log("\n--- Test 1: markdown rename => queueRename called ---");
+s.section("Test 1: markdown rename => queueRename called");
 {
 	const action = plan("notes/a.md", "notes/b.md");
 	const calls = simulateExecution(action);
-	assert(calls.length === 1, "one call made");
-	assert(calls[0]!.startsWith("queueRename"), "queueRename called");
-	assert(calls[0]!.includes("notes/a.md"), "uses old displayPath");
-	assert(calls[0]!.includes("notes/b.md"), "uses new displayPath");
+	s.check(calls.length === 1, "one call made");
+	s.check(calls[0]!.startsWith("queueRename"), "queueRename called");
+	s.check(calls[0]!.includes("notes/a.md"), "uses old displayPath");
+	s.check(calls[0]!.includes("notes/b.md"), "uses new displayPath");
 }
 
-console.log("\n--- Test 2: markdown -> excluded => handleDelete + dropDirty ---");
+s.section("Test 2: markdown -> excluded => handleDelete + dropDirty");
 {
 	const action = plan("notes/a.md", ".trash/a.md");
 	const calls = simulateExecution(action);
-	assert(calls.some((c) => c.includes("handleDelete")), "handleDelete called");
-	assert(calls.some((c) => c === "dropDirtyPath(notes/a.md)"), "drops old dirty");
-	assert(calls.some((c) => c === "dropDirtyPath(.trash/a.md)"), "drops new dirty");
-	assert(!calls.some((c) => c.startsWith("queueRename")), "queueRename NOT called");
+	s.check(calls.some((c) => c.includes("handleDelete")), "handleDelete called");
+	s.check(calls.some((c) => c === "dropDirtyPath(notes/a.md)"), "drops old dirty");
+	s.check(calls.some((c) => c === "dropDirtyPath(.trash/a.md)"), "drops new dirty");
+	s.check(!calls.some((c) => c.startsWith("queueRename")), "queueRename NOT called");
 }
 
-console.log("\n--- Test 3: excluded -> markdown => markMarkdownDirty + dropDirty ---");
+s.section("Test 3: excluded -> markdown => markMarkdownDirty + dropDirty");
 {
 	const action = plan(".trash/a.md", "notes/a.md");
 	const calls = simulateExecution(action);
-	assert(calls.some((c) => c.includes("markMarkdownDirty")), "markMarkdownDirty called");
-	assert(calls.some((c) => c === "dropDirtyPath(.trash/a.md)"), "drops excluded old dirty");
-	assert(!calls.some((c) => c.startsWith("queueRename")), "queueRename NOT called");
-	assert(!calls.some((c) => c.includes("handleDelete")), "handleDelete NOT called");
+	s.check(calls.some((c) => c.includes("markMarkdownDirty")), "markMarkdownDirty called");
+	s.check(calls.some((c) => c === "dropDirtyPath(.trash/a.md)"), "drops excluded old dirty");
+	s.check(!calls.some((c) => c.startsWith("queueRename")), "queueRename NOT called");
+	s.check(!calls.some((c) => c.includes("handleDelete")), "handleDelete NOT called");
 }
 
-console.log("\n--- Test 4: excluded -> excluded => nothing ---");
+s.section("Test 4: excluded -> excluded => nothing");
 {
 	const action = plan(".trash/a.md", "templates/a.md");
 	const calls = simulateExecution(action);
-	assert(calls.length === 0, "no calls for ignore");
+	s.check(calls.length === 0, "no calls for ignore");
 }
 
-console.log("\n--- Test 5: blob rename => queueRename ---");
+s.section("Test 5: blob rename => queueRename");
 {
 	const action = plan("assets/a.png", "assets/b.png");
 	const calls = simulateExecution(action);
-	assert(calls.length === 1, "one call");
-	assert(calls[0]!.startsWith("queueRename"), "queueRename for blob");
+	s.check(calls.length === 1, "one call");
+	s.check(calls[0]!.startsWith("queueRename"), "queueRename for blob");
 }
 
-console.log("\n--- Test 6: blob -> excluded => deferred to events ---");
+s.section("Test 6: blob -> excluded => deferred to events");
 {
 	const action = plan("assets/a.png", ".trash/a.png");
 	const calls = simulateExecution(action);
-	assert(calls.some((c) => c.includes("deferred to delete event")), "deferred to events");
-	assert(!calls.some((c) => c.includes("handleDelete")), "handleDelete NOT called (not markdown)");
+	s.check(calls.some((c) => c.includes("deferred to delete event")), "deferred to events");
+	s.check(!calls.some((c) => c.includes("handleDelete")), "handleDelete NOT called (not markdown)");
 }
 
-console.log("\n--- Test 7: NFC -> NFD = same-identity, no mutation ---");
+s.section("Test 7: NFC -> NFD = same-identity, no mutation");
 {
 	const nfc = "notes/\u00C0.md";
 	const nfd = "notes/A\u0300.md";
 	const action = plan(nfc, nfd);
 	const calls = simulateExecution(action);
-	assert(calls.length === 1, "one no-op call");
-	assert(calls[0]!.includes("same canonical identity"), "recognized as same identity");
+	s.check(calls.length === 1, "one no-op call");
+	s.check(calls[0]!.includes("same canonical identity"), "recognized as same identity");
 }
 
-console.log("\n--- Test 8: cross-category markdown -> blob => tombstone markdown ---");
+s.section("Test 8: cross-category markdown -> blob => tombstone markdown");
 {
 	const action = plan("notes/file.md", "assets/file.png");
 	const calls = simulateExecution(action);
-	assert(calls.some((c) => c.includes("handleDelete(notes/file.md)")), "tombstones markdown displayPath");
-	assert(!calls.some((c) => c.startsWith("queueRename")), "does NOT queue rename");
+	s.check(calls.some((c) => c.includes("handleDelete(notes/file.md)")), "tombstones markdown displayPath");
+	s.check(!calls.some((c) => c.startsWith("queueRename")), "does NOT queue rename");
 }
 
-console.log("\n--- Test 9: cross-category blob -> markdown => admit markdown ---");
+s.section("Test 9: cross-category blob -> markdown => admit markdown");
 {
 	const action = plan("assets/note.png", "notes/note.md");
 	const calls = simulateExecution(action);
-	assert(calls.some((c) => c.includes("markMarkdownDirty(notes/note.md)")), "admits markdown");
-	assert(calls.some((c) => c === "dropDirtyPath(assets/note.png)"), "drops old blob dirty");
+	s.check(calls.some((c) => c.includes("markMarkdownDirty(notes/note.md)")), "admits markdown");
+	s.check(calls.some((c) => c === "dropDirtyPath(assets/note.png)"), "drops old blob dirty");
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

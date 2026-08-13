@@ -1,18 +1,8 @@
 import { TFile } from "obsidian";
 import { BlobSyncManager } from "../../src/sync/blobSync";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("blob-download-conflicts");
 
 function bytes(text: string): ArrayBuffer {
 	const encoded = new TextEncoder().encode(text);
@@ -122,7 +112,7 @@ async function runDownload(
 	return hash;
 }
 
-console.log("\n--- Test 1: existing attachment changed during download is quarantined ---");
+s.section("Test 1: existing attachment changed during download is quarantined");
 {
 	const { manager, files, put, traces } = makeHarness();
 	put("img.png", bytes("local-old"));
@@ -133,10 +123,10 @@ console.log("\n--- Test 1: existing attachment changed during download is quaran
 	const conflict = Array.from(files.keys()).find((path) =>
 		path.startsWith("img (YAOS remote conflict") && path.endsWith(".png")
 	);
-	assert(text(files.get("img.png")!.data) === "local-new", "local changed attachment is preserved");
-	assert(!!conflict, "remote bytes are written to a conflict artifact");
-	assert(conflict ? text(files.get(conflict)!.data) === "remote" : false, "conflict artifact contains remote bytes");
-	assert(
+	s.check(text(files.get("img.png")!.data) === "local-new", "local changed attachment is preserved");
+	s.check(!!conflict, "remote bytes are written to a conflict artifact");
+	s.check(conflict ? text(files.get(conflict)!.data) === "remote" : false, "conflict artifact contains remote bytes");
+	s.check(
 		traces.some((event) =>
 			event.msg === "download-conflict-quarantined" &&
 			event.details?.reason === "existing-changed-during-download"
@@ -145,16 +135,16 @@ console.log("\n--- Test 1: existing attachment changed during download is quaran
 	);
 }
 
-console.log("\n--- Test 2: unchanged existing attachment can be overwritten ---");
+s.section("Test 2: unchanged existing attachment can be overwritten");
 {
 	const { manager, files, put, traces } = makeHarness();
 	put("img.png", bytes("local-old"));
 	await runDownload(manager, "img.png", bytes("remote"));
 
 	const conflict = Array.from(files.keys()).find((path) => path.includes("YAOS remote conflict"));
-	assert(text(files.get("img.png")!.data) === "remote", "unchanged attachment is overwritten by remote bytes");
-	assert(!conflict, "no conflict artifact is created for unchanged overwrite");
-	assert(
+	s.check(text(files.get("img.png")!.data) === "remote", "unchanged attachment is overwritten by remote bytes");
+	s.check(!conflict, "no conflict artifact is created for unchanged overwrite");
+	s.check(
 		traces.some((event) =>
 			event.msg === "download-overwrite-decision" &&
 			event.details?.action === "overwrite-existing"
@@ -163,7 +153,7 @@ console.log("\n--- Test 2: unchanged existing attachment can be overwritten ---"
 	);
 }
 
-console.log("\n--- Test 3: create race mismatch is quarantined instead of overwritten ---");
+s.section("Test 3: create race mismatch is quarantined instead of overwritten");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const originalCreateBinary = app.vault.createBinary;
@@ -184,10 +174,10 @@ console.log("\n--- Test 3: create race mismatch is quarantined instead of overwr
 	const conflict = Array.from(files.keys()).find((path) =>
 		path.startsWith("img (YAOS remote conflict") && path.endsWith(".png")
 	);
-	assert(text(files.get("img.png")!.data) === "local-race", "create-race local attachment is preserved");
-	assert(!!conflict, "remote bytes are written to a conflict artifact after create race");
-	assert(conflict ? text(files.get(conflict)!.data) === "remote" : false, "create-race conflict contains remote bytes");
-	assert(
+	s.check(text(files.get("img.png")!.data) === "local-race", "create-race local attachment is preserved");
+	s.check(!!conflict, "remote bytes are written to a conflict artifact after create race");
+	s.check(conflict ? text(files.get(conflict)!.data) === "remote" : false, "create-race conflict contains remote bytes");
+	s.check(
 		traces.some((event) =>
 			event.msg === "download-conflict-quarantined" &&
 			event.details?.reason === "create-race-mismatch"
@@ -196,7 +186,7 @@ console.log("\n--- Test 3: create race mismatch is quarantined instead of overwr
 	);
 }
 
-console.log("\n--- Test 4: create race same hash is skipped ---");
+s.section("Test 4: create race same hash is skipped");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const remote = bytes("remote");
@@ -216,9 +206,9 @@ console.log("\n--- Test 4: create race same hash is skipped ---");
 	await runDownload(manager, "img.png", remote);
 
 	const conflict = Array.from(files.keys()).find((path) => path.includes("YAOS remote conflict"));
-	assert(text(files.get("img.png")!.data) === "remote", "matching create-race attachment remains in place");
-	assert(!conflict, "matching create-race does not create conflict artifact");
-	assert(
+	s.check(text(files.get("img.png")!.data) === "remote", "matching create-race attachment remains in place");
+	s.check(!conflict, "matching create-race does not create conflict artifact");
+	s.check(
 		traces.some((event) =>
 			event.msg === "download-overwrite-decision" &&
 			event.details?.action === "skip-create-race-match"
@@ -229,7 +219,7 @@ console.log("\n--- Test 4: create race same hash is skipped ---");
 
 // ── Test 5: blob remote delete prefers trashFile ────────────────────────────
 
-console.log("\n--- Test 5: blob remote delete prefers trashFile ---");
+s.section("Test 5: blob remote delete prefers trashFile");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const existing = put("attachment.png", bytes("local data"));
@@ -258,10 +248,10 @@ console.log("\n--- Test 5: blob remote delete prefers trashFile ---");
 
 	await (manager as any).handleRemoteDelete("attachment.png", knownHash);
 
-	assert(trashedPaths.includes("attachment.png"), "blob remote delete uses trashFile");
-	assert(deletedPaths.length === 0, "blob remote delete does not use hard delete when trash is available");
-	assert(!files.has("attachment.png"), "blob remote delete removes file from vault");
-	assert(
+	s.check(trashedPaths.includes("attachment.png"), "blob remote delete uses trashFile");
+	s.check(deletedPaths.length === 0, "blob remote delete does not use hard delete when trash is available");
+	s.check(!files.has("attachment.png"), "blob remote delete removes file from vault");
+	s.check(
 		traces.some((event) =>
 			event.msg === "remote-delete-applied" &&
 			event.details?.deleteMode === "trash"
@@ -272,7 +262,7 @@ console.log("\n--- Test 5: blob remote delete prefers trashFile ---");
 
 // ── Test 6: blob remote delete falls back to hard delete ────────────────────
 
-console.log("\n--- Test 6: blob remote delete falls back when trash unavailable ---");
+s.section("Test 6: blob remote delete falls back when trash unavailable");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const existing = put("attachment2.png", bytes("local data 2"));
@@ -295,9 +285,9 @@ console.log("\n--- Test 6: blob remote delete falls back when trash unavailable 
 
 	await (manager as any).handleRemoteDelete("attachment2.png", knownHash);
 
-	assert(deletedPaths.includes("attachment2.png"), "blob remote delete falls back to hard delete");
-	assert(!files.has("attachment2.png"), "file is removed from vault");
-	assert(
+	s.check(deletedPaths.includes("attachment2.png"), "blob remote delete falls back to hard delete");
+	s.check(!files.has("attachment2.png"), "file is removed from vault");
+	s.check(
 		traces.some((event) =>
 			event.msg === "remote-delete-applied" &&
 			event.details?.deleteMode === "delete"
@@ -308,7 +298,7 @@ console.log("\n--- Test 6: blob remote delete falls back when trash unavailable 
 
 // ── Test 7: blob remote delete with trash failure falls back ────────────────
 
-console.log("\n--- Test 7: blob remote delete falls back when trashFile throws ---");
+s.section("Test 7: blob remote delete falls back when trashFile throws");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const existing = put("attachment3.png", bytes("local data 3"));
@@ -334,8 +324,8 @@ console.log("\n--- Test 7: blob remote delete falls back when trashFile throws -
 
 	await (manager as any).handleRemoteDelete("attachment3.png", knownHash);
 
-	assert(deletedPaths.includes("attachment3.png"), "falls back to hard delete when trash throws");
-	assert(
+	s.check(deletedPaths.includes("attachment3.png"), "falls back to hard delete when trash throws");
+	s.check(
 		traces.some((event) =>
 			event.msg === "remote-delete-applied" &&
 			event.details?.deleteMode === "delete"
@@ -346,7 +336,7 @@ console.log("\n--- Test 7: blob remote delete falls back when trashFile throws -
 
 // ── Test 8: blob remote delete suppresses path before deletion ──────────────
 
-console.log("\n--- Test 8: blob remote delete suppresses path before deletion ---");
+s.section("Test 8: blob remote delete suppresses path before deletion");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const existing = put("suppressed.png", bytes("suppress me"));
@@ -361,7 +351,7 @@ console.log("\n--- Test 8: blob remote delete suppresses path before deletion --
 
 	(app as any).vault.delete = async (file: TFile & { path: string }) => {
 		// Check suppression is active before deletion completes
-		assert(
+		s.check(
 			(manager as any).isSuppressed("suppressed.png"),
 			"path is suppressed before delete executes",
 		);
@@ -369,12 +359,12 @@ console.log("\n--- Test 8: blob remote delete suppresses path before deletion --
 	};
 
 	await (manager as any).handleRemoteDelete("suppressed.png", knownHash);
-	assert(!files.has("suppressed.png"), "file is deleted after suppression");
+	s.check(!files.has("suppressed.png"), "file is deleted after suppression");
 }
 
 // ── Test 9: blob remote delete preserves locally modified file ──────────────
 
-console.log("\n--- Test 9: blob remote delete preserves locally modified file ---");
+s.section("Test 9: blob remote delete preserves locally modified file");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const existing = put("locally-modified.png", bytes("local version"));
@@ -389,8 +379,8 @@ console.log("\n--- Test 9: blob remote delete preserves locally modified file --
 
 	await (manager as any).handleRemoteDelete("locally-modified.png", knownHash);
 
-	assert(files.has("locally-modified.png"), "locally modified file is preserved");
-	assert(
+	s.check(files.has("locally-modified.png"), "locally modified file is preserved");
+	s.check(
 		traces.some((event) =>
 			event.msg === "remote-delete-conflict-preserved" &&
 			event.details?.reason === "local-file-modified-since-last-sync"
@@ -401,7 +391,7 @@ console.log("\n--- Test 9: blob remote delete preserves locally modified file --
 
 // ── Test 10: blob remote delete proceeds when hash matches ──────────────────
 
-console.log("\n--- Test 10: blob remote delete proceeds when hash matches known ---");
+s.section("Test 10: blob remote delete proceeds when hash matches known");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const existing = put("unchanged.png", bytes("same content"));
@@ -423,9 +413,9 @@ console.log("\n--- Test 10: blob remote delete proceeds when hash matches known 
 
 	await (manager as any).handleRemoteDelete("unchanged.png", knownHash);
 
-	assert(!files.has("unchanged.png"), "unmodified file is deleted");
-	assert(deletedPaths.includes("unchanged.png"), "delete was called for unmodified file");
-	assert(
+	s.check(!files.has("unchanged.png"), "unmodified file is deleted");
+	s.check(deletedPaths.includes("unchanged.png"), "delete was called for unmodified file");
+	s.check(
 		traces.some((event) => event.msg === "remote-delete-applied"),
 		"blob remote delete traces remote-delete-applied for unmodified file",
 	);
@@ -433,7 +423,7 @@ console.log("\n--- Test 10: blob remote delete proceeds when hash matches known 
 
 // ── Test 11: blob remote delete preserves when knownHash is null ────────────
 
-console.log("\n--- Test 11: blob remote delete preserves when no known hash baseline ---");
+s.section("Test 11: blob remote delete preserves when no known hash baseline");
 {
 	const { app, manager, files, put, traces } = makeHarness();
 	const existing = put("no-baseline.png", bytes("mystery content"));
@@ -454,20 +444,20 @@ console.log("\n--- Test 11: blob remote delete preserves when no known hash base
 
 	await (manager as any).handleRemoteDelete("no-baseline.png", null);
 
-	assert(files.has("no-baseline.png"), "file preserved when no known hash baseline");
-	assert(
+	s.check(files.has("no-baseline.png"), "file preserved when no known hash baseline");
+	s.check(
 		traces.some((event) =>
 			event.msg === "remote-delete-conflict-preserved" &&
 			event.details?.reason === "no-known-hash-baseline"
 		),
 		"blob remote delete traces no-known-hash-baseline preservation",
 	);
-	assert(!tombstoneCleared, "blob tombstone NOT cleared for unknown-baseline (no auto-resurrection)");
+	s.check(!tombstoneCleared, "blob tombstone NOT cleared for unknown-baseline (no auto-resurrection)");
 }
 
 // ── Test 12: rerunResets cap prevents infinite retry loops ───────────────────
 
-console.log("\n--- Test 12: rerunResets cap triggers permanent failure ---");
+s.section("Test 12: rerunResets cap triggers permanent failure");
 {
 	const { manager, traces } = makeHarness();
 
@@ -491,18 +481,18 @@ console.log("\n--- Test 12: rerunResets cap triggers permanent failure ---");
 	await (manager as any).processDownload(item);
 
 	// Item should be permanently failed — not restarted
-	assert(
+	s.check(
 		!((manager as any).downloadQueue as Map<string, unknown>).has("capped.png"),
 		"capped item removed from queue (permanent failure)",
 	);
-	assert(
+	s.check(
 		traces.some((event) =>
 			event.msg === "download-permanently-failed" &&
 			event.details?.path === "capped.png"
 		),
 		"permanent failure trace emitted for capped item",
 	);
-	assert(
+	s.check(
 		(manager as any)._permanentDownloadFailures === 1,
 		"permanent download failure counter incremented",
 	);
@@ -510,7 +500,7 @@ console.log("\n--- Test 12: rerunResets cap triggers permanent failure ---");
 
 // ── Test 13: rerunResets < cap allows fresh restart ─────────────────────────
 
-console.log("\n--- Test 13: rerunResets below cap allows fresh restart ---");
+s.section("Test 13: rerunResets below cap allows fresh restart");
 {
 	const { manager, traces } = makeHarness();
 
@@ -535,14 +525,14 @@ console.log("\n--- Test 13: rerunResets below cap allows fresh restart ---");
 	await (manager as any).processDownload(item);
 
 	// Item should be restarted, not permanently failed
-	assert(
+	s.check(
 		((manager as any).downloadQueue as Map<string, any>).has("restartable.png"),
 		"restartable item still in queue after rerun reset",
 	);
-	assert(item.retries === 0, "retries reset to 0 after rerun");
-	assert(item.rerunResets === 4, "rerunResets incremented");
-	assert(item.status === "pending", "status reset to pending");
-	assert(
+	s.check(item.retries === 0, "retries reset to 0 after rerun");
+	s.check(item.rerunResets === 4, "rerunResets incremented");
+	s.check(item.status === "pending", "status reset to pending");
+	s.check(
 		(manager as any)._permanentDownloadFailures === 0,
 		"no permanent failure for restartable item",
 	);
@@ -550,28 +540,28 @@ console.log("\n--- Test 13: rerunResets below cap allows fresh restart ---");
 
 // ── Test 14: debug snapshot exposes permanent failure counters ───────────────
 
-console.log("\n--- Test 14: debug snapshot includes permanent failure counters ---");
+s.section("Test 14: debug snapshot includes permanent failure counters");
 {
 	const { manager } = makeHarness();
 
 	const snapshot = (manager as any).getDebugSnapshot();
-	assert(
+	s.check(
 		"permanentUploadFailures" in snapshot,
 		"debug snapshot has permanentUploadFailures",
 	);
-	assert(
+	s.check(
 		"permanentDownloadFailures" in snapshot,
 		"debug snapshot has permanentDownloadFailures",
 	);
-	assert(
+	s.check(
 		"blobConflictArtifacts" in snapshot,
 		"debug snapshot has blobConflictArtifacts",
 	);
-	assert(
+	s.check(
 		snapshot.permanentUploadFailures === 0,
 		"initial permanent upload failures is 0",
 	);
-	assert(
+	s.check(
 		snapshot.permanentDownloadFailures === 0,
 		"initial permanent download failures is 0",
 	);
@@ -579,7 +569,7 @@ console.log("\n--- Test 14: debug snapshot includes permanent failure counters -
 
 // ── Test 15: destroy() during in-flight transfer does not resurrect queue state ──
 
-console.log("\n--- Test 15: destroy during in-flight does not resurrect ---");
+s.section("Test 15: destroy during in-flight does not resurrect");
 {
 	const { manager, files, put, traces } = makeHarness();
 	put("inflight.png", bytes("data"));
@@ -620,15 +610,15 @@ console.log("\n--- Test 15: destroy during in-flight does not resurrect ---");
 	await processPromise;
 
 	// After destroy + download resolving, queue should remain empty
-	assert(
+	s.check(
 		(manager as any).downloadQueue.size === 0,
 		"download queue empty after destroy (not resurrected)",
 	);
-	assert(
+	s.check(
 		(manager as any).uploadQueue.size === 0,
 		"upload queue empty after destroy",
 	);
-	assert(
+	s.check(
 		(manager as any).inflightDownloads.size === 0,
 		"inflight tracking cleared by destroy",
 	);
@@ -640,7 +630,7 @@ console.log("\n--- Test 15: destroy during in-flight does not resurrect ---");
 
 // ── Test 16: kickUploadDrain does not start duplicate drain loops ────────────
 
-console.log("\n--- Test 16: concurrent kickUploadDrain does not duplicate drain ---");
+s.section("Test 16: concurrent kickUploadDrain does not duplicate drain");
 {
 	const { manager, put, traces } = makeHarness();
 
@@ -657,19 +647,19 @@ console.log("\n--- Test 16: concurrent kickUploadDrain does not duplicate drain 
 	// Kick should be a no-op when already draining
 	(manager as any).kickUploadDrain();
 
-	assert(!drainCalled, "drainUploads NOT called when uploadDraining is true");
+	s.check(!drainCalled, "drainUploads NOT called when uploadDraining is true");
 
 	// Reset and verify it would call if not draining
 	(manager as any).uploadDraining = false;
 	(manager as any).kickUploadDrain();
 
 	// drainUploads should have been called (though it exits immediately with empty queue)
-	assert(drainCalled, "drainUploads called when uploadDraining is false");
+	s.check(drainCalled, "drainUploads called when uploadDraining is false");
 }
 
 // ── Test 17: importQueue with rerunResets near cap ──────────────────────────
 
-console.log("\n--- Test 17: importQueue preserves rerunResets near cap ---");
+s.section("Test 17: importQueue preserves rerunResets near cap");
 {
 	const { manager } = makeHarness();
 
@@ -689,22 +679,22 @@ console.log("\n--- Test 17: importQueue preserves rerunResets near cap ---");
 	(manager as any).importQueue(snapshot);
 
 	const uploadItem = (manager as any).uploadQueue.get("near-cap.png");
-	assert(uploadItem !== undefined, "near-cap upload item imported");
-	assert(uploadItem.rerunResets === 4, "rerunResets preserved at 4 (near cap)");
-	assert(uploadItem.needsRerun === true, "needsRerun preserved");
-	assert(uploadItem.status === "pending", "status normalized to pending on import");
-	assert(uploadItem.readyAt === 0, "readyAt reset to 0 on import");
+	s.check(uploadItem !== undefined, "near-cap upload item imported");
+	s.check(uploadItem.rerunResets === 4, "rerunResets preserved at 4 (near cap)");
+	s.check(uploadItem.needsRerun === true, "needsRerun preserved");
+	s.check(uploadItem.status === "pending", "status normalized to pending on import");
+	s.check(uploadItem.readyAt === 0, "readyAt reset to 0 on import");
 
 	const downloadItem = (manager as any).downloadQueue.get("at-cap.png");
-	assert(downloadItem !== undefined, "at-cap download item imported");
-	assert(downloadItem.rerunResets === 5, "rerunResets preserved at 5 (at cap)");
-	assert(downloadItem.needsRerun === true, "needsRerun preserved for download");
-	assert(downloadItem.status === "pending", "download status normalized to pending");
+	s.check(downloadItem !== undefined, "at-cap download item imported");
+	s.check(downloadItem.rerunResets === 5, "rerunResets preserved at 5 (at cap)");
+	s.check(downloadItem.needsRerun === true, "needsRerun preserved for download");
+	s.check(downloadItem.status === "pending", "download status normalized to pending");
 }
 
 // ── Test 18: download conflict artifact does not update target hash cache ────
 
-console.log("\n--- Test 18: conflict artifact does not pollute target hash cache ---");
+s.section("Test 18: conflict artifact does not pollute target hash cache");
 {
 	const { manager, files, put, traces } = makeHarness();
 	const existing = put("target.png", bytes("local version"));
@@ -751,11 +741,11 @@ console.log("\n--- Test 18: conflict artifact does not pollute target hash cache
 
 	// Verify target hash cache was NOT updated to remote hash
 	const targetEntry = (manager as any).hashCache["target.png"];
-	assert(
+	s.check(
 		targetEntry?.hash !== remoteHash,
 		"target hash cache NOT updated to remote hash after conflict",
 	);
-	assert(
+	s.check(
 		typeof targetEntry?.hash === "string" && targetEntry.hash.length > 0,
 		"target hash cache keeps a local-file hash after conflict",
 	);
@@ -763,7 +753,7 @@ console.log("\n--- Test 18: conflict artifact does not pollute target hash cache
 	manager.destroy();
 }
 
-console.log("\n--- Test 19: Multi-pass: unknown-baseline preserved blob is NOT re-uploaded by reconcile scan ---");
+s.section("Test 19: Multi-pass: unknown-baseline preserved blob is NOT re-uploaded by reconcile scan");
 {
 	// This is the critical system-level test for blob paths.
 	// Scenario:
@@ -799,13 +789,13 @@ console.log("\n--- Test 19: Multi-pass: unknown-baseline preserved blob is NOT r
 	await (manager as any).handleRemoteDelete("attachments/preserved.png", null);
 
 	// Verify: path is in preservedUnresolvedPaths
-	assert(
+	s.check(
 		(manager as any).preservedUnresolvedPaths.has("attachments/preserved.png"),
 		"blob path recorded as preserved-unresolved after unknown-baseline remote-delete",
 	);
 
 	// Verify: tombstone was NOT cleared
-	assert(
+	s.check(
 		vaultSync.blobTombstones.has("attachments/preserved.png"),
 		"blob tombstone remains after preserve-unresolved",
 	);
@@ -826,21 +816,21 @@ console.log("\n--- Test 19: Multi-pass: unknown-baseline preserved blob is NOT r
 	const result = manager.reconcile("authoritative", []);
 
 	// Step 5: Assert file was NOT queued for upload
-	assert(
+	s.check(
 		result.uploadQueued === 0,
 		"preserved-unresolved blob NOT queued for upload by reconcile",
 	);
-	assert(
+	s.check(
 		result.skipped >= 1,
 		"preserved-unresolved blob counted as skipped",
 	);
-	assert(
+	s.check(
 		!(manager as any).uploadQueue.has("attachments/preserved.png"),
 		"upload queue does NOT contain preserved-unresolved path",
 	);
 
 	// Verify tombstone still present
-	assert(
+	s.check(
 		vaultSync.blobTombstones.has("attachments/preserved.png"),
 		"blob tombstone still present after reconcile",
 	);
@@ -854,7 +844,7 @@ console.log("\n--- Test 19: Multi-pass: unknown-baseline preserved blob is NOT r
 
 	// Suppress the debounce timer to avoid async issues
 	manager.handleFileChange(fakeFile);
-	assert(
+	s.check(
 		!(manager as any).preservedUnresolvedPaths.has("attachments/preserved.png"),
 		"preserved-unresolved cleared after user modify event (handleFileChange)",
 	);
@@ -862,7 +852,7 @@ console.log("\n--- Test 19: Multi-pass: unknown-baseline preserved blob is NOT r
 	manager.destroy();
 }
 
-console.log("\n--- Test 20: Multi-pass: stat-failure during blob remote-delete becomes preserve-unresolved ---");
+s.section("Test 20: Multi-pass: stat-failure during blob remote-delete becomes preserve-unresolved");
 {
 	const { manager, put, traces } = makeHarness();
 
@@ -876,20 +866,20 @@ console.log("\n--- Test 20: Multi-pass: stat-failure during blob remote-delete b
 
 	// File should NOT be deleted (check that delete was not called)
 	const deleteTrace = traces.find((t) => t.msg === "remote-delete-applied");
-	assert(!deleteTrace, "file NOT deleted when stat fails");
+	s.check(!deleteTrace, "file NOT deleted when stat fails");
 
 	// Should be preserved-unresolved
 	const preserveTrace = traces.find(
 		(t) => t.source === "blob" && t.msg === "remote-delete-conflict-preserved" && t.details?.reason === "stat-failed-cannot-verify",
 	);
-	assert(!!preserveTrace, "preserve trace emitted with stat-failed reason");
-	assert(
+	s.check(!!preserveTrace, "preserve trace emitted with stat-failed reason");
+	s.check(
 		(manager as any).preservedUnresolvedPaths.has("attachments/stat-fails.png"),
 		"blob path recorded as preserved-unresolved after stat failure",
 	);
 }
 
-console.log("\n--- Test 21: processUpload skips preserved-unresolved paths (queue snapshot resurrection guard) ---");
+s.section("Test 21: processUpload skips preserved-unresolved paths (queue snapshot resurrection guard)");
 {
 	const { manager, put, traces } = makeHarness();
 
@@ -914,20 +904,13 @@ console.log("\n--- Test 21: processUpload skips preserved-unresolved paths (queu
 	await (manager as any).processUpload(item);
 
 	// Upload should have been removed from queue without uploading
-	assert(
+	s.check(
 		!(manager as any).uploadQueue.has("attachments/zombie.png"),
 		"stale upload removed from queue",
 	);
 	const skipTrace = traces.find(
 		(t) => t.source === "blob" && t.msg === "upload-skipped-preserved-unresolved",
 	);
-	assert(!!skipTrace, "trace emitted for skipped preserved-unresolved upload");
+	s.check(!!skipTrace, "trace emitted for skipped preserved-unresolved upload");
 }
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

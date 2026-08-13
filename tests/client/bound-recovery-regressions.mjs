@@ -1,20 +1,10 @@
 import * as Y from "yjs";
+import { suite } from "../harness.mjs";
 
 const diffModule = await import("../../src/sync/diff.ts");
 const { applyDiffToYText } = diffModule.default;
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, name) {
-	if (condition) {
-		console.log(`  PASS  ${name}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${name}`);
-		failed++;
-	}
-}
+const s = suite("bound-recovery-regressions");
 
 function makeText(content) {
 	const doc = new Y.Doc();
@@ -23,7 +13,7 @@ function makeText(content) {
 	return { doc, ytext };
 }
 
-console.log("\n--- Test 1: bound-file recovery applies one content authority ---");
+s.section("Test 1: bound-file recovery applies one content authority");
 {
 	const crdt = [
 		"---",
@@ -49,7 +39,7 @@ console.log("\n--- Test 1: bound-file recovery applies one content authority ---
 
 	const fixed = makeText(crdt);
 	applyDiffToYText(fixed.ytext, crdt, disk, "disk-sync-recover-bound");
-	assert(
+	s.check(
 		fixed.ytext.toString() === disk,
 		"fixed recovery leaves CRDT at the chosen disk content",
 	);
@@ -58,18 +48,18 @@ console.log("\n--- Test 1: bound-file recovery applies one content authority ---
 	const oldAmplifier = makeText(crdt);
 	applyDiffToYText(oldAmplifier.ytext, crdt, disk, "disk-sync-recover-bound");
 	applyDiffToYText(oldAmplifier.ytext, disk, staleEditor, "editor-health-heal");
-	assert(
+	s.check(
 		oldAmplifier.ytext.toString() === staleEditor,
 		"old disk-then-heal sequence can reapply stale editor content",
 	);
-	assert(
+	s.check(
 		oldAmplifier.ytext.toString() !== disk,
 		"old disk-then-heal sequence does not preserve the chosen disk authority",
 	);
 	oldAmplifier.doc.destroy();
 }
 
-console.log("\n--- Test 2: repeated disk-authority recovery does not amplify stale editor state ---");
+s.section("Test 2: repeated disk-authority recovery does not amplify stale editor state");
 {
 	const crdt = [
 		"---",
@@ -99,13 +89,13 @@ console.log("\n--- Test 2: repeated disk-authority recovery does not amplify sta
 		applyDiffToYText(state.ytext, before, disk, "disk-sync-recover-bound");
 	}
 
-	assert(state.ytext.toString() === disk, "repeated disk-authority recovery stays at disk content");
-	assert(state.ytext.toString() !== staleEditor, "stale editor content is not reapplied during repair-only recovery");
-	assert(state.ytext.toString().length === disk.length, "repeated repair-only recovery does not grow content");
+	s.check(state.ytext.toString() === disk, "repeated disk-authority recovery stays at disk content");
+	s.check(state.ytext.toString() !== staleEditor, "stale editor content is not reapplied during repair-only recovery");
+	s.check(state.ytext.toString().length === disk.length, "repeated repair-only recovery does not grow content");
 	state.doc.destroy();
 }
 
-console.log("\n--- Test 3: post-recovery health retries stay bounded without editor rewrites ---");
+s.section("Test 3: post-recovery health retries stay bounded without editor rewrites");
 {
 	const crdt = [
 		"---",
@@ -136,15 +126,10 @@ console.log("\n--- Test 3: post-recovery health retries stay bounded without edi
 		// Automatic health retries should be repair/rebind only and therefore
 		// should not write stale editor content back into Y.Text.
 		const afterRecovery = state.ytext.toString();
-		assert(afterRecovery === disk, `recovery cycle ${i + 1} keeps disk authority`);
-		assert(afterRecovery !== staleEditor, `recovery cycle ${i + 1} does not replay stale editor`);
+		s.check(afterRecovery === disk, `recovery cycle ${i + 1} keeps disk authority`);
+		s.check(afterRecovery !== staleEditor, `recovery cycle ${i + 1} does not replay stale editor`);
 	}
-	assert(state.ytext.toString().length === disk.length, "repeated recover+health cycles remain bounded");
+	s.check(state.ytext.toString().length === disk.length, "repeated recover+health cycles remain bounded");
 	state.doc.destroy();
 }
-
-console.log(`\n${"-".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"-".repeat(50)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

@@ -41,21 +41,11 @@ import { NoopTraceSink } from "../../src/observability/noopTraceSink";
 import { FLIGHT_KIND } from "../../src/observability/flightTaxonomy";
 import { PRODUCT_EVENT_KIND } from "../../src/observability/productEventKinds";
 import type { DomainPathTraceEvent } from "../../src/observability/traceSink";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
+const s = suite("trace-sink");
 
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
-
-console.log("\n--- Test 1: FlightTraceSink maps rename.observed to diskRenameObserved ---");
+s.section("Test 1: FlightTraceSink maps rename.observed to diskRenameObserved");
 {
 	const recorded: unknown[] = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event));
@@ -69,16 +59,16 @@ console.log("\n--- Test 1: FlightTraceSink maps rename.observed to diskRenameObs
 		data: { renameRole: "source", category: "markdown", opId: "op-123" },
 	});
 
-	assert(recorded.length === 1, "one event recorded");
+	s.check(recorded.length === 1, "one event recorded");
 	const event = recorded[0] as Record<string, unknown>;
-	assert(event.kind === FLIGHT_KIND.diskRenameObserved, "mapped to diskRenameObserved");
-	assert(event.path === "notes/file.md", "path preserved");
-	assert(event.priority === "important", "info severity -> important priority");
-	assert(event.source === "vaultEvents", "source is vaultEvents");
-	assert(event.layer === "disk", "layer is disk");
+	s.check(event.kind === FLIGHT_KIND.diskRenameObserved, "mapped to diskRenameObserved");
+	s.check(event.path === "notes/file.md", "path preserved");
+	s.check(event.priority === "important", "info severity -> important priority");
+	s.check(event.source === "vaultEvents", "source is vaultEvents");
+	s.check(event.layer === "disk", "layer is disk");
 }
 
-console.log("\n--- Test 2: FlightTraceSink maps rename.admission.invariant-failed ---");
+s.section("Test 2: FlightTraceSink maps rename.admission.invariant-failed");
 {
 	const recorded: unknown[] = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event));
@@ -91,14 +81,14 @@ console.log("\n--- Test 2: FlightTraceSink maps rename.admission.invariant-faile
 		data: { bug: "excluded-destination-reached-applyRenameBatch" },
 	});
 
-	assert(recorded.length === 1, "one event recorded");
+	s.check(recorded.length === 1, "one event recorded");
 	const event = recorded[0] as Record<string, unknown>;
-	assert(event.kind === FLIGHT_KIND.renameAdmissionInvariantFailed, "mapped to renameAdmissionInvariantFailed");
-	assert(event.priority === "critical", "error severity -> critical priority");
-	assert(event.layer === "policy", "layer is policy for admission events");
+	s.check(event.kind === FLIGHT_KIND.renameAdmissionInvariantFailed, "mapped to renameAdmissionInvariantFailed");
+	s.check(event.priority === "critical", "error severity -> critical priority");
+	s.check(event.layer === "policy", "layer is policy for admission events");
 }
 
-console.log("\n--- Test 3: unknown domain event is silently dropped ---");
+s.section("Test 3: unknown domain event is silently dropped");
 {
 	const recorded: unknown[] = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event));
@@ -110,11 +100,11 @@ console.log("\n--- Test 3: unknown domain event is silently dropped ---");
 		path: "notes/x.md",
 	});
 
-	assert(recorded.length === 0, "unknown event dropped silently");
-	assert(sink.getDroppedEventCount() === 1, "dropped event count incremented");
+	s.check(recorded.length === 0, "unknown event dropped silently");
+	s.check(sink.getDroppedEventCount() === 1, "dropped event count incremented");
 }
 
-console.log("\n--- Test 3b: getDroppedEventCount tracks multiple drops ---");
+s.section("Test 3b: getDroppedEventCount tracks multiple drops");
 {
 	const sink = new FlightTraceSink(() => {});
 
@@ -123,19 +113,19 @@ console.log("\n--- Test 3b: getDroppedEventCount tracks multiple drops ---");
 	sink.recordPath({ kind: "rename.observed", scope: "file", severity: "info", path: "c.md", data: { renameRole: "source", category: "markdown", opId: "op-1" } });
 	sink.recordPath({ kind: "unknown.c", scope: "file", severity: "debug", path: "d.md" });
 
-	assert(sink.getDroppedEventCount() === 3, "dropped count is 3 (excludes mapped event)");
+	s.check(sink.getDroppedEventCount() === 3, "dropped count is 3 (excludes mapped event)");
 }
 
-console.log("\n--- Test 4: NoopTraceSink drops everything ---");
+s.section("Test 4: NoopTraceSink drops everything");
 {
 	const sink = new NoopTraceSink();
 	// Should not throw.
 	sink.record({ kind: "test", scope: "vault", severity: "info" });
 	sink.recordPath({ kind: "test", scope: "file", severity: "info", path: "x.md" });
-	assert(true, "NoopTraceSink does not throw");
+	s.check(true, "NoopTraceSink does not throw");
 }
 
-console.log("\n--- Test 5: recordPath is non-blocking (returns void, not Promise) ---");
+s.section("Test 5: recordPath is non-blocking (returns void, not Promise)");
 {
 	const sink = new FlightTraceSink(() => {});
 	const result = sink.recordPath({
@@ -145,17 +135,17 @@ console.log("\n--- Test 5: recordPath is non-blocking (returns void, not Promise
 		path: "x.md",
 		data: { renameRole: "source", category: "markdown", opId: "op-1" },
 	});
-	assert(result === undefined, "recordPath returns undefined (not a Promise)");
+	s.check(result === undefined, "recordPath returns undefined (not a Promise)");
 }
 
-console.log("\n--- Test 6: flush returns a Promise ---");
+s.section("Test 6: flush returns a Promise");
 {
 	const sink = new FlightTraceSink(() => {});
 	const result = sink.flush();
-	assert(result instanceof Promise, "flush returns a Promise");
+	s.check(result instanceof Promise, "flush returns a Promise");
 }
 
-console.log("\n--- Test 7: severity mapping ---");
+s.section("Test 7: severity mapping");
 {
 	const recorded: Array<Record<string, unknown>> = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event as Record<string, unknown>));
@@ -171,13 +161,13 @@ console.log("\n--- Test 7: severity mapping ---");
 		});
 	}
 
-	assert(recorded[0]!.priority === "verbose", "debug -> verbose");
-	assert(recorded[1]!.priority === "important", "info -> important");
-	assert(recorded[2]!.priority === "important", "warn -> important");
-	assert(recorded[3]!.priority === "critical", "error -> critical");
+	s.check(recorded[0]!.priority === "verbose", "debug -> verbose");
+	s.check(recorded[1]!.priority === "important", "info -> important");
+	s.check(recorded[2]!.priority === "important", "warn -> important");
+	s.check(recorded[3]!.priority === "critical", "error -> critical");
 }
 
-console.log("\n--- Test 8: rename event pair (source + target) ---");
+s.section("Test 8: rename event pair (source + target)");
 {
 	const recorded: Array<Record<string, unknown>> = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event as Record<string, unknown>));
@@ -200,14 +190,14 @@ console.log("\n--- Test 8: rename event pair (source + target) ---");
 		data: { renameRole: "target", category: "markdown", opId: "op-99" },
 	});
 
-	assert(recorded.length === 2, "two events for rename pair");
-	assert(recorded[0]!.path === "notes/old.md", "first event is source");
-	assert(recorded[1]!.path === "notes/new.md", "second event is target");
-	assert(recorded[0]!.opId === "op-99", "opId preserved on source");
-	assert(recorded[1]!.opId === "op-99", "opId preserved on target");
+	s.check(recorded.length === 2, "two events for rename pair");
+	s.check(recorded[0]!.path === "notes/old.md", "first event is source");
+	s.check(recorded[1]!.path === "notes/new.md", "second event is target");
+	s.check(recorded[0]!.opId === "op-99", "opId preserved on source");
+	s.check(recorded[1]!.opId === "op-99", "opId preserved on target");
 }
 
-console.log("\n--- Test 9: disk.create.observed maps correctly ---");
+s.section("Test 9: disk.create.observed maps correctly");
 {
 	const recorded: Array<Record<string, unknown>> = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event as Record<string, unknown>));
@@ -221,15 +211,15 @@ console.log("\n--- Test 9: disk.create.observed maps correctly ---");
 		data: { size: 1024 },
 	});
 
-	assert(recorded.length === 1, "one event recorded");
-	assert(recorded[0]!.kind === FLIGHT_KIND.diskCreateObserved, "mapped to diskCreateObserved");
-	assert(recorded[0]!.path === "notes/new-file.md", "path preserved");
-	assert(recorded[0]!.priority === "important", "info severity -> important priority");
-	assert(recorded[0]!.layer === "disk", "layer is disk");
-	assert((recorded[0]!.data as Record<string, unknown>).size === 1024, "data.size preserved");
+	s.check(recorded.length === 1, "one event recorded");
+	s.check(recorded[0]!.kind === FLIGHT_KIND.diskCreateObserved, "mapped to diskCreateObserved");
+	s.check(recorded[0]!.path === "notes/new-file.md", "path preserved");
+	s.check(recorded[0]!.priority === "important", "info severity -> important priority");
+	s.check(recorded[0]!.layer === "disk", "layer is disk");
+	s.check((recorded[0]!.data as Record<string, unknown>).size === 1024, "data.size preserved");
 }
 
-console.log("\n--- Test 10: disk.modify.observed maps correctly ---");
+s.section("Test 10: disk.modify.observed maps correctly");
 {
 	const recorded: Array<Record<string, unknown>> = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event as Record<string, unknown>));
@@ -249,15 +239,15 @@ console.log("\n--- Test 10: disk.modify.observed maps correctly ---");
 		},
 	});
 
-	assert(recorded.length === 1, "one event recorded");
-	assert(recorded[0]!.kind === FLIGHT_KIND.diskModifyObserved, "mapped to diskModifyObserved");
-	assert(recorded[0]!.layer === "disk", "layer is disk");
+	s.check(recorded.length === 1, "one event recorded");
+	s.check(recorded[0]!.kind === FLIGHT_KIND.diskModifyObserved, "mapped to diskModifyObserved");
+	s.check(recorded[0]!.layer === "disk", "layer is disk");
 	const data = recorded[0]!.data as Record<string, unknown>;
-	assert(data.writerGuess === "external", "data.writerGuess preserved");
-	assert(data.suppressWindowActive === false, "data.suppressWindowActive preserved");
+	s.check(data.writerGuess === "external", "data.writerGuess preserved");
+	s.check(data.suppressWindowActive === false, "data.suppressWindowActive preserved");
 }
 
-console.log("\n--- Test 11: disk.delete.observed with priority override ---");
+s.section("Test 11: disk.delete.observed with priority override");
 {
 	const recorded: Array<Record<string, unknown>> = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event as Record<string, unknown>));
@@ -271,13 +261,13 @@ console.log("\n--- Test 11: disk.delete.observed with priority override ---");
 		path: "notes/deleted.md",
 	});
 
-	assert(recorded.length === 1, "one event recorded");
-	assert(recorded[0]!.kind === FLIGHT_KIND.diskDeleteObserved, "mapped to diskDeleteObserved");
-	assert(recorded[0]!.priority === "critical", "priority override respected (not derived from severity)");
-	assert(recorded[0]!.layer === "disk", "layer is disk");
+	s.check(recorded.length === 1, "one event recorded");
+	s.check(recorded[0]!.kind === FLIGHT_KIND.diskDeleteObserved, "mapped to diskDeleteObserved");
+	s.check(recorded[0]!.priority === "critical", "priority override respected (not derived from severity)");
+	s.check(recorded[0]!.layer === "disk", "layer is disk");
 }
 
-console.log("\n--- Test 12: disk.event.suppressed with reason/decision extraction ---");
+s.section("Test 12: disk.event.suppressed with reason/decision extraction");
 {
 	const recorded: Array<Record<string, unknown>> = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event as Record<string, unknown>));
@@ -295,15 +285,15 @@ console.log("\n--- Test 12: disk.event.suppressed with reason/decision extractio
 		},
 	});
 
-	assert(recorded.length === 1, "one event recorded");
-	assert(recorded[0]!.kind === FLIGHT_KIND.diskEventSuppressed, "mapped to diskEventSuppressed");
-	assert(recorded[0]!.priority === "important", "priority override respected");
-	assert(recorded[0]!.layer === "policy", "layer is policy for suppression");
-	assert(recorded[0]!.reason === "suppressed-remote-writeback", "reason lifted from data");
-	assert(recorded[0]!.decision === "suppress", "decision lifted from data");
+	s.check(recorded.length === 1, "one event recorded");
+	s.check(recorded[0]!.kind === FLIGHT_KIND.diskEventSuppressed, "mapped to diskEventSuppressed");
+	s.check(recorded[0]!.priority === "important", "priority override respected");
+	s.check(recorded[0]!.layer === "policy", "layer is policy for suppression");
+	s.check(recorded[0]!.reason === "suppressed-remote-writeback", "reason lifted from data");
+	s.check(recorded[0]!.decision === "suppress", "decision lifted from data");
 }
 
-console.log("\n--- Test 13: droppedEventCount stays zero for all mapped disk events ---");
+s.section("Test 13: droppedEventCount stays zero for all mapped disk events");
 {
 	const sink = new FlightTraceSink(() => {});
 
@@ -312,10 +302,10 @@ console.log("\n--- Test 13: droppedEventCount stays zero for all mapped disk eve
 	sink.recordPath({ kind: "disk.delete.observed", scope: "file", severity: "info", priority: "critical", path: "c.md" });
 	sink.recordPath({ kind: "disk.event.suppressed", scope: "file", severity: "debug", priority: "important", path: "d.md", data: { reason: "x", decision: "y" } });
 
-	assert(sink.getDroppedEventCount() === 0, "no dropped events for mapped disk kinds");
+	s.check(sink.getDroppedEventCount() === 0, "no dropped events for mapped disk kinds");
 }
 
-console.log("\n--- Test 14: CRDT lifecycle events route correctly through FlightTraceSink ---");
+s.section("Test 14: CRDT lifecycle events route correctly through FlightTraceSink");
 {
 	const recorded: Array<Record<string, unknown>> = [];
 	const sink = new FlightTraceSink((event) => recorded.push(event as Record<string, unknown>));
@@ -325,20 +315,20 @@ console.log("\n--- Test 14: CRDT lifecycle events route correctly through Flight
 	sink.recordPath({ kind: "crdt.file.tombstoned", scope: "file", severity: "info",  priority: "critical",  path: "c.md", opId: "op-2", data: { fileId: "id-3" } });
 	sink.recordPath({ kind: "crdt.file.revived",    scope: "file", severity: "info",  priority: "critical",  path: "d.md", opId: "op-3", data: { reason: "force-revive" } });
 
-	assert(recorded.length === 4, "all 4 CRDT events recorded");
-	assert(recorded[0]!.kind === FLIGHT_KIND.crdtFileCreated,    "crdt.file.created → crdtFileCreated");
-	assert(recorded[1]!.kind === FLIGHT_KIND.crdtFileRenamed,    "crdt.file.renamed → crdtFileRenamed");
-	assert(recorded[2]!.kind === FLIGHT_KIND.crdtFileTombstoned, "crdt.file.tombstoned → crdtFileTombstoned");
-	assert(recorded[3]!.kind === FLIGHT_KIND.crdtFileRevived,    "crdt.file.revived → crdtFileRevived");
-	assert(recorded[0]!.layer === "crdt",    "CRDT events use crdt layer");
-	assert(recorded[0]!.source === "vaultSync", "CRDT events source is vaultSync");
-	assert(recorded[0]!.fileId === "id-1",   "fileId lifted from data");
-	assert(recorded[2]!.priority === "critical", "priority override preserved for tombstone");
-	assert(recorded[3]!.reason === "force-revive", "reason lifted from data for revived");
-	assert(sink.getDroppedEventCount() === 0, "no dropped events for CRDT kinds");
+	s.check(recorded.length === 4, "all 4 CRDT events recorded");
+	s.check(recorded[0]!.kind === FLIGHT_KIND.crdtFileCreated,    "crdt.file.created → crdtFileCreated");
+	s.check(recorded[1]!.kind === FLIGHT_KIND.crdtFileRenamed,    "crdt.file.renamed → crdtFileRenamed");
+	s.check(recorded[2]!.kind === FLIGHT_KIND.crdtFileTombstoned, "crdt.file.tombstoned → crdtFileTombstoned");
+	s.check(recorded[3]!.kind === FLIGHT_KIND.crdtFileRevived,    "crdt.file.revived → crdtFileRevived");
+	s.check(recorded[0]!.layer === "crdt",    "CRDT events use crdt layer");
+	s.check(recorded[0]!.source === "vaultSync", "CRDT events source is vaultSync");
+	s.check(recorded[0]!.fileId === "id-1",   "fileId lifted from data");
+	s.check(recorded[2]!.priority === "critical", "priority override preserved for tombstone");
+	s.check(recorded[3]!.reason === "force-revive", "reason lifted from data for revived");
+	s.check(sink.getDroppedEventCount() === 0, "no dropped events for CRDT kinds");
 }
 
-console.log("\n--- Test 15A: Complete domain adapter coverage — all 12 mapped kinds produce zero drops ---");
+s.section("Test 15A: Complete domain adapter coverage — all 12 mapped kinds produce zero drops");
 {
 	// This is the exhaustive adapter-mapping CI invariant.
 	// Every domain event kind in DOMAIN_TO_FLIGHT_KIND must:
@@ -376,24 +366,24 @@ console.log("\n--- Test 15A: Complete domain adapter coverage — all 12 mapped 
 		sink.recordPath({ kind: domainKind, scope: "file", severity: "info", path: "test.md", data: {} });
 	}
 
-	assert(sink.getDroppedEventCount() === 0,
+	s.check(sink.getDroppedEventCount() === 0,
 		`all ${EXPECTED_MAPPINGS.length} domain kinds mapped without drops (droppedEventCount=0)`);
-	assert(recorded.length === EXPECTED_MAPPINGS.length,
+	s.check(recorded.length === EXPECTED_MAPPINGS.length,
 		`exactly ${EXPECTED_MAPPINGS.length} events recorded (got ${recorded.length})`);
 
 	for (let i = 0; i < EXPECTED_MAPPINGS.length; i++) {
 		const expected = EXPECTED_MAPPINGS[i]!;
 		const actual = recorded[i]!;
-		assert(actual.kind === expected.flightKind,
+		s.check(actual.kind === expected.flightKind,
 			`${expected.domainKind} → kind "${expected.flightKind}"`);
-		assert(actual.layer === expected.layer,
+		s.check(actual.layer === expected.layer,
 			`${expected.domainKind} → layer "${expected.layer}"`);
-		assert(actual.source === expected.source,
+		s.check(actual.source === expected.source,
 			`${expected.domainKind} → source "${expected.source}"`);
 	}
 }
 
-console.log("\n--- Test 15B: PRODUCT_EVENT_KIND string compatibility with FLIGHT_KIND ---");
+s.section("Test 15B: PRODUCT_EVENT_KIND string compatibility with FLIGHT_KIND");
 {
 	// This test proves that every PRODUCT_EVENT_KIND string value has a matching
 	// entry in FLIGHT_KIND. This is NOT the same as saying they all route through
@@ -411,16 +401,15 @@ console.log("\n--- Test 15B: PRODUCT_EVENT_KIND string compatibility with FLIGHT
 	let allCompatible = true;
 	for (const productKind of productKindValues) {
 		if (!flightKindValues.has(productKind as typeof FLIGHT_KIND[keyof typeof FLIGHT_KIND])) {
-			console.error(`  FAIL  PRODUCT_EVENT_KIND value "${productKind}" has no matching FLIGHT_KIND entry`);
-			failed++;
+			s.check(false, `PRODUCT_EVENT_KIND value "${productKind}" has no matching FLIGHT_KIND entry`);
 			allCompatible = false;
 		}
 	}
-	assert(allCompatible,
+	s.check(allCompatible,
 		`all ${productKindValues.length} PRODUCT_EVENT_KIND values have matching FLIGHT_KIND entries`);
 }
 
-console.log("\n--- Test 15C: record() and unmapped recordPath() both increment droppedEventCount ---");
+s.section("Test 15C: record() and unmapped recordPath() both increment droppedEventCount");
 {
 	// FlightTraceSink.record() is a stub — non-path events are not yet mapped.
 	// It must visibly drop events (increment counter) rather than silently discard.
@@ -435,24 +424,19 @@ console.log("\n--- Test 15C: record() and unmapped recordPath() both increment d
 	sink.record({ kind: "provider.connected", scope: "connection", severity: "info" });
 	sink.record({ kind: "some.future.non-path.event", scope: "vault", severity: "debug" });
 
-	assert(sink.getDroppedEventCount() === 3,
+	s.check(sink.getDroppedEventCount() === 3,
 		"record() increments droppedEventCount for every call (3 non-path events dropped)");
 
 	// recordPath() with unmapped kind also drops
 	sink.recordPath({ kind: "recovery.decision", scope: "file", severity: "info", path: "x.md" });
 	sink.recordPath({ kind: "totally.unknown.kind", scope: "file", severity: "debug", path: "y.md" });
 
-	assert(sink.getDroppedEventCount() === 5,
+	s.check(sink.getDroppedEventCount() === 5,
 		"unmapped recordPath() kinds also increment droppedEventCount (total 5)");
 
 	// Verify that a mapped kind does NOT increment the counter
 	sink.recordPath({ kind: "disk.create.observed", scope: "file", severity: "info", path: "z.md", data: {} });
-	assert(sink.getDroppedEventCount() === 5,
+	s.check(sink.getDroppedEventCount() === 5,
 		"mapped recordPath() kind does NOT increment droppedEventCount (still 5)");
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

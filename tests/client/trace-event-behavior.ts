@@ -4,19 +4,9 @@ import { DiskMirror } from "../../src/sync/diskMirror";
 import { ServerAckTracker } from "../../src/sync/serverAckTracker";
 import { InMemoryCandidateStore, type ScopeKey, type ScopeMetadata } from "../../src/sync/candidateStore";
 import type { TraceEventDetails } from "../../src/telemetry/debug/trace";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("trace-event-behavior");
 
 interface CapturedTrace {
 	source: string;
@@ -44,7 +34,7 @@ const BASE_SCOPE: ScopeKey & ScopeMetadata = {
 	ackStoreVersion: 1,
 };
 
-console.log("\n--- Test 1: receipt trace events fire from tracker behavior ---");
+s.section("Test 1: receipt trace events fire from tracker behavior");
 {
 	const events: CapturedTrace[] = [];
 	const doc = new Y.Doc({ gc: false });
@@ -58,14 +48,14 @@ console.log("\n--- Test 1: receipt trace events fire from tracker behavior ---")
 
 	const captured = findEvent(events, "receipt", "receipt-candidate-captured");
 	const echo = findEvent(events, "receipt", "receipt-server-echo");
-	assert(!!captured, "local update emits receipt-candidate-captured");
-	assert(captured?.details?.candidateBytes !== undefined, "candidate trace includes byte count");
-	assert(!!echo, "server echo emits receipt-server-echo");
-	assert(echo?.details?.serverDominatesCandidate === true, "echo trace reports domination result");
-	assert(echo?.details?.serverAppliedLocalState === true, "echo trace reports tracker state");
+	s.check(!!captured, "local update emits receipt-candidate-captured");
+	s.check(captured?.details?.candidateBytes !== undefined, "candidate trace includes byte count");
+	s.check(!!echo, "server echo emits receipt-server-echo");
+	s.check(echo?.details?.serverDominatesCandidate === true, "echo trace reports domination result");
+	s.check(echo?.details?.serverAppliedLocalState === true, "echo trace reports tracker state");
 }
 
-console.log("\n--- Test 2: receipt startup failure trace does not leak room name ---");
+s.section("Test 2: receipt startup failure trace does not leak room name");
 {
 	const events: CapturedTrace[] = [];
 	const tracker = new ServerAckTracker(captureTrace(events));
@@ -79,8 +69,8 @@ console.log("\n--- Test 2: receipt startup failure trace does not leak room name
 
 	const failedLoad = findEvent(events, "receipt", "receipt-startup-load-failed");
 	const serialized = JSON.stringify(failedLoad);
-	assert(!!failedLoad, "startup load failure emits receipt-startup-load-failed");
-	assert(!serialized.includes(BASE_SCOPE.roomName), "startup load failure trace does not include raw room name");
+	s.check(!!failedLoad, "startup load failure emits receipt-startup-load-failed");
+	s.check(!serialized.includes(BASE_SCOPE.roomName), "startup load failure trace does not include raw room name");
 }
 
 function makeSuppressionMirror(
@@ -112,7 +102,7 @@ function makeSuppressionMirror(
 	return new DiskMirror(app, vaultSync, editorBindings, false, captureTrace(events));
 }
 
-console.log("\n--- Test 3: suppression acknowledgement trace fires from observed file state ---");
+s.section("Test 3: suppression acknowledgement trace fires from observed file state");
 {
 	const events: CapturedTrace[] = [];
 	const mirror = makeSuppressionMirror(() => "expected", events);
@@ -123,12 +113,12 @@ console.log("\n--- Test 3: suppression acknowledgement trace fires from observed
 
 	const suppressed = await mirror.shouldSuppressModify(file);
 	const acknowledged = findEvent(events, "disk", "suppression-acknowledged");
-	assert(suppressed, "matching observed state suppresses self modify event");
-	assert(!!acknowledged, "matching observed state emits suppression-acknowledged");
-	assert(acknowledged?.details?.path === "Notes/suppressed.md", "suppression trace includes path field for redaction");
+	s.check(suppressed, "matching observed state suppresses self modify event");
+	s.check(!!acknowledged, "matching observed state emits suppression-acknowledged");
+	s.check(acknowledged?.details?.path === "Notes/suppressed.md", "suppression trace includes path field for redaction");
 }
 
-console.log("\n--- Test 4: suppression mismatch trace fires from changed file state ---");
+s.section("Test 4: suppression mismatch trace fires from changed file state");
 {
 	const events: CapturedTrace[] = [];
 	const mirror = makeSuppressionMirror(() => "changed", events);
@@ -139,12 +129,12 @@ console.log("\n--- Test 4: suppression mismatch trace fires from changed file st
 
 	const suppressed = await mirror.shouldSuppressModify(file);
 	const mismatch = findEvent(events, "disk", "suppression-mismatch");
-	assert(!suppressed, "changed observed state does not suppress modify event");
-	assert(!!mismatch, "changed observed state emits suppression-mismatch");
-	assert(mismatch?.details?.reason === "size-mismatch", "suppression mismatch includes reason");
+	s.check(!suppressed, "changed observed state does not suppress modify event");
+	s.check(!!mismatch, "changed observed state emits suppression-mismatch");
+	s.check(mismatch?.details?.reason === "size-mismatch", "suppression mismatch includes reason");
 }
 
-console.log("\n--- Test 5: diskMirror remote delete emits trace with deleteMode ---");
+s.section("Test 5: diskMirror remote delete emits trace with deleteMode");
 {
 	const events: CapturedTrace[] = [];
 	const trashedPaths: string[] = [];
@@ -189,13 +179,13 @@ console.log("\n--- Test 5: diskMirror remote delete emits trace with deleteMode 
 	await (mirror as any).handleRemoteDelete("Notes/remote-deleted.md");
 
 	const deleteApplied = findEvent(events, "disk", "remote-delete-applied");
-	assert(!!deleteApplied, "diskMirror remote delete emits remote-delete-applied trace");
-	assert(deleteApplied?.details?.deleteMode === "trash", "diskMirror remote delete reports deleteMode 'trash'");
-	assert(trashedPaths.includes("Notes/remote-deleted.md"), "diskMirror remote delete uses trashFile");
-	assert(deletedPaths.length === 0, "diskMirror does not hard-delete when trash available");
+	s.check(!!deleteApplied, "diskMirror remote delete emits remote-delete-applied trace");
+	s.check(deleteApplied?.details?.deleteMode === "trash", "diskMirror remote delete reports deleteMode 'trash'");
+	s.check(trashedPaths.includes("Notes/remote-deleted.md"), "diskMirror remote delete uses trashFile");
+	s.check(deletedPaths.length === 0, "diskMirror does not hard-delete when trash available");
 }
 
-console.log("\n--- Test 6: diskMirror remote delete falls back to hard delete ---");
+s.section("Test 6: diskMirror remote delete falls back to hard delete");
 {
 	const events: CapturedTrace[] = [];
 	const deletedPaths: string[] = [];
@@ -237,12 +227,12 @@ console.log("\n--- Test 6: diskMirror remote delete falls back to hard delete --
 	await (mirror as any).handleRemoteDelete("Notes/fallback-deleted.md");
 
 	const deleteApplied = findEvent(events, "disk", "remote-delete-applied");
-	assert(!!deleteApplied, "diskMirror fallback delete emits remote-delete-applied trace");
-	assert(deleteApplied?.details?.deleteMode === "delete", "diskMirror fallback reports deleteMode 'delete'");
-	assert(deletedPaths.includes("Notes/fallback-deleted.md"), "diskMirror falls back to hard delete");
+	s.check(!!deleteApplied, "diskMirror fallback delete emits remote-delete-applied trace");
+	s.check(deleteApplied?.details?.deleteMode === "delete", "diskMirror fallback reports deleteMode 'delete'");
+	s.check(deletedPaths.includes("Notes/fallback-deleted.md"), "diskMirror falls back to hard delete");
 }
 
-console.log("\n--- Test 7: diskMirror remote delete preserves locally modified markdown ---");
+s.section("Test 7: diskMirror remote delete preserves locally modified markdown");
 {
 	const events: CapturedTrace[] = [];
 	const trashedPaths: string[] = [];
@@ -286,12 +276,12 @@ console.log("\n--- Test 7: diskMirror remote delete preserves locally modified m
 
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
-	assert(!!preserved, "diskMirror preserves locally modified file");
-	assert(preserved?.details?.reason === "local-file-modified-since-last-sync", "trace includes correct reason");
-	assert(!deleted, "diskMirror does NOT delete locally modified file");
+	s.check(!!preserved, "diskMirror preserves locally modified file");
+	s.check(preserved?.details?.reason === "local-file-modified-since-last-sync", "trace includes correct reason");
+	s.check(!deleted, "diskMirror does NOT delete locally modified file");
 }
 
-console.log("\n--- Test 8: diskMirror remote delete proceeds when content matches CRDT ---");
+s.section("Test 8: diskMirror remote delete proceeds when content matches CRDT");
 {
 	const events: CapturedTrace[] = [];
 	const trashedPaths: string[] = [];
@@ -336,12 +326,12 @@ console.log("\n--- Test 8: diskMirror remote delete proceeds when content matche
 
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
-	assert(!!deleted, "diskMirror deletes file when disk content matches CRDT");
-	assert(!preserved, "diskMirror does NOT preserve file when content matches");
-	assert(trashedPaths.includes("Notes/unchanged.md"), "diskMirror trashes unmodified file");
+	s.check(!!deleted, "diskMirror deletes file when disk content matches CRDT");
+	s.check(!preserved, "diskMirror does NOT preserve file when content matches");
+	s.check(trashedPaths.includes("Notes/unchanged.md"), "diskMirror trashes unmodified file");
 }
 
-console.log("\n--- Test 9: diskMirror remote delete preserves when CRDT unavailable ---");
+s.section("Test 9: diskMirror remote delete preserves when CRDT unavailable");
 {
 	const events: CapturedTrace[] = [];
 
@@ -384,12 +374,12 @@ console.log("\n--- Test 9: diskMirror remote delete preserves when CRDT unavaila
 
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
-	assert(!!preserved, "diskMirror preserves file when CRDT text is unavailable");
-	assert(preserved?.details?.reason === "no-crdt-baseline-available", "trace includes no-crdt-baseline reason");
-	assert(!deleted, "diskMirror does NOT delete when no CRDT baseline");
+	s.check(!!preserved, "diskMirror preserves file when CRDT text is unavailable");
+	s.check(preserved?.details?.reason === "no-crdt-baseline-available", "trace includes no-crdt-baseline reason");
+	s.check(!deleted, "diskMirror does NOT delete when no CRDT baseline");
 }
 
-console.log("\n--- Test 10: diskMirror remote delete suppression fires before delete ---");
+s.section("Test 10: diskMirror remote delete suppression fires before delete");
 {
 	const events: CapturedTrace[] = [];
 	const trashedPaths: string[] = [];
@@ -439,12 +429,12 @@ console.log("\n--- Test 10: diskMirror remote delete suppression fires before de
 
 	await (mirror as any).handleRemoteDelete("Notes/suppression-test.md");
 
-	assert(suppressedPaths.length === 1, "suppressDelete called once");
-	assert(suppressedPaths[0] === "Notes/suppression-test.md", "suppressDelete called with correct path");
-	assert(trashedPaths.length === 1, "file was trashed");
+	s.check(suppressedPaths.length === 1, "suppressDelete called once");
+	s.check(suppressedPaths[0] === "Notes/suppression-test.md", "suppressDelete called with correct path");
+	s.check(trashedPaths.length === 1, "file was trashed");
 }
 
-console.log("\n--- Test 11: diskMirror remote delete falls back when trash throws ---");
+s.section("Test 11: diskMirror remote delete falls back when trash throws");
 {
 	const events: CapturedTrace[] = [];
 	const deletedPaths: string[] = [];
@@ -488,12 +478,12 @@ console.log("\n--- Test 11: diskMirror remote delete falls back when trash throw
 	await (mirror as any).handleRemoteDelete("Notes/trash-throws.md");
 
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
-	assert(!!deleted, "delete still applied after trash failure");
-	assert(deleted?.details?.deleteMode === "delete", "falls back to hard delete");
-	assert(deletedPaths.includes("Notes/trash-throws.md"), "vault.delete called");
+	s.check(!!deleted, "delete still applied after trash failure");
+	s.check(deleted?.details?.deleteMode === "delete", "falls back to hard delete");
+	s.check(deletedPaths.includes("Notes/trash-throws.md"), "vault.delete called");
 }
 
-console.log("\n--- Test 12: known-dirty remote delete revives tombstone (no loop) ---");
+s.section("Test 12: known-dirty remote delete revives tombstone (no loop)");
 {
 	const events: CapturedTrace[] = [];
 	let ensureFileCalled = false;
@@ -548,15 +538,15 @@ console.log("\n--- Test 12: known-dirty remote delete revives tombstone (no loop
 
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
 	const revived = findEvent(events, "disk", "remote-delete-preserved-revived");
-	assert(!!preserved, "known-dirty file is preserved");
-	assert(preserved?.details?.reason === "local-file-modified-since-last-sync", "reason is known-dirty");
-	assert(!!revived, "tombstone is revived for known-dirty file");
-	assert(ensureFileCalled, "ensureFile was called to revive");
-	assert(ensureFileArgs?.reviveTombstone === true, "reviveTombstone: true passed");
-	assert(ensureFileArgs?.content === diskContent, "disk content used for revive");
+	s.check(!!preserved, "known-dirty file is preserved");
+	s.check(preserved?.details?.reason === "local-file-modified-since-last-sync", "reason is known-dirty");
+	s.check(!!revived, "tombstone is revived for known-dirty file");
+	s.check(ensureFileCalled, "ensureFile was called to revive");
+	s.check(ensureFileArgs?.reviveTombstone === true, "reviveTombstone: true passed");
+	s.check(ensureFileArgs?.content === diskContent, "disk content used for revive");
 }
 
-console.log("\n--- Test 13: unknown-baseline remote delete does NOT revive tombstone ---");
+s.section("Test 13: unknown-baseline remote delete does NOT revive tombstone");
 {
 	const events: CapturedTrace[] = [];
 	let ensureFileCalled = false;
@@ -608,14 +598,14 @@ console.log("\n--- Test 13: unknown-baseline remote delete does NOT revive tombs
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
 	const revived = findEvent(events, "disk", "remote-delete-preserved-revived");
 	const deleted = findEvent(events, "disk", "remote-delete-applied");
-	assert(!!preserved, "unknown-baseline file is preserved");
-	assert(preserved?.details?.reason === "no-crdt-baseline-available", "reason is no-baseline");
-	assert(!revived, "tombstone is NOT revived for unknown-baseline");
-	assert(!deleted, "file is NOT deleted");
-	assert(!ensureFileCalled, "ensureFile is NOT called — no auto-resurrection");
+	s.check(!!preserved, "unknown-baseline file is preserved");
+	s.check(preserved?.details?.reason === "no-crdt-baseline-available", "reason is no-baseline");
+	s.check(!revived, "tombstone is NOT revived for unknown-baseline");
+	s.check(!deleted, "file is NOT deleted");
+	s.check(!ensureFileCalled, "ensureFile is NOT called — no auto-resurrection");
 }
 
-console.log("\n--- Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by importUntrackedFiles ---");
+s.section("Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by importUntrackedFiles");
 {
 	// This is the critical system-level test demanded by all three reviewers.
 	// Scenario:
@@ -683,11 +673,11 @@ console.log("\n--- Test 5: Multi-pass: unknown-baseline preserved file is NOT re
 	await (mirror as any).handleRemoteDelete("Notes/unknown-baseline.md");
 
 	// Verify: path is now in preserved-unresolved set
-	assert(
+	s.check(
 		mirror.preservedUnresolvedPaths.has("Notes/unknown-baseline.md"),
 		"path recorded in preservedUnresolvedPaths after remote-delete with unknown baseline",
 	);
-	assert(!ensureFileCalled, "ensureFile NOT called during initial remote-delete");
+	s.check(!ensureFileCalled, "ensureFile NOT called during initial remote-delete");
 
 	// --- Step 3: Set up ReconciliationController and run importUntrackedFiles ---
 	const controller = new ReconciliationController({
@@ -727,19 +717,19 @@ console.log("\n--- Test 5: Multi-pass: unknown-baseline preserved file is NOT re
 	await (controller as any).importUntrackedFiles();
 
 	// Step 5: Assert no resurrection
-	assert(!ensureFileCalled, "ensureFile NOT called by importUntrackedFiles (preserved-unresolved guard)");
-	assert(
+	s.check(!ensureFileCalled, "ensureFile NOT called by importUntrackedFiles (preserved-unresolved guard)");
+	s.check(
 		mirror.preservedUnresolvedPaths.has("Notes/unknown-baseline.md"),
 		"path remains in preservedUnresolvedPaths (not auto-cleared)",
 	);
 	const skipTrace = events.find(
 		(e) => e.source === "reconcile" && e.msg === "import-untracked-skipped-preserved-unresolved",
 	);
-	assert(!!skipTrace, "trace emitted for skipped preserved-unresolved import");
+	s.check(!!skipTrace, "trace emitted for skipped preserved-unresolved import");
 
 	// Step 6: Simulate user explicitly modifying the file → clears the guard
 	mirror.clearPreservedUnresolved("Notes/unknown-baseline.md");
-	assert(
+	s.check(
 		!mirror.preservedUnresolvedPaths.has("Notes/unknown-baseline.md"),
 		"path cleared from preservedUnresolvedPaths after user action",
 	);
@@ -747,10 +737,10 @@ console.log("\n--- Test 5: Multi-pass: unknown-baseline preserved file is NOT re
 	// Now importUntrackedFiles WOULD call ensureFile (proving the guard was the only blocker)
 	(controller as any).untrackedFiles = ["Notes/unknown-baseline.md"];
 	await (controller as any).importUntrackedFiles();
-	assert(ensureFileCalled, "ensureFile IS called after preserved-unresolved guard is cleared");
+	s.check(ensureFileCalled, "ensureFile IS called after preserved-unresolved guard is cleared");
 }
 
-console.log("\n--- Test 6: Multi-pass: read-failure during remote-delete becomes preserve-unresolved (not apply-delete) ---");
+s.section("Test 6: Multi-pass: read-failure during remote-delete becomes preserve-unresolved (not apply-delete)");
 {
 	const events: CapturedTrace[] = [];
 	let fileTrashed = false;
@@ -801,25 +791,18 @@ console.log("\n--- Test 6: Multi-pass: read-failure during remote-delete becomes
 	await (mirror as any).handleRemoteDelete("Notes/read-fails.md");
 
 	// File should NOT be deleted or trashed
-	assert(!fileDeleted, "file NOT deleted when read fails");
-	assert(!fileTrashed, "file NOT trashed when read fails");
+	s.check(!fileDeleted, "file NOT deleted when read fails");
+	s.check(!fileTrashed, "file NOT trashed when read fails");
 
 	// Should be preserved-unresolved
 	const preserved = findEvent(events, "disk", "remote-delete-conflict-preserved");
-	assert(!!preserved, "preserve trace emitted");
-	assert(preserved?.details?.reason === "read-failed-cannot-verify", "reason is read-failed");
+	s.check(!!preserved, "preserve trace emitted");
+	s.check(preserved?.details?.reason === "read-failed-cannot-verify", "reason is read-failed");
 
 	// Path should be in preserved-unresolved set
-	assert(
+	s.check(
 		mirror.preservedUnresolvedPaths.has("Notes/read-fails.md"),
 		"path recorded as preserved-unresolved after read failure",
 	);
 }
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

@@ -8,47 +8,33 @@
  * Tests the route classifier in index.ts and the DO-level gating in server.ts.
  */
 
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { readSource, suite } from "../harness.ts";
 
-const ROOT = resolve(import.meta.dirname, "../..");
-
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, message: string): void {
-	if (condition) {
-		console.log(`  \x1b[32mPASS\x1b[0m  ${message}`);
-		passed++;
-	} else {
-		console.log(`  \x1b[31mFAIL\x1b[0m  ${message}`);
-		failed++;
-	}
-}
+const s = suite("admin-route-gating");
 
 // ── Static analysis of route classifier ─────────────────────────────────────
 
-const indexSrc = readFileSync(resolve(ROOT, "server/src/index.ts"), "utf8");
-const serverSrc = readFileSync(resolve(ROOT, "server/src/server.ts"), "utf8");
+const indexSrc = readSource("server/src/index.ts");
+const serverSrc = readSource("server/src/server.ts");
 
-console.log("\n--- Test 1: Route classifier allows debug routes ---");
+s.section("Test 1: Route classifier allows debug routes");
 {
 	// GET /debug/recent must be classified as valid
-	assert(
+	s.check(
 		indexSrc.includes('method === "GET" && rest.length === 1 && rest[0] === "recent"'),
 		"GET /debug/recent is a known valid route shape",
 	);
 	// POST /debug/compact must be classified as valid (reaches auth)
-	assert(
+	s.check(
 		indexSrc.includes('method === "POST" && rest.length === 1 && rest[0] === "compact"'),
 		"POST /debug/compact is a known valid route shape",
 	);
 }
 
-console.log("\n--- Test 2: Admin routes require YAOS_ENABLE_ADMIN_ROUTES in DO ---");
+s.section("Test 2: Admin routes require YAOS_ENABLE_ADMIN_ROUTES in DO");
 {
 	// The server.ts file must gate compact behind the env var
-	assert(
+	s.check(
 		serverSrc.includes("YAOS_ENABLE_ADMIN_ROUTES") &&
 		serverSrc.includes("/__yaos/compact"),
 		"server.ts references YAOS_ENABLE_ADMIN_ROUTES and /__yaos/compact",
@@ -59,37 +45,37 @@ console.log("\n--- Test 2: Admin routes require YAOS_ENABLE_ADMIN_ROUTES in DO -
 		serverSrc.indexOf('url.pathname === "/__yaos/compact"'),
 		serverSrc.indexOf('url.pathname === "/__yaos/compact"') + 300,
 	);
-	assert(
+	s.check(
 		compactSection.includes("YAOS_ENABLE_ADMIN_ROUTES"),
 		"compact handler checks YAOS_ENABLE_ADMIN_ROUTES before proceeding",
 	);
 }
 
-console.log("\n--- Test 3: Gate returns 404 (not 401/403) when env var unset ---");
+s.section("Test 3: Gate returns 404 (not 401/403) when env var unset");
 {
 	// The gate should return json({ error: "not found" }, 404) — making
 	// the route invisible, not just forbidden.
 	const gateMatches = serverSrc.match(/YAOS_ENABLE_ADMIN_ROUTES[\s\S]{0,100}not found/g) ?? [];
-	assert(
+	s.check(
 		gateMatches.length >= 1,
 		`gate returns "not found" for compact (found ${gateMatches.length} matches)`,
 	);
 }
 
-console.log("\n--- Test 4: Read-only debug endpoint is NOT gated ---");
+s.section("Test 4: Read-only debug endpoint is NOT gated");
 {
 	// /__yaos/debug should NOT have YAOS_ENABLE_ADMIN_ROUTES check
 	const debugSection = serverSrc.substring(
 		serverSrc.indexOf('url.pathname === "/__yaos/debug"'),
 		serverSrc.indexOf('url.pathname === "/__yaos/debug"') + 200,
 	);
-	assert(
+	s.check(
 		!debugSection.includes("YAOS_ENABLE_ADMIN_ROUTES"),
 		"/__yaos/debug does NOT check YAOS_ENABLE_ADMIN_ROUTES (always accessible)",
 	);
 }
 
-console.log("\n--- Test 5: Gate does not call ensureDocumentLoaded when blocked ---");
+s.section("Test 5: Gate does not call ensureDocumentLoaded when blocked");
 {
 	// When the env var is unset, the handler must return BEFORE calling
 	// ensureDocumentLoaded() — otherwise it still wakes the DO.
@@ -98,18 +84,18 @@ console.log("\n--- Test 5: Gate does not call ensureDocumentLoaded when blocked 
 	const nextEnsureLoaded = serverSrc.indexOf("ensureDocumentLoaded", compactIdx);
 	const gateReturn = serverSrc.indexOf("YAOS_ENABLE_ADMIN_ROUTES", compactIdx);
 
-	assert(
+	s.check(
 		gateReturn < nextEnsureLoaded,
 		"compact: env var check comes before ensureDocumentLoaded (no DO hydration when gated)",
 	);
 }
 
-console.log("\n--- Test 6: All vault routes require auth (pre-auth rejection) ---");
+s.section("Test 6: All vault routes require auth (pre-auth rejection)");
 {
 	// In index.ts, vault routes go through rejectAndLogUnauthorizedVaultRequest
 	// before reaching any handler. This ensures unauthenticated requests
 	// never reach the DO.
-	assert(
+	s.check(
 		indexSrc.includes("rejectAndLogUnauthorizedVaultRequest"),
 		"index.ts calls rejectAndLogUnauthorizedVaultRequest for vault routes",
 	);
@@ -122,41 +108,34 @@ console.log("\n--- Test 6: All vault routes require auth (pre-auth rejection) --
 	const authCheckIdx = vaultSection.indexOf("rejectAndLogUnauthorizedVaultRequest");
 	const compactHandlerIdx = vaultSection.indexOf("compact");
 
-	assert(
+	s.check(
 		authCheckIdx < compactHandlerIdx,
 		"auth check comes before compact handler in vault routing",
 	);
 }
 
-console.log("\n--- Test 7: wrangler.toml has YAOS_ENABLE_ADMIN_ROUTES documented ---");
+s.section("Test 7: wrangler.toml has YAOS_ENABLE_ADMIN_ROUTES documented");
 {
-	const wranglerToml = readFileSync(resolve(ROOT, "server/wrangler.toml"), "utf8");
-	assert(
+	const wranglerToml = readSource("server/wrangler.toml");
+	s.check(
 		wranglerToml.includes("YAOS_ENABLE_ADMIN_ROUTES"),
 		"wrangler.toml documents YAOS_ENABLE_ADMIN_ROUTES",
 	);
 	// It should be commented out by default
-	assert(
+	s.check(
 		wranglerToml.includes("# YAOS_ENABLE_ADMIN_ROUTES"),
 		"YAOS_ENABLE_ADMIN_ROUTES is commented out by default",
 	);
 }
 
-console.log("\n--- Test 8: Unclaimed server cannot reach vault routes ---");
+s.section("Test 8: Unclaimed server cannot reach vault routes");
 {
 	// The route handling for unclaimed servers returns early before vault access.
 	// rejectUnauthorizedVaultRequest checks auth state.
-	assert(
+	s.check(
 		indexSrc.includes('"unclaimed"'),
 		"index.ts handles unclaimed auth state",
 	);
 	// The earlier test with yaos.ripplor.workers.dev confirmed unclaimed returns { error: "unclaimed" }
 }
-
-// ── Results ─────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
-if (failed > 0) process.exit(1);
+await s.done();

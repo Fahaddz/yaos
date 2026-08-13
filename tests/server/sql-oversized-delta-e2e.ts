@@ -8,6 +8,7 @@
 import { SqlDocStore } from "../../server/src/sqlDocStore";
 import { PersistenceCoordinator } from "../../server/src/persistenceCoordinator";
 import * as Y from "yjs";
+import { suite } from "../harness.ts";
 
 // ── Fake SQLite storage (copied from tests/server/sql-doc-store.ts pattern) ─────────
 
@@ -133,18 +134,7 @@ class FakeDurableObjectStorage {
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, message: string): void {
-	if (condition) {
-		console.log(`  \x1b[32mPASS\x1b[0m  ${message}`);
-		passed++;
-	} else {
-		console.log(`  \x1b[31mFAIL\x1b[0m  ${message}`);
-		failed++;
-	}
-}
+const s = suite("sql-oversized-delta-e2e");
 
 /**
  * Build a Y.Doc whose full encoded state is approximately `targetBytes` large.
@@ -161,7 +151,7 @@ function makeDocWithSize(targetBytes: number): Y.Doc {
 
 // ── Test 1: Delta just below threshold (1.4MB) → appends to journal normally ─
 
-console.log("\n--- Test 1: delta just below threshold (1.4MB) → journal append ---");
+s.section("Test 1: delta just below threshold (1.4MB) → journal append");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(storage as any);
@@ -172,7 +162,7 @@ console.log("\n--- Test 1: delta just below threshold (1.4MB) → journal append
 	text.insert(0, "A".repeat(1_400_000));
 
 	const update = Y.encodeStateAsUpdate(doc);
-	assert(
+	s.check(
 		update.byteLength > 1_000_000 && update.byteLength < 1.5 * 1024 * 1024,
 		`update is between 1MB and 1.5MB (got ${update.byteLength} bytes)`,
 	);
@@ -185,16 +175,16 @@ console.log("\n--- Test 1: delta just below threshold (1.4MB) → journal append
 		threw = true;
 	}
 
-	assert(!threw, "no exception thrown for 1.4MB delta");
-	assert(result !== null && result !== undefined, "returns JournalStats (not null)");
-	assert(result !== null && result!.entryCount === 1, `entryCount === 1 (got ${result?.entryCount})`);
+	s.check(!threw, "no exception thrown for 1.4MB delta");
+	s.check(result !== null && result !== undefined, "returns JournalStats (not null)");
+	s.check(result !== null && result!.entryCount === 1, `entryCount === 1 (got ${result?.entryCount})`);
 
 	doc.destroy();
 }
 
 // ── Test 2: Delta above threshold (2MB) → returns null, no SQL exception ─────
 
-console.log("\n--- Test 2: delta above threshold (2MB) → returns null, no exception ---");
+s.section("Test 2: delta above threshold (2MB) → returns null, no exception");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(storage as any);
@@ -211,16 +201,16 @@ console.log("\n--- Test 2: delta above threshold (2MB) → returns null, no exce
 		threw = true;
 	}
 
-	assert(!threw, "no exception thrown for 2MB delta");
-	assert(result === null, "appendUpdate returns null for oversized delta");
+	s.check(!threw, "no exception thrown for 2MB delta");
+	s.check(result === null, "appendUpdate returns null for oversized delta");
 
 	const stats = store.getJournalStats();
-	assert(stats.entryCount === 0, `journal has 0 entries after rejected oversized write (got ${stats.entryCount})`);
+	s.check(stats.entryCount === 0, `journal has 0 entries after rejected oversized write (got ${stats.entryCount})`);
 }
 
 // ── Test 3: Full coordinator path: oversized delta → checkpoint fallback ──────
 
-console.log("\n--- Test 3: coordinator oversized delta → checkpoint-fallback succeeds ---");
+s.section("Test 3: coordinator oversized delta → checkpoint-fallback succeeds");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(storage as any);
@@ -235,23 +225,23 @@ console.log("\n--- Test 3: coordinator oversized delta → checkpoint-fallback s
 
 	const result = await coordinator.enqueueSave();
 
-	assert(result.success === true, `save succeeds (got success=${result.success}, error=${result.error})`);
-	assert(
+	s.check(result.success === true, `save succeeds (got success=${result.success}, error=${result.error})`);
+	s.check(
 		result.method === "checkpoint-fallback",
 		`method is "checkpoint-fallback" (got "${result.method}")`,
 	);
 
 	const journalStats = store.getJournalStats();
-	assert(
+	s.check(
 		journalStats.entryCount === 0,
 		`journal has 0 entries (all went to checkpoint, got ${journalStats.entryCount})`,
 	);
 
 	const snapshotRows = storage.sql.getSnapshotRows();
-	assert(snapshotRows.length >= 1, `SQL snapshot exists (got ${snapshotRows.length} chunk rows)`);
+	s.check(snapshotRows.length >= 1, `SQL snapshot exists (got ${snapshotRows.length} chunk rows)`);
 
-	assert(coordinator.health.status === "healthy", `health.status is "healthy" (got "${coordinator.health.status}")`);
-	assert(
+	s.check(coordinator.health.status === "healthy", `health.status is "healthy" (got "${coordinator.health.status}")`);
+	s.check(
 		coordinator.health.checkpointFallbackCount >= 1,
 		`checkpointFallbackCount >= 1 (got ${coordinator.health.checkpointFallbackCount})`,
 	);
@@ -261,7 +251,7 @@ console.log("\n--- Test 3: coordinator oversized delta → checkpoint-fallback s
 
 // ── Test 4: Repeated oversized updates → no infinite loop ─────────────────────
 
-console.log("\n--- Test 4: repeated oversized updates → no infinite loop, all succeed ---");
+s.section("Test 4: repeated oversized updates → no infinite loop, all succeed");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(storage as any);
@@ -285,21 +275,21 @@ console.log("\n--- Test 4: repeated oversized updates → no infinite loop, all 
 
 	for (let i = 0; i < 5; i++) {
 		const r = results[i]!;
-		assert(r.success === true, `save ${i + 1} succeeded (method=${r.method}, error=${r.error})`);
+		s.check(r.success === true, `save ${i + 1} succeeded (method=${r.method}, error=${r.error})`);
 	}
 
-	assert(
+	s.check(
 		coordinator.health.status !== "degraded",
 		`no degraded state after 5 oversized saves (status="${coordinator.health.status}")`,
 	);
 
-	assert(
+	s.check(
 		coordinator.health.checkpointFallbackCount === 5,
 		`checkpointFallbackCount === 5 (got ${coordinator.health.checkpointFallbackCount})`,
 	);
 
 	const journalStats = store.getJournalStats();
-	assert(
+	s.check(
 		journalStats.entryCount === 0,
 		`journal stays at 0 — all went to checkpoint (got ${journalStats.entryCount})`,
 	);
@@ -309,7 +299,7 @@ console.log("\n--- Test 4: repeated oversized updates → no infinite loop, all 
 
 // ── Test 5: Normal small delta after oversized → appends to journal normally ──
 
-console.log("\n--- Test 5: small delta after oversized checkpoint → journal append ---");
+s.section("Test 5: small delta after oversized checkpoint → journal append");
 {
 	const storage = new FakeDurableObjectStorage();
 	const store = new SqlDocStore(storage as any);
@@ -323,7 +313,7 @@ console.log("\n--- Test 5: small delta after oversized checkpoint → journal ap
 	coordinator.setInitialStateVector(Y.encodeStateVector(new Y.Doc()));
 
 	const oversizedResult = await coordinator.enqueueSave();
-	assert(
+	s.check(
 		oversizedResult.method === "checkpoint-fallback",
 		`first save is checkpoint-fallback (got "${oversizedResult.method}")`,
 	);
@@ -332,28 +322,21 @@ console.log("\n--- Test 5: small delta after oversized checkpoint → journal ap
 	text.insert(text.length, "small edit");
 	const smallResult = await coordinator.enqueueSave();
 
-	assert(
+	s.check(
 		smallResult.success === true,
 		`small delta save succeeds (error=${smallResult.error})`,
 	);
-	assert(
+	s.check(
 		smallResult.method === "append",
 		`small delta uses "append" path (got "${smallResult.method}")`,
 	);
 
 	const journalStats = store.getJournalStats();
-	assert(
+	s.check(
 		journalStats.entryCount === 1,
 		`journal has 1 entry after small delta (got ${journalStats.entryCount})`,
 	);
 
 	doc.destroy();
 }
-
-// ── Results ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
-if (failed > 0) process.exit(1);
+await s.done();

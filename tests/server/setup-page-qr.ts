@@ -3,19 +3,9 @@ import { handleClaimRoute } from "../../server/src/routes/auth";
 import type { AuthState, Env } from "../../server/src/routes/types";
 import { renderSetupPage } from "../../server/src/setupPage";
 import { buildMobileSetupUrl, renderSetupQrDataUrl } from "../../server/src/setupQr";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, message: string): void {
-	if (condition) {
-		console.log(`  PASS  ${message}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${message}`);
-		failed++;
-	}
-}
+const s = suite("setup-page-qr");
 
 function decodeSvgDataUrl(dataUrl: string): string {
 	const prefix = "data:image/svg+xml;base64,";
@@ -25,7 +15,7 @@ function decodeSvgDataUrl(dataUrl: string): string {
 	return Buffer.from(dataUrl.slice(prefix.length), "base64").toString("utf8");
 }
 
-console.log("\n--- Setup QR renderer stays local to the Worker ---");
+s.section("Setup QR renderer stays local to the Worker");
 const host = "https://example.test";
 const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const vaultId = "vault-identifier";
@@ -33,11 +23,11 @@ const mobileSetupUrl = buildMobileSetupUrl(host, token, vaultId);
 const renderedQr = await renderSetupQrDataUrl(mobileSetupUrl);
 const svg = decodeSvgDataUrl(renderedQr);
 
-assert(renderedQr.startsWith("data:image/svg+xml;base64,"), "renderer returns an SVG data URL");
-assert(svg.includes("<svg ") && svg.includes("shape-rendering=\"crispEdges\""), "renderer emits a QR SVG");
-assert(svg.includes("fill=\"#08111d\"") && svg.includes("fill=\"white\""), "renderer preserves the setup QR colors");
-assert(!svg.includes("<script") && !svg.includes("qrious") && !svg.includes("jsdelivr"), "renderer SVG contains no executable or remote QR dependency");
-assert(!/\s(?:href|xlink:href)=/i.test(svg), "renderer SVG has no external resource reference");
+s.check(renderedQr.startsWith("data:image/svg+xml;base64,"), "renderer returns an SVG data URL");
+s.check(svg.includes("<svg ") && svg.includes("shape-rendering=\"crispEdges\""), "renderer emits a QR SVG");
+s.check(svg.includes("fill=\"#08111d\"") && svg.includes("fill=\"white\""), "renderer preserves the setup QR colors");
+s.check(!svg.includes("<script") && !svg.includes("qrious") && !svg.includes("jsdelivr"), "renderer SVG contains no executable or remote QR dependency");
+s.check(!/\s(?:href|xlink:href)=/i.test(svg), "renderer SVG has no external resource reference");
 
 let blankRejected = false;
 try {
@@ -45,18 +35,18 @@ try {
 } catch {
 	blankRejected = true;
 }
-assert(blankRejected, "renderer rejects an empty setup URL");
+s.check(blankRejected, "renderer rejects an empty setup URL");
 
-console.log("\n--- Setup HTML has no external QR runtime ---");
+s.section("Setup HTML has no external QR runtime");
 const setupHtml = renderSetupPage({ host });
-assert(!/qrious/i.test(setupHtml), "setup page does not reference QRious");
-assert(!setupHtml.includes("cdn.jsdelivr.net"), "setup page does not reference jsDelivr");
-assert(!setupHtml.includes("window.QRious"), "setup page does not access the QRious global");
-assert(!setupHtml.includes("<script src="), "setup page has no external script source");
-assert(setupHtml.includes("data:image/svg+xml;base64,") && setupHtml.includes("document.createElement(\"img\")"), "setup page renders the Worker-provided local QR image");
-assert(setupHtml.includes("host-input") && setupHtml.includes("token-input") && setupHtml.includes("vault-input"), "manual setup fallback remains available");
+s.check(!/qrious/i.test(setupHtml), "setup page does not reference QRious");
+s.check(!setupHtml.includes("cdn.jsdelivr.net"), "setup page does not reference jsDelivr");
+s.check(!setupHtml.includes("window.QRious"), "setup page does not access the QRious global");
+s.check(!setupHtml.includes("<script src="), "setup page has no external script source");
+s.check(setupHtml.includes("data:image/svg+xml;base64,") && setupHtml.includes("document.createElement(\"img\")"), "setup page renders the Worker-provided local QR image");
+s.check(setupHtml.includes("host-input") && setupHtml.includes("token-input") && setupHtml.includes("vault-input"), "manual setup fallback remains available");
 
-console.log("\n--- Claim response returns a local QR without persisting the token ---");
+s.section("Claim response returns a local QR without persisting the token");
 let claimWriteCount = 0;
 let persistedTokenHash: string | null = null;
 const claimedConfig = {
@@ -102,7 +92,7 @@ const invalidClaim = await handleClaimRoute(
 	env,
 	unclaimed,
 );
-assert(invalidClaim.status === 400 && claimWriteCount === 0, "invalid claim does not write configuration");
+s.check(invalidClaim.status === 400 && claimWriteCount === 0, "invalid claim does not write configuration");
 
 const claimResponse = await handleClaimRoute(
 	new Request(`${host}/claim`, { method: "POST", body: JSON.stringify({ token, vaultId }) }),
@@ -112,11 +102,11 @@ const claimResponse = await handleClaimRoute(
 const claimBody = await claimResponse.json() as { mobileSetupQrDataUrl?: string };
 const expectedHash = await sha256Hex(new TextEncoder().encode(token));
 
-assert(claimResponse.status === 200, "valid claim succeeds");
-assert(claimWriteCount === 1, "valid claim writes configuration once");
-assert(persistedTokenHash === expectedHash && persistedTokenHash !== token, "claim persists only the token hash");
-assert(claimBody.mobileSetupQrDataUrl === renderedQr, "claim response returns the local QR for the exact mobile setup URL");
-assert(!decodeSvgDataUrl(claimBody.mobileSetupQrDataUrl ?? "").includes("jsdelivr"), "claim QR has no remote reference");
+s.check(claimResponse.status === 200, "valid claim succeeds");
+s.check(claimWriteCount === 1, "valid claim writes configuration once");
+s.check(persistedTokenHash === expectedHash && persistedTokenHash !== token, "claim persists only the token hash");
+s.check(claimBody.mobileSetupQrDataUrl === renderedQr, "claim response returns the local QR for the exact mobile setup URL");
+s.check(!decodeSvgDataUrl(claimBody.mobileSetupQrDataUrl ?? "").includes("jsdelivr"), "claim QR has no remote reference");
 
 const alreadyClaimed: AuthState = { mode: "claim", claimed: true, tokenHash: expectedHash };
 const secondClaim = await handleClaimRoute(
@@ -124,10 +114,5 @@ const secondClaim = await handleClaimRoute(
 	env,
 	alreadyClaimed,
 );
-assert(secondClaim.status === 403 && claimWriteCount === 1, "already claimed server does not write configuration again");
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+s.check(secondClaim.status === 403 && claimWriteCount === 1, "already claimed server does not write configuration again");
+await s.done();

@@ -37,28 +37,17 @@
 import { TFile } from "obsidian";
 import * as Y from "yjs";
 import { DiskMirror } from "../../src/sync/diskMirror";
+import { readSource, suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("markdown-remote-delete-trash-preference");
 
 function assertEq<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`);
-	failed++;
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`,
+	);
 }
 
 interface CapturedFlightEvent {
@@ -259,7 +248,7 @@ function buildFixture(opts: FixtureOptions): Fixture {
 // Scenario A — trashFile available, trash preferred, system === true
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario A: markdown remote delete prefers trashFile ---");
+s.section("Scenario A: markdown remote delete prefers trashFile");
 {
 	const path = "Notes/scenario-a.md";
 	const baseline = "scenario-a clean baseline";
@@ -287,16 +276,16 @@ console.log("\n--- Scenario A: markdown remote delete prefers trashFile ---");
 
 	const observedIdx = fix.flightEvents.findIndex((e) => e.kind === "delete.remote.observed");
 	const appliedIdx = fix.flightEvents.findIndex((e) => e.kind === "delete.disk.applied");
-	assert(observedIdx >= 0 && appliedIdx > observedIdx, "delete.remote.observed precedes delete.disk.applied");
+	s.check(observedIdx >= 0 && appliedIdx > observedIdx, "delete.remote.observed precedes delete.disk.applied");
 
-	assert(!fix.fileExists(path), "file no longer exists in vault after trashFile");
+	s.check(!fix.fileExists(path), "file no longer exists in vault after trashFile");
 }
 
 // -------------------------------------------------------------------
 // Scenario B — trashFile missing, hard-delete fallback
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario B: markdown remote delete falls back when trash unavailable ---");
+s.section("Scenario B: markdown remote delete falls back when trash unavailable");
 {
 	const path = "Notes/scenario-b.md";
 	const baseline = "scenario-b clean baseline";
@@ -321,14 +310,14 @@ console.log("\n--- Scenario B: markdown remote delete falls back when trash unav
 	assertEq(appliedEvents[0]?.data?.deleteMode, "delete", "markdown remote delete reports deleteMode 'delete' on flight event");
 	assertEq(appliedEvents[0]?.data?.reason, "tombstone-applied", "applied event reason is tombstone-applied");
 
-	assert(!fix.fileExists(path), "file no longer exists in vault after fallback delete");
+	s.check(!fix.fileExists(path), "file no longer exists in vault after fallback delete");
 }
 
 // -------------------------------------------------------------------
 // Scenario C — trashFile throws, attempted then hard-delete fallback
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario C: markdown remote delete falls back when trashFile throws ---");
+s.section("Scenario C: markdown remote delete falls back when trashFile throws");
 {
 	const path = "Notes/scenario-c.md";
 	const baseline = "scenario-c clean baseline";
@@ -348,7 +337,7 @@ console.log("\n--- Scenario C: markdown remote delete falls back when trashFile 
 	// Temporal ordering: trash attempted before vault.delete.
 	const trashIdx = fix.callOrder.findIndex((c) => c.op === "trash");
 	const deleteIdx = fix.callOrder.findIndex((c) => c.op === "delete");
-	assert(trashIdx >= 0 && deleteIdx > trashIdx, "trashFile attempted strictly before vault.delete");
+	s.check(trashIdx >= 0 && deleteIdx > trashIdx, "trashFile attempted strictly before vault.delete");
 
 	const observedEvents = fix.flightEvents.filter((e) => e.kind === "delete.remote.observed");
 	const appliedEvents = fix.flightEvents.filter((e) => e.kind === "delete.disk.applied");
@@ -362,16 +351,16 @@ console.log("\n--- Scenario C: markdown remote delete falls back when trashFile 
 
 	const observedIdx = fix.flightEvents.findIndex((e) => e.kind === "delete.remote.observed");
 	const appliedIdx = fix.flightEvents.findIndex((e) => e.kind === "delete.disk.applied");
-	assert(observedIdx >= 0 && appliedIdx > observedIdx, "delete.remote.observed precedes delete.disk.applied even when trash throws");
+	s.check(observedIdx >= 0 && appliedIdx > observedIdx, "delete.remote.observed precedes delete.disk.applied even when trash throws");
 
-	assert(!fix.fileExists(path), "file no longer exists in vault after fallback delete");
+	s.check(!fix.fileExists(path), "file no longer exists in vault after fallback delete");
 }
 
 // -------------------------------------------------------------------
 // Scenario D — preserve-revive (local dirty wins over remote delete)
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario D: preserve-revive does not invoke trash or delete; revives via ensureFile ---");
+s.section("Scenario D: preserve-revive does not invoke trash or delete; revives via ensureFile");
 {
 	const path = "Notes/scenario-d.md";
 	const baselineText = "scenario-d known baseline";
@@ -407,14 +396,14 @@ console.log("\n--- Scenario D: preserve-revive does not invoke trash or delete; 
 		"preserve-revive uses expected reviveReason",
 	);
 
-	assert(fix.fileExists(path), "file remains in vault after preserve-revive");
+	s.check(fix.fileExists(path), "file remains in vault after preserve-revive");
 }
 
 // -------------------------------------------------------------------
 // Scenario E — preserve-unresolved (no baseline available)
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario E: preserve-unresolved does not invoke trash, delete, or ensureFile ---");
+s.section("Scenario E: preserve-unresolved does not invoke trash, delete, or ensureFile");
 {
 	const path = "Notes/scenario-e.md";
 	const diskContent = "scenario-e content present on disk but baseline missing";
@@ -444,8 +433,8 @@ console.log("\n--- Scenario E: preserve-unresolved does not invoke trash, delete
 		"preserve-unresolved reason matches missing-baseline trigger",
 	);
 
-	assert(fix.mirror.isPreservedUnresolved(path), "path enters preservedUnresolved registry");
-	assert(fix.fileExists(path), "file remains in vault after preserve-unresolved");
+	s.check(fix.mirror.isPreservedUnresolved(path), "path enters preservedUnresolved registry");
+	s.check(fix.fileExists(path), "file remains in vault after preserve-unresolved");
 }
 
 // -------------------------------------------------------------------
@@ -458,26 +447,12 @@ console.log("\n--- Scenario E: preserve-unresolved does not invoke trash, delete
 // field name still nominally present elsewhere. Per project policy, this is a
 // backup signal, NOT a primary semantic proof.
 
-console.log("\n--- Backup: deleteMode field still passed in delete.disk.applied production emission ---");
+s.section("Backup: deleteMode field still passed in delete.disk.applied production emission");
 {
-	const { readFileSync } = await import("node:fs");
-	const { fileURLToPath } = await import("node:url");
-	const diskMirrorPath = fileURLToPath(new URL("../../src/sync/diskMirror.ts", import.meta.url));
-	const src = readFileSync(diskMirrorPath, "utf8");
+	const src = readSource("src/sync/diskMirror.ts");
 	const appliedIdx = src.indexOf('kind: "delete.disk.applied"');
-	assert(appliedIdx > 0, "delete.disk.applied flight emission present");
+	s.check(appliedIdx > 0, "delete.disk.applied flight emission present");
 	const tail = src.slice(appliedIdx, appliedIdx + 400);
-	assert(tail.includes("deleteMode"), "delete.disk.applied emission still passes deleteMode in data");
+	s.check(tail.includes("deleteMode"), "delete.disk.applied emission still passes deleteMode in data");
 }
-
-// -------------------------------------------------------------------
-// Wrap up
-// -------------------------------------------------------------------
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

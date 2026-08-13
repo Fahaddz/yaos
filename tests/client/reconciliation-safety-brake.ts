@@ -5,19 +5,9 @@ import { ReconciliationController } from "../../src/runtime/reconciliationContro
 import {
 	ORIGIN_DISK_SYNC_RECOVER_BOUND,
 } from "../../src/sync/origins";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("reconciliation-safety-brake");
 
 function makeTFile(path: string): TFile {
 	const file = new TFile() as TFile & { path: string };
@@ -25,7 +15,7 @@ function makeTFile(path: string): TFile {
 	return file;
 }
 
-console.log("\n--- Test 1: updateIndex removes blocked paths from the index ---");
+s.section("Test 1: updateIndex removes blocked paths from the index");
 {
 	const index: DiskIndex = {
 		"blocked.md": { mtime: 1, size: 1 },
@@ -38,12 +28,12 @@ console.log("\n--- Test 1: updateIndex removes blocked paths from the index ---"
 	]);
 
 	const next = updateIndex(index, stats, { excludePaths: ["blocked.md"] });
-	assert(!("blocked.md" in next), "blocked path is unindexed, not preserved");
-	assert(next["clean.md"].mtime === 2, "unblocked path advances mtime");
-	assert(next["new.md"].mtime === 2, "new unblocked path is indexed");
+	s.check(!("blocked.md" in next), "blocked path is unindexed, not preserved");
+	s.check(next["clean.md"].mtime === 2, "unblocked path advances mtime");
+	s.check(next["new.md"].mtime === 2, "new unblocked path is indexed");
 }
 
-console.log("\n--- Test 2: same-stat excluded paths are still unindexed ---");
+s.section("Test 2: same-stat excluded paths are still unindexed");
 {
 	const index: DiskIndex = {
 		"blocked.md": { mtime: 1, size: 1 },
@@ -53,10 +43,10 @@ console.log("\n--- Test 2: same-stat excluded paths are still unindexed ---");
 	]);
 
 	const next = updateIndex(index, stats, { excludePaths: ["blocked.md"] });
-	assert(!("blocked.md" in next), "same-stat blocked path is removed from index");
+	s.check(!("blocked.md" in next), "same-stat blocked path is removed from index");
 }
 
-console.log("\n--- Test 3: reconciliation safety brake leaves blocked overwrites unindexed ---");
+s.section("Test 3: reconciliation safety brake leaves blocked overwrites unindexed");
 {
 	const paths = Array.from({ length: 30 }, (_, i) => `note-${i}.md`);
 	const files = paths.map(makeTFile);
@@ -138,13 +128,13 @@ console.log("\n--- Test 3: reconciliation safety brake leaves blocked overwrites
 
 	await controller.runReconciliation("authoritative");
 
-	assert(reads.length === 30, "authoritative reconcile reads all files");
-	assert(flushed.length === 0, "safety brake blocks destructive update flushes");
-	assert(saveDiskIndexCalls === 1, "disk index save is still attempted");
+	s.check(reads.length === 30, "authoritative reconcile reads all files");
+	s.check(flushed.length === 0, "safety brake blocks destructive update flushes");
+	s.check(saveDiskIndexCalls === 1, "disk index save is still attempted");
 	for (const path of paths) {
-		assert(!(path in diskIndex), `blocked path is unindexed: ${path}`);
+		s.check(!(path in diskIndex), `blocked path is unindexed: ${path}`);
 	}
-	assert(
+	s.check(
 		traces.some((event) =>
 			event.source === "reconcile" &&
 			event.msg === "reconcile-disk-index-advance-blocked" &&
@@ -154,7 +144,7 @@ console.log("\n--- Test 3: reconciliation safety brake leaves blocked overwrites
 	);
 }
 
-console.log("\n--- Test 4: second reconcile reads blocked paths again ---");
+s.section("Test 4: second reconcile reads blocked paths again");
 {
 	const paths = Array.from({ length: 30 }, (_, i) => `again-${i}.md`);
 	const files = paths.map(makeTFile);
@@ -238,16 +228,16 @@ console.log("\n--- Test 4: second reconcile reads blocked paths again ---");
 	(controller as any).lastReconcileTime = 0;
 	await controller.runReconciliation("authoritative");
 
-	assert(firstReadCount === 30, "first reconcile reads all blocked paths");
-	assert(reads.length === 60, "second reconcile reads blocked paths again");
-	assert(flushed.length === 0, "safety brake blocks destructive flushes on both passes");
-	assert(
+	s.check(firstReadCount === 30, "first reconcile reads all blocked paths");
+	s.check(reads.length === 60, "second reconcile reads blocked paths again");
+	s.check(flushed.length === 0, "safety brake blocks destructive flushes on both passes");
+	s.check(
 		traces.filter((event) => event.msg === "reconcile-disk-index-advance-blocked").length === 2,
 		"blocked divergence is traced on both reconciles",
 	);
 }
 
-console.log("\n--- Test 5: bound recovery force-replaces when CRDT changes after authority decision ---");
+s.section("Test 5: bound recovery force-replaces when CRDT changes after authority decision");
 {
 	const path = "bound-stale-base.md";
 	const diskContent = "abcY";
@@ -342,18 +332,18 @@ console.log("\n--- Test 5: bound recovery force-replaces when CRDT changes after
 
 	const forceTrace = traces.find((event) => event.msg === "recovery-force-replace-applied");
 	const postconditionTrace = traces.find((event) => event.msg === "recovery-postcondition-observed");
-	assert(ytext.toString() === diskContent, "controller recovery lands exact disk content");
-	assert(!!forceTrace, "controller recovery traces force replace fallback");
-	assert(forceTrace?.details?.diffSkippedDueToStaleBase === true, "force replace skipped stale-base diff");
-	assert(postconditionTrace?.details?.enforced === true, "controller recovery postcondition is enforced");
-	assert(
+	s.check(ytext.toString() === diskContent, "controller recovery lands exact disk content");
+	s.check(!!forceTrace, "controller recovery traces force replace fallback");
+	s.check(forceTrace?.details?.diffSkippedDueToStaleBase === true, "force replace skipped stale-base diff");
+	s.check(postconditionTrace?.details?.enforced === true, "controller recovery postcondition is enforced");
+	s.check(
 		transactionOrigins.includes(ORIGIN_DISK_SYNC_RECOVER_BOUND),
 		"force replace uses a known local repair origin",
 	);
 	doc.destroy();
 }
 
-console.log("\n--- Test 6: bound ambiguous divergence creates a conflict artifact ---");
+s.section("Test 6: bound ambiguous divergence creates a conflict artifact");
 {
 	const path = "ambiguous.md";
 	const diskContent = "disk version";
@@ -450,21 +440,21 @@ console.log("\n--- Test 6: bound ambiguous divergence creates a conflict artifac
 		candidate.endsWith(".md")
 	);
 	const neededTrace = traces.find((event) => event.msg === "conflict-artifact-needed");
-	assert(ytext.toString() === editorContent, "ambiguous path converges CRDT to visible editor content after artifact creation");
-	assert(!!createdPath, "ambiguous divergence creates a CRDT conflict note");
-	assert(createdPath ? createdFiles.get(createdPath) === crdtContent : false, "conflict note preserves competing CRDT content");
-	assert(!!diskCreatedPath, "true three-way divergence creates a disk conflict note");
-	assert(diskCreatedPath ? createdFiles.get(diskCreatedPath) === diskContent : false, "disk conflict note preserves disk content");
-	assert(neededTrace?.details?.conflictArtifactCreated === true, "conflict-needed trace reports artifact creation");
-	assert(neededTrace?.details?.convergenceApplied === true, "conflict-needed trace reports convergence applied");
-	assert(
+	s.check(ytext.toString() === editorContent, "ambiguous path converges CRDT to visible editor content after artifact creation");
+	s.check(!!createdPath, "ambiguous divergence creates a CRDT conflict note");
+	s.check(createdPath ? createdFiles.get(createdPath) === crdtContent : false, "conflict note preserves competing CRDT content");
+	s.check(!!diskCreatedPath, "true three-way divergence creates a disk conflict note");
+	s.check(diskCreatedPath ? createdFiles.get(diskCreatedPath) === diskContent : false, "disk conflict note preserves disk content");
+	s.check(neededTrace?.details?.conflictArtifactCreated === true, "conflict-needed trace reports artifact creation");
+	s.check(neededTrace?.details?.convergenceApplied === true, "conflict-needed trace reports convergence applied");
+	s.check(
 		traces.some((event) => event.msg === "conflict-artifact-created"),
 		"conflict artifact creation is traced",
 	);
 	doc.destroy();
 }
 
-console.log("\n--- Test 7: repeated identical recovery fingerprint is quarantined ---");
+s.section("Test 7: repeated identical recovery fingerprint is quarantined");
 {
 	const path = "loop.md";
 	const diskContent = "disk authority";
@@ -550,28 +540,28 @@ console.log("\n--- Test 7: repeated identical recovery fingerprint is quarantine
 		await (controller as any).syncFileFromDisk(file, "modify");
 	}
 
-	assert(
+	s.check(
 		traces.some((event) =>
 			event.msg === "recovery-quarantined" &&
 			event.details?.repeatCount === 3
 		),
 		"third identical recovery fingerprint is quarantined",
 	);
-	assert(ytext.toString() === crdtContent, "quarantined recovery does not keep hammering the file");
+	s.check(ytext.toString() === crdtContent, "quarantined recovery does not keep hammering the file");
 	// Verify recovery fingerprint map does not store raw content
 	const fingerprints: Map<string, { fingerprint: string; count: number; lastAt: number }> =
 		(controller as any).recoveryFingerprints;
 	const entry = fingerprints.get(path);
-	assert(!!entry, "fingerprint entry exists for quarantined path");
-	assert(!entry!.fingerprint.includes(diskContent), "fingerprint does not contain raw disk content");
-	assert(!entry!.fingerprint.includes(crdtContent), "fingerprint does not contain raw CRDT content");
-	assert(entry!.fingerprint.includes(":"), "fingerprint uses hash:length format");
+	s.check(!!entry, "fingerprint entry exists for quarantined path");
+	s.check(!entry!.fingerprint.includes(diskContent), "fingerprint does not contain raw disk content");
+	s.check(!entry!.fingerprint.includes(crdtContent), "fingerprint does not contain raw CRDT content");
+	s.check(entry!.fingerprint.includes(":"), "fingerprint uses hash:length format");
 	doc.destroy();
 }
 
 // ── Test 8: successful recovery clears quarantine fingerprint ──────────────
 
-console.log("\n--- Test 8: successful recovery clears quarantine fingerprint ---");
+s.section("Test 8: successful recovery clears quarantine fingerprint");
 {
 	const path = "recover-then-clear.md";
 	const doc = new Y.Doc();
@@ -650,29 +640,29 @@ console.log("\n--- Test 8: successful recovery clears quarantine fingerprint ---
 
 	// First recovery — should succeed
 	await (controller as any).syncFileFromDisk(file, "modify");
-	assert(ytext.toString() === "disk version A", "first recovery succeeds");
+	s.check(ytext.toString() === "disk version A", "first recovery succeeds");
 
 	// A different fingerprint (different content) should reset the count,
 	// so future legitimate recovery for this path is not blocked.
 	const fingerprints: Map<string, any> = (controller as any).recoveryFingerprints;
 	const entry = fingerprints.get(path);
 	// The path has a fingerprint entry from the recovery attempt
-	assert(entry?.count === 1, "recovery attempt increments count to 1");
+	s.check(entry?.count === 1, "recovery attempt increments count to 1");
 
 	// Now change CRDT to something new and recover again — different fingerprint
 	ytext.delete(0, ytext.length);
 	ytext.insert(0, "new-stale");
 	(controller as any).boundRecoveryLocks.clear();
 	await (controller as any).syncFileFromDisk(file, "modify");
-	assert(ytext.toString() === "disk version A", "different-fingerprint recovery still succeeds");
+	s.check(ytext.toString() === "disk version A", "different-fingerprint recovery still succeeds");
 
 	const entry2 = fingerprints.get(path);
-	assert(entry2?.count === 1, "different fingerprint resets count to 1 (not accumulated)");
+	s.check(entry2?.count === 1, "different fingerprint resets count to 1 (not accumulated)");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 9: convergence failure does not create infinite conflict artifacts ---");
+s.section("Test 9: convergence failure does not create infinite conflict artifacts");
 {
 	const path = "convergence-fails.md";
 	const diskContent = "disk version";
@@ -770,26 +760,26 @@ console.log("\n--- Test 9: convergence failure does not create infinite conflict
 
 	// First call: creates artifact, convergence fails because getTextForPath returns null
 	await (controller as any).syncFileFromDisk(file, "modify");
-	assert(createdFiles.size === 2, "first pass creates CRDT and disk conflict artifacts");
+	s.check(createdFiles.size === 2, "first pass creates CRDT and disk conflict artifacts");
 
 	const firstTraces = traces.filter((t) => t.msg === "conflict-artifact-needed");
-	assert(firstTraces.length === 1, "first pass traces conflict-artifact-needed");
-	assert(firstTraces[0]?.details?.conflictArtifactCreated === true, "first pass artifact was created");
+	s.check(firstTraces.length === 1, "first pass traces conflict-artifact-needed");
+	s.check(firstTraces[0]?.details?.conflictArtifactCreated === true, "first pass artifact was created");
 	// convergenceApplied is false because getTextForPath returned null for the convergence call
-	assert(firstTraces[0]?.details?.convergenceApplied === false, "first pass convergence was not applied");
+	s.check(firstTraces[0]?.details?.convergenceApplied === false, "first pass convergence was not applied");
 
 	// Second call with same divergence: dedupe prevents second artifact
 	await (controller as any).syncFileFromDisk(file, "modify");
-	assert(createdFiles.size === 2, "second pass does NOT create more conflict artifacts (dedupe)");
+	s.check(createdFiles.size === 2, "second pass does NOT create more conflict artifacts (dedupe)");
 
 	const secondTraces = traces.filter((t) => t.msg === "conflict-artifact-needed");
-	assert(secondTraces.length === 2, "second pass still traces conflict-artifact-needed");
-	assert(secondTraces[1]?.details?.conflictSkippedDedupe === true, "second pass reports dedupe skip");
+	s.check(secondTraces.length === 2, "second pass still traces conflict-artifact-needed");
+	s.check(secondTraces[1]?.details?.conflictSkippedDedupe === true, "second pass reports dedupe skip");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 10: second reconcile after successful convergence does not create duplicate artifact ---");
+s.section("Test 10: second reconcile after successful convergence does not create duplicate artifact");
 {
 	const path = "already-converged.md";
 	const diskContent = "disk authority";
@@ -877,8 +867,8 @@ console.log("\n--- Test 10: second reconcile after successful convergence does n
 
 	// First call: artifact created, convergence succeeds
 	await (controller as any).syncFileFromDisk(file, "modify");
-	assert(createdFiles.size === 2, "first pass creates CRDT and disk conflict artifacts");
-	assert(ytext.toString() === editorContent, "first pass converges CRDT to editor");
+	s.check(createdFiles.size === 2, "first pass creates CRDT and disk conflict artifacts");
+	s.check(ytext.toString() === editorContent, "first pass converges CRDT to editor");
 
 	// Second call: CRDT already matches disk, so it exits early via the
 	// crdtContent === content check in syncFileFromDisk. No second artifact.
@@ -889,12 +879,12 @@ console.log("\n--- Test 10: second reconcile after successful convergence does n
 
 	// This is a genuinely new divergence (different CRDT content), so a
 	// new artifact should be created.
-	assert(createdFiles.size === 4, "genuinely new divergence creates new CRDT and disk conflict artifacts");
+	s.check(createdFiles.size === 4, "genuinely new divergence creates new CRDT and disk conflict artifacts");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 11: artifact creation failure does NOT trigger convergence ---");
+s.section("Test 11: artifact creation failure does NOT trigger convergence");
 {
 	const path = "artifact-fails.md";
 	const diskContent = "disk version";
@@ -980,18 +970,18 @@ console.log("\n--- Test 11: artifact creation failure does NOT trigger convergen
 	await (controller as any).syncFileFromDisk(file, "modify");
 
 	// CRDT must be UNTOUCHED — still contains original content
-	assert(ytext.toString() === crdtContent, "CRDT is untouched after artifact creation failure");
+	s.check(ytext.toString() === crdtContent, "CRDT is untouched after artifact creation failure");
 
 	const conflictTraces = traces.filter((t) => t.msg === "conflict-artifact-needed");
-	assert(conflictTraces.length === 1, "traces conflict-artifact-needed");
-	assert(conflictTraces[0]?.details?.conflictArtifactCreated === false, "conflictArtifactCreated is false");
-	assert(conflictTraces[0]?.details?.convergenceApplied === false, "convergenceApplied is false");
-	assert(conflictTraces[0]?.details?.error === "disk full", "error message is captured");
+	s.check(conflictTraces.length === 1, "traces conflict-artifact-needed");
+	s.check(conflictTraces[0]?.details?.conflictArtifactCreated === false, "conflictArtifactCreated is false");
+	s.check(conflictTraces[0]?.details?.convergenceApplied === false, "convergenceApplied is false");
+	s.check(conflictTraces[0]?.details?.error === "disk full", "error message is captured");
 
 	doc.destroy();
 }
 
-console.log("\n--- Test 12: recovery fingerprint TTL prevents stale accumulation ---");
+s.section("Test 12: recovery fingerprint TTL prevents stale accumulation");
 {
 	const path = "ttl-test.md";
 	const controller = new ReconciliationController({
@@ -1026,25 +1016,18 @@ console.log("\n--- Test 12: recovery fingerprint TTL prevents stale accumulation
 	const shouldQuarantine = (controller as any).shouldQuarantineRepeatedRecovery.bind(controller);
 
 	// Accumulate to count 2 (just below threshold of 3)
-	assert(shouldQuarantine(path, "r", "a", "b") === false, "count 1: no quarantine");
-	assert(shouldQuarantine(path, "r", "a", "b") === false, "count 2: no quarantine");
+	s.check(shouldQuarantine(path, "r", "a", "b") === false, "count 1: no quarantine");
+	s.check(shouldQuarantine(path, "r", "a", "b") === false, "count 2: no quarantine");
 
 	// Manually set lastAt far in the past to simulate TTL expiry
 	const fp = (controller as any).recoveryFingerprints.get(path);
 	fp.lastAt = Date.now() - 15 * 60_000; // 15 minutes ago
 
 	// Same fingerprint but beyond TTL — count resets to 1
-	assert(shouldQuarantine(path, "r", "a", "b") === false, "count reset to 1 after TTL expiry");
+	s.check(shouldQuarantine(path, "r", "a", "b") === false, "count reset to 1 after TTL expiry");
 	// One more should still be fine (count 2)
-	assert(shouldQuarantine(path, "r", "a", "b") === false, "count 2 after reset: no quarantine");
+	s.check(shouldQuarantine(path, "r", "a", "b") === false, "count 2 after reset: no quarantine");
 	// Third within TTL — now quarantines
-	assert(shouldQuarantine(path, "r", "a", "b") === true, "count 3 after reset: quarantined");
+	s.check(shouldQuarantine(path, "r", "a", "b") === true, "count 3 after reset: quarantined");
 }
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

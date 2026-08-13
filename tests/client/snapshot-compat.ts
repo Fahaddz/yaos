@@ -19,32 +19,20 @@ import {
 	type SnapshotIndex,
 	type SnapshotStatus,
 } from "../../src/sync/snapshotClient";
+import { suite } from "../harness.ts";
 
 // -------------------------------------------------------------------
 // Test infra
 // -------------------------------------------------------------------
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  ✓ ${msg}`);
-		passed++;
-	} else {
-		console.error(`  ✗ FAIL: ${msg}`);
-		failed++;
-	}
-}
+const s = suite("snapshot-compat");
 
 function assertEqual<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) {
-		console.log(`  ✓ ${msg}`);
-		passed++;
-	} else {
-		console.error(`  ✗ FAIL: ${msg} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`);
-		failed++;
-	}
+	const equal = actual === expected;
+	s.check(
+		equal,
+		equal ? msg : `${msg} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`,
+	);
 }
 
 // -------------------------------------------------------------------
@@ -210,8 +198,8 @@ function testOldClientSimulation(): void {
 	// Old client would do: result.snapshots ?? []
 	// Verify new server default response has .snapshots
 	const newDefault = NEW_SERVER_LIST_DEFAULT as Record<string, unknown>;
-	assert("snapshots" in newDefault, "new server default has 'snapshots' key for old clients");
-	assert(!("totalIndexKeys" in NEW_SERVER_LIST_DEFAULT), "default response omits v2 fields");
+	s.check("snapshots" in newDefault, "new server default has 'snapshots' key for old clients");
+	s.check(!("totalIndexKeys" in NEW_SERVER_LIST_DEFAULT), "default response omits v2 fields");
 
 	// Old client would do: raw.snapshotCount
 	const newStatus = NEW_SERVER_STATUS as Record<string, unknown>;
@@ -237,14 +225,7 @@ function main(): void {
 	testStatusNormalization();
 	testUnchangedNormalization();
 	testOldClientSimulation();
-
-	console.log("\n═══════════════════════════════════════════════");
-	console.log(`RESULTS: ${passed} passed, ${failed} failed`);
-	console.log("═══════════════════════════════════════════════");
-
-	if (failed > 0) {
-		process.exit(1);
-	}
 }
 
 main();
+await s.done();

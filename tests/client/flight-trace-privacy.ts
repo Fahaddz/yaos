@@ -15,18 +15,9 @@
  *   11. PathIdentityResolver uses crypto hash (hasDegraded stays false)
  */
 
-let passed = 0;
-let failed = 0;
+import { suite } from "../harness.ts";
 
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("flight-trace-privacy");
 
 import { FLIGHT_EVENT_SCHEMA_VERSION } from "../../src/observability/flightEnvelope";
 import { FLIGHT_TAXONOMY_VERSION, FLIGHT_KIND } from "../../src/observability/flightTaxonomy";
@@ -81,7 +72,7 @@ const SENSITIVE_VALUES = [RAW_PATH, HOST_URL, DEVICE_NAME, VAULT_ID, SYNC_TOKEN]
 // ---------------------------------------------------------------------------
 // Test 1: Envelope fields are hashed, not raw
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 1: Envelope fields are hashed, not raw ---");
+s.section("Test 1: Envelope fields are hashed, not raw");
 {
 	const event = buildEnvelope({
 		kind: FLIGHT_KIND.diskModifyObserved,
@@ -97,17 +88,17 @@ console.log("\n--- Test 1: Envelope fields are hashed, not raw ---");
 
 	const line = serialize(event);
 	const { found, value } = containsSensitive(line, [HOST_URL, VAULT_ID, DEVICE_NAME, SYNC_TOKEN]);
-	assert(!found, `Safe envelope does not contain sensitive values (found: ${value || "none"})`);
+	s.check(!found, `Safe envelope does not contain sensitive values (found: ${value || "none"})`);
 }
 
 // ---------------------------------------------------------------------------
 // Test 2: pathId never leaks the raw path
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 2: pathId never leaks raw path ---");
+s.section("Test 2: pathId never leaks raw path");
 {
 	const resolver = new PathIdentityResolver(sha256Hex, { salt: "session-salt-xyz" });
 	const { pathId, path } = await resolver.getPathIdentity(RAW_PATH);
-	assert(path === undefined, "Resolver returns no raw path");
+	s.check(path === undefined, "Resolver returns no raw path");
 
 	const eventWithPath = buildEnvelope({
 		kind: FLIGHT_KIND.diskCreateObserved,
@@ -121,33 +112,33 @@ console.log("\n--- Test 2: pathId never leaks raw path ---");
 	});
 
 	const line = serialize(eventWithPath);
-	assert(!line.includes(RAW_PATH), "pathId event does not include raw path");
-	assert(line.includes(pathId), "pathId is present in output");
+	s.check(!line.includes(RAW_PATH), "pathId event does not include raw path");
+	s.check(line.includes(pathId), "pathId is present in output");
 }
 
 // ---------------------------------------------------------------------------
 // Test 3: the raw path is reachable only through resolver.directory()
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 3: raw paths live only in the resolver directory ---");
+s.section("Test 3: raw paths live only in the resolver directory");
 {
 	const resolver = new PathIdentityResolver(sha256Hex, { salt: "s1" });
 	const identity = await resolver.getPathIdentity(RAW_PATH);
 
 	const eventLine = serialize(buildEnvelope({ pathId: identity.pathId, path: identity.path }));
-	assert(!eventLine.includes(RAW_PATH), "Recorded event lines never carry the raw path");
+	s.check(!eventLine.includes(RAW_PATH), "Recorded event lines never carry the raw path");
 
 	// The with-filenames export re-attaches names from the directory; that is
 	// the single seam where raw paths are allowed out, and it is opt-in.
 	const directory = resolver.directory();
 	const entry = directory.find((e) => e.pathId === identity.pathId);
-	assert(entry?.path === RAW_PATH, "directory() can re-attach the raw path for an unredacted export");
-	assert(JSON.stringify(directory).includes(RAW_PATH), "directory() is the only structure carrying raw paths");
+	s.check(entry?.path === RAW_PATH, "directory() can re-attach the raw path for an unredacted export");
+	s.check(JSON.stringify(directory).includes(RAW_PATH), "directory() is the only structure carrying raw paths");
 }
 
 // ---------------------------------------------------------------------------
 // Test 4: Token and host never appear in safe event data
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 4: Token and host never appear as data values ---");
+s.section("Test 4: Token and host never appear as data values");
 {
 	const event = buildEnvelope({
 		kind: FLIGHT_KIND.providerConnected,
@@ -160,14 +151,14 @@ console.log("\n--- Test 4: Token and host never appear as data values ---");
 		data: { note: "connected" },
 	});
 	const line = serialize(event);
-	assert(!line.includes(HOST_URL), "Provider event does not leak host URL");
-	assert(!line.includes(SYNC_TOKEN), "Provider event does not leak sync token");
+	s.check(!line.includes(HOST_URL), "Provider event does not leak host URL");
+	s.check(!line.includes(SYNC_TOKEN), "Provider event does not leak sync token");
 }
 
 // ---------------------------------------------------------------------------
 // Test 5: Error messages do not smuggle raw path
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 5: Error messages do not smuggle raw path ---");
+s.section("Test 5: Error messages do not smuggle raw path");
 {
 	const resolver = new PathIdentityResolver(sha256Hex, { salt: "err-salt" });
 	const { pathId } = await resolver.getPathIdentity(RAW_PATH);
@@ -186,14 +177,14 @@ console.log("\n--- Test 5: Error messages do not smuggle raw path ---");
 	});
 
 	const line = serialize(safeErrorEvent);
-	assert(!line.includes(RAW_PATH), "Error message does not contain raw path");
-	assert(line.includes(pathId), "Error message contains pathId");
+	s.check(!line.includes(RAW_PATH), "Error message does not contain raw path");
+	s.check(line.includes(pathId), "Error message contains pathId");
 }
 
 // ---------------------------------------------------------------------------
 // Test 6: Multi-device correlation — one vault, one salt, one pathId
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 6: Multi-device pathId correlation ---");
+s.section("Test 6: Multi-device pathId correlation");
 {
 	// Both devices derive the salt from the shared vaultId. There is no
 	// user-managed secret to keep in sync any more.
@@ -206,16 +197,16 @@ console.log("\n--- Test 6: Multi-device pathId correlation ---");
 	const idA = await deviceA.getPathIdentity(RAW_PATH);
 	const idB = await deviceB.getPathIdentity(RAW_PATH);
 
-	assert(idA.pathId === idB.pathId, "Device A and B produce same pathId for the same vault");
-	assert(!idA.path, "Device A: path not exposed");
-	assert(!idB.path, "Device B: path not exposed");
-	assert(!idA.pathId.includes(sharedSalt), "pathId does not embed the salt");
+	s.check(idA.pathId === idB.pathId, "Device A and B produce same pathId for the same vault");
+	s.check(!idA.path, "Device A: path not exposed");
+	s.check(!idB.path, "Device B: path not exposed");
+	s.check(!idA.pathId.includes(sharedSalt), "pathId does not embed the salt");
 }
 
 // ---------------------------------------------------------------------------
 // Test 7: Different vaults cannot be correlated
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 7: Different vaults are uncorrelated ---");
+s.section("Test 7: Different vaults are uncorrelated");
 {
 	const vault1 = new PathIdentityResolver(sha256Hex, {
 		salt: await deriveVaultPathSalt(sha256Hex, "vault-id-one"),
@@ -226,13 +217,13 @@ console.log("\n--- Test 7: Different vaults are uncorrelated ---");
 
 	const id1 = await vault1.getPathIdentity(RAW_PATH);
 	const id2 = await vault2.getPathIdentity(RAW_PATH);
-	assert(id1.pathId !== id2.pathId, "Different vaults produce different pathIds");
+	s.check(id1.pathId !== id2.pathId, "Different vaults produce different pathIds");
 }
 
 // ---------------------------------------------------------------------------
 // Test 8: Safe export refused for full-mode recorder
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 8: Safe export refused for full-mode recorder ---");
+s.section("Test 8: Safe export refused for full-mode recorder");
 {
 	const recorder = new FlightRecorder({
 		vault: {
@@ -257,8 +248,8 @@ console.log("\n--- Test 8: Safe export refused for full-mode recorder ---");
 		pluginVersion: "1.0.0",
 	});
 
-	assert(!recorder.safeToShare, "Full-mode recorder: safeToShare=false");
-	assert(recorder.includesFilenames, "Full-mode recorder: includesFilenames=true");
+	s.check(!recorder.safeToShare, "Full-mode recorder: safeToShare=false");
+	s.check(recorder.includesFilenames, "Full-mode recorder: includesFilenames=true");
 	// The export controller checks safeToShare before writing — recorder itself
 	// only exposes the getter; test that the flag is correct.
 }
@@ -266,7 +257,7 @@ console.log("\n--- Test 8: Safe export refused for full-mode recorder ---");
 // ---------------------------------------------------------------------------
 // Test 9: Safe export refused for local-private recorder
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 9: Local-private recorder is not exportable ---");
+s.section("Test 9: Local-private recorder is not exportable");
 {
 	const recorder = new FlightRecorder({
 		vault: {
@@ -291,14 +282,14 @@ console.log("\n--- Test 9: Local-private recorder is not exportable ---");
 		pluginVersion: "1.0.0",
 	});
 
-	assert(!recorder.exportable, "Local-private recorder is not exportable");
-	assert(!recorder.safeToShare, "Local-private recorder: safeToShare=false");
+	s.check(!recorder.exportable, "Local-private recorder is not exportable");
+	s.check(!recorder.safeToShare, "Local-private recorder: safeToShare=false");
 }
 
 // ---------------------------------------------------------------------------
 // Test 10: CRDT event in safe mode — no raw path in serialized JSON
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 10: CRDT event in safe mode: no raw path in output ---");
+s.section("Test 10: CRDT event in safe mode: no raw path in output");
 {
 	const written: string[] = [];
 	const recorder = new FlightRecorder({
@@ -345,27 +336,17 @@ console.log("\n--- Test 10: CRDT event in safe mode: no raw path in output ---")
 	await recorder.shutdown();
 
 	const allOutput = written.join("");
-	assert(!allOutput.includes(RAW_PATH), "CRDT created event in safe mode: no raw path in output");
-	assert(allOutput.includes(pathId), "CRDT created event includes pathId");
+	s.check(!allOutput.includes(RAW_PATH), "CRDT created event in safe mode: no raw path in output");
+	s.check(allOutput.includes(pathId), "CRDT created event includes pathId");
 }
 
 // ---------------------------------------------------------------------------
 // Test 11: PathIdentityResolver.hasDegraded stays false with working crypto
 // ---------------------------------------------------------------------------
-console.log("\n--- Test 11: hasDegraded is false when crypto works ---");
+s.section("Test 11: hasDegraded is false when crypto works");
 {
 	const resolver = new PathIdentityResolver(sha256Hex, { salt: "test" });
 	await resolver.getPathIdentity("some/file.md");
-	assert(!resolver.hasDegraded, "hasDegraded is false when sha256Hex works");
+	s.check(!resolver.hasDegraded, "hasDegraded is false when sha256Hex works");
 }
-
-// ---------------------------------------------------------------------------
-// Summary
-// ---------------------------------------------------------------------------
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────\n");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

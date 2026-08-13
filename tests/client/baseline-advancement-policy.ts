@@ -13,34 +13,17 @@ import {
 	type BaselineAdvancementInput,
 	type BaselineAdvanceAction,
 } from "../../src/runtime/reconcile/baselineAdvancementPolicy";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("baseline-advancement-policy");
 
 function assertThrows(fn: () => void, expectedMessage: string, msg: string) {
 	try {
 		fn();
-		console.error(`  FAIL  ${msg} (did not throw)`);
-		failed++;
+		s.check(false, `${msg} (did not throw)`);
 	} catch (err) {
 		const actual = err instanceof Error ? err.message : String(err);
-		if (actual.includes(expectedMessage)) {
-			console.log(`  PASS  ${msg}`);
-			passed++;
-		} else {
-			console.error(`  FAIL  ${msg} (wrong error: ${actual})`);
-			failed++;
-		}
+		s.check(actual.includes(expectedMessage), actual.includes(expectedMessage) ? msg : `${msg} (wrong error: ${actual})`);
 	}
 }
 
@@ -48,7 +31,7 @@ const DISK_HASH = "sha256-disk-content-abc123";
 const CRDT_HASH = "sha256-crdt-content-def456";
 const BASELINE_HASH = "sha256-baseline-xyz789";
 
-console.log("\n--- Test 1: crdt-created-on-disk advances with crdtHash ---");
+s.section("Test 1: crdt-created-on-disk advances with crdtHash");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "crdt-created-on-disk",
@@ -56,12 +39,12 @@ console.log("\n--- Test 1: crdt-created-on-disk advances with crdtHash ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: null,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === CRDT_HASH, "hash is crdtHash");
-	assert(result.kind === "advance" && result.reason.includes("crdt"), "reason mentions crdt");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === CRDT_HASH, "hash is crdtHash");
+	s.check(result.kind === "advance" && result.reason.includes("crdt"), "reason mentions crdt");
 }
 
-console.log("\n--- Test 2: disk-seeded-to-crdt advances with diskHash ---");
+s.section("Test 2: disk-seeded-to-crdt advances with diskHash");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "disk-seeded-to-crdt",
@@ -69,12 +52,12 @@ console.log("\n--- Test 2: disk-seeded-to-crdt advances with diskHash ---");
 		crdtHash: null,
 		previousBaselineHash: null,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === DISK_HASH, "hash is diskHash");
-	assert(result.kind === "advance" && result.reason.includes("disk"), "reason mentions disk");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === DISK_HASH, "hash is diskHash");
+	s.check(result.kind === "advance" && result.reason.includes("disk"), "reason mentions disk");
 }
 
-console.log("\n--- Test 3: import-disk-to-crdt advances with diskHash ---");
+s.section("Test 3: import-disk-to-crdt advances with diskHash");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "import-disk-to-crdt",
@@ -82,12 +65,12 @@ console.log("\n--- Test 3: import-disk-to-crdt advances with diskHash ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: BASELINE_HASH,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === DISK_HASH, "hash is diskHash (disk wins)");
-	assert(result.kind === "advance" && result.reason === "disk-wins-clean", "reason is disk-wins-clean");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === DISK_HASH, "hash is diskHash (disk wins)");
+	s.check(result.kind === "advance" && result.reason === "disk-wins-clean", "reason is disk-wins-clean");
 }
 
-console.log("\n--- Test 4: conflict-disk-wins advances with diskHash ---");
+s.section("Test 4: conflict-disk-wins advances with diskHash");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "conflict-disk-wins",
@@ -95,12 +78,12 @@ console.log("\n--- Test 4: conflict-disk-wins advances with diskHash ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: BASELINE_HASH,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === DISK_HASH, "hash is diskHash");
-	assert(result.kind === "advance" && result.reason.includes("conflict"), "reason mentions conflict");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === DISK_HASH, "hash is diskHash");
+	s.check(result.kind === "advance" && result.reason.includes("conflict"), "reason mentions conflict");
 }
 
-console.log("\n--- Test 5: conflict-crdt-wins advances with crdtHash ---");
+s.section("Test 5: conflict-crdt-wins advances with crdtHash");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "conflict-crdt-wins",
@@ -108,12 +91,12 @@ console.log("\n--- Test 5: conflict-crdt-wins advances with crdtHash ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: BASELINE_HASH,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === CRDT_HASH, "hash is crdtHash");
-	assert(result.kind === "advance" && result.reason.includes("crdt-wins"), "reason mentions crdt-wins");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === CRDT_HASH, "hash is crdtHash");
+	s.check(result.kind === "advance" && result.reason.includes("crdt-wins"), "reason mentions crdt-wins");
 }
 
-console.log("\n--- Test 6: apply-remote-to-disk advances with crdtHash ---");
+s.section("Test 6: apply-remote-to-disk advances with crdtHash");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "apply-remote-to-disk",
@@ -121,12 +104,12 @@ console.log("\n--- Test 6: apply-remote-to-disk advances with crdtHash ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: BASELINE_HASH,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === CRDT_HASH, "hash is crdtHash (remote wins)");
-	assert(result.kind === "advance" && result.reason === "remote-applied-to-disk", "reason correct");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === CRDT_HASH, "hash is crdtHash (remote wins)");
+	s.check(result.kind === "advance" && result.reason === "remote-applied-to-disk", "reason correct");
 }
 
-console.log("\n--- Test 7: no-op advances with crdtHash (same as diskHash) ---");
+s.section("Test 7: no-op advances with crdtHash (same as diskHash)");
 {
 	const SAME_HASH = "sha256-identical-content";
 	const result = planBaselineAdvancement({
@@ -135,12 +118,12 @@ console.log("\n--- Test 7: no-op advances with crdtHash (same as diskHash) ---")
 		crdtHash: SAME_HASH,
 		previousBaselineHash: BASELINE_HASH,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === SAME_HASH, "hash is the common content hash");
-	assert(result.kind === "advance" && result.reason === "content-identical", "reason is content-identical");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === SAME_HASH, "hash is the common content hash");
+	s.check(result.kind === "advance" && result.reason === "content-identical", "reason is content-identical");
 }
 
-console.log("\n--- Test 8: defer-to-crdt-flush advances with crdtHash ---");
+s.section("Test 8: defer-to-crdt-flush advances with crdtHash");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "defer-to-crdt-flush",
@@ -148,12 +131,12 @@ console.log("\n--- Test 8: defer-to-crdt-flush advances with crdtHash ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: null,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === CRDT_HASH, "hash is crdtHash");
-	assert(result.kind === "advance" && result.reason === "flush-completed", "reason is flush-completed");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === CRDT_HASH, "hash is crdtHash");
+	s.check(result.kind === "advance" && result.reason === "flush-completed", "reason is flush-completed");
 }
 
-console.log("\n--- Test 9: live-disk-to-crdt advances with diskHash ---");
+s.section("Test 9: live-disk-to-crdt advances with diskHash");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "live-disk-to-crdt",
@@ -161,12 +144,12 @@ console.log("\n--- Test 9: live-disk-to-crdt advances with diskHash ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: BASELINE_HASH,
 	});
-	assert(result.kind === "advance", "kind is advance");
-	assert(result.kind === "advance" && result.hash === DISK_HASH, "hash is diskHash");
-	assert(result.kind === "advance" && result.reason === "external-edit-imported", "reason correct");
+	s.check(result.kind === "advance", "kind is advance");
+	s.check(result.kind === "advance" && result.hash === DISK_HASH, "hash is diskHash");
+	s.check(result.kind === "advance" && result.reason === "external-edit-imported", "reason correct");
 }
 
-console.log("\n--- Test 10: live-stat-only defers ---");
+s.section("Test 10: live-stat-only defers");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "live-stat-only",
@@ -174,11 +157,11 @@ console.log("\n--- Test 10: live-stat-only defers ---");
 		crdtHash: null,
 		previousBaselineHash: BASELINE_HASH,
 	});
-	assert(result.kind === "defer", "kind is defer");
-	assert(result.reason === "stat-only-no-content", "reason correct");
+	s.check(result.kind === "defer", "kind is defer");
+	s.check(result.reason === "stat-only-no-content", "reason correct");
 }
 
-console.log("\n--- Test 11: conflict-artifact-failed defers ---");
+s.section("Test 11: conflict-artifact-failed defers");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "conflict-artifact-failed",
@@ -186,11 +169,11 @@ console.log("\n--- Test 11: conflict-artifact-failed defers ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: BASELINE_HASH,
 	});
-	assert(result.kind === "defer", "kind is defer");
-	assert(result.reason === "artifact-creation-failed", "reason correct");
+	s.check(result.kind === "defer", "kind is defer");
+	s.check(result.reason === "artifact-creation-failed", "reason correct");
 }
 
-console.log("\n--- Test 12: safety-brake defers ---");
+s.section("Test 12: safety-brake defers");
 {
 	const result = planBaselineAdvancement({
 		actionKind: "safety-brake",
@@ -198,11 +181,11 @@ console.log("\n--- Test 12: safety-brake defers ---");
 		crdtHash: null,
 		previousBaselineHash: null,
 	});
-	assert(result.kind === "defer", "kind is defer");
-	assert(result.reason === "safety-brake-blocked", "reason correct");
+	s.check(result.kind === "defer", "kind is defer");
+	s.check(result.reason === "safety-brake-blocked", "reason correct");
 }
 
-console.log("\n--- Test 13: null crdtHash throws for crdt-authority actions ---");
+s.section("Test 13: null crdtHash throws for crdt-authority actions");
 {
 	assertThrows(
 		() => planBaselineAdvancement({
@@ -238,7 +221,7 @@ console.log("\n--- Test 13: null crdtHash throws for crdt-authority actions ---"
 	);
 }
 
-console.log("\n--- Test 14: null diskHash throws for disk-authority actions ---");
+s.section("Test 14: null diskHash throws for disk-authority actions");
 {
 	assertThrows(
 		() => planBaselineAdvancement({
@@ -274,7 +257,7 @@ console.log("\n--- Test 14: null diskHash throws for disk-authority actions ---"
 	);
 }
 
-console.log("\n--- Test 15: previousBaselineHash is not required ---");
+s.section("Test 15: previousBaselineHash is not required");
 {
 	// All actions should work with null previousBaselineHash
 	const result1 = planBaselineAdvancement({
@@ -283,7 +266,7 @@ console.log("\n--- Test 15: previousBaselineHash is not required ---");
 		crdtHash: CRDT_HASH,
 		previousBaselineHash: null,
 	});
-	assert(result1.kind === "advance", "works with null baseline (crdt-created-on-disk)");
+	s.check(result1.kind === "advance", "works with null baseline (crdt-created-on-disk)");
 
 	const result2 = planBaselineAdvancement({
 		actionKind: "conflict-artifact-failed",
@@ -291,11 +274,6 @@ console.log("\n--- Test 15: previousBaselineHash is not required ---");
 		crdtHash: null,
 		previousBaselineHash: null,
 	});
-	assert(result2.kind === "defer", "works with null baseline (conflict-artifact-failed)");
+	s.check(result2.kind === "defer", "works with null baseline (conflict-artifact-failed)");
 }
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

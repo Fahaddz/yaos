@@ -39,19 +39,9 @@
 import * as Y from "yjs";
 import diff from "fast-diff";
 import { applyDiffToYText } from "../../src/sync/diff";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  \x1b[32mPASS\x1b[0m  ${msg}`);
-		passed++;
-	} else {
-		console.log(`  \x1b[31mFAIL\x1b[0m  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("diff-surrogate-safety");
 
 /** Count code units that are not part of a well-formed surrogate pair. */
 function loneSurrogates(text: string): number {
@@ -98,16 +88,16 @@ const FLAG_JP = "\u{1F1EF}\u{1F1F5}";
 
 // ---------------------------------------------------------------------------
 
-console.log("\n--- Test 1: the canonical case — replacing an emoji that shares a high surrogate ---");
+s.section("Test 1: the canonical case — replacing an emoji that shares a high surrogate");
 {
 	const { live, persisted } = applyAndRoundTrip(POO, GRIN);
-	assert(live === GRIN, `live text is the new emoji (${JSON.stringify(live)})`);
-	assert(loneSurrogates(live) === 0, "no lone surrogate in the document");
-	assert(persisted === GRIN, `survives a persistence round trip (${JSON.stringify(persisted)})`);
-	assert(!persisted.includes("\uFFFD"), "no U+FFFD replacement character");
+	s.check(live === GRIN, `live text is the new emoji (${JSON.stringify(live)})`);
+	s.check(loneSurrogates(live) === 0, "no lone surrogate in the document");
+	s.check(persisted === GRIN, `survives a persistence round trip (${JSON.stringify(persisted)})`);
+	s.check(!persisted.includes("\uFFFD"), "no U+FFFD replacement character");
 }
 
-console.log("\n--- Test 2: fast-diff never emits an op boundary inside a pair ---");
+s.section("Test 2: fast-diff never emits an op boundary inside a pair");
 {
 	const pairs: Array<[string, string]> = [
 		[POO, GRIN], [GRIN, SWEAT], [POO, OK],
@@ -124,10 +114,10 @@ console.log("\n--- Test 2: fast-diff never emits an op boundary inside a pair --
 			if (loneSurrogates(text) > 0) offenders++;
 		}
 	}
-	assert(offenders === 0, `every diff op is surrogate-complete across ${pairs.length} pairs`);
+	s.check(offenders === 0, `every diff op is surrogate-complete across ${pairs.length} pairs`);
 }
 
-console.log("\n--- Test 3: applying those edits never corrupts the document ---");
+s.section("Test 3: applying those edits never corrupts the document");
 {
 	const pairs: Array<[string, string]> = [
 		[POO, GRIN], [GRIN, SWEAT], [FLAG_IN, FLAG_JP], [THUMB_LIGHT, THUMB_DARK],
@@ -140,10 +130,10 @@ console.log("\n--- Test 3: applying those edits never corrupts the document ---"
 		const { live, persisted } = applyAndRoundTrip(a, b);
 		if (live !== b || persisted !== b || loneSurrogates(live) > 0) bad++;
 	}
-	assert(bad === 0, `all ${pairs.length} edits round-trip exactly`);
+	s.check(bad === 0, `all ${pairs.length} edits round-trip exactly`);
 }
 
-console.log("\n--- Test 4: deterministic fuzz over emoji-heavy text ---");
+s.section("Test 4: deterministic fuzz over emoji-heavy text");
 {
 	const POOL = [
 		POO, GRIN, SWEAT, OK, FAMILY, THUMB_LIGHT, THUMB_DARK, FLAG_IN, FLAG_JP,
@@ -183,12 +173,12 @@ console.log("\n--- Test 4: deterministic fuzz over emoji-heavy text ---");
 		}
 		doc.destroy();
 	}
-	assert(mismatched === 0, `text matches the target after every edit (${runs} applications)`);
-	assert(lone === 0, "no lone surrogate ever entered the document");
-	assert(corrupted === 0, "every document survived a persistence round trip unchanged");
+	s.check(mismatched === 0, `text matches the target after every edit (${runs} applications)`);
+	s.check(lone === 0, "no lone surrogate ever entered the document");
+	s.check(corrupted === 0, "every document survived a persistence round trip unchanged");
 }
 
-console.log("\n--- Test 5: canary — the detector fires on a deliberately split pair ---");
+s.section("Test 5: canary — the detector fires on a deliberately split pair");
 {
 	// Hand-built unsanitised patch: retain the high surrogate, swap the low one.
 	// This is what a diff library WITHOUT surrogate handling would emit for
@@ -205,29 +195,22 @@ console.log("\n--- Test 5: canary — the detector fires on a deliberately split
 	// Exact count is brittle: the retained high surrogate ends up adjacent to the
 	// spliced-in low one, so how many read as "lone" depends on item boundaries.
 	// What matters is that at least one exists — the document is now ill-formed.
-	assert(loneSurrogates(live) >= 1, `canary produced an ill-formed document (${loneSurrogates(live)} lone surrogate(s))`);
+	s.check(loneSurrogates(live) >= 1, `canary produced an ill-formed document (${loneSurrogates(live)} lone surrogate(s))`);
 
 	const reloaded = new Y.Doc();
 	Y.applyUpdate(reloaded, Y.encodeStateAsUpdate(doc));
 	const persisted = reloaded.getText("t").toString();
 
 	// The document looks fine in memory; the damage only appears after encoding.
-	assert(
+	s.check(
 		persisted !== live || persisted.includes("\uFFFD"),
 		`an unsanitised patch DOES corrupt through persistence (live ${JSON.stringify(live)} -> stored ${JSON.stringify(persisted)})`,
 	);
-	assert(
+	s.check(
 		loneSurrogates(live) > 0 || persisted.includes("\uFFFD"),
 		"the detector used above is capable of catching this — the suite is not vacuous",
 	);
 	doc.destroy();
 	reloaded.destroy();
 }
-
-// ---------------------------------------------------------------------------
-
-console.log(`\n${"─".repeat(56)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(56)}\n`);
-
-if (failed > 0) process.exit(1);
+await s.done();

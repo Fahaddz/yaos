@@ -60,30 +60,17 @@ import {
 	ORIGIN_DISK_SYNC_RECOVER_BOUND,
 	ORIGIN_DISK_SYNC_OPEN_IDLE_RECOVER,
 } from "../../src/sync/origins";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("frontmatter-guard-orchestration");
 
 function assertEq<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(
-		`  FAIL  ${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`,
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`,
 	);
-	failed++;
 }
 
 function makeTFile(path: string): TFile {
@@ -389,7 +376,7 @@ function buildFrontmatterFixture(options: FixtureOptions): FrontmatterFixture {
 // Scenario A — localOnly recovery branch blocked by frontmatter
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario A: localOnly recovery branch blocked by frontmatter ---");
+s.section("Scenario A: localOnly recovery branch blocked by frontmatter");
 const scenarioAFix = buildFrontmatterFixture({
 	path: "Notes/scenario-a.md",
 	// Editor matches disk D; CRDT is C (different) — localOnly precondition.
@@ -455,7 +442,7 @@ await await scenarioAFix.ingestDiskFileNow("modify");
 	assertEq(ytext?.toString(), "CCCC", "Scenario A: Y.Text still equals CRDT content C");
 
 	// No transaction with the recovery origin occurred.
-	assert(
+	s.check(
 		!scenarioAFix.transactionOrigins.includes(ORIGIN_DISK_SYNC_RECOVER_BOUND),
 		"Scenario A: no Y.Doc transaction with ORIGIN_DISK_SYNC_RECOVER_BOUND",
 	);
@@ -465,7 +452,7 @@ await await scenarioAFix.ingestDiskFileNow("modify");
 // Scenario B — crdtOnly recovery branch blocked by frontmatter
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario B: crdtOnly recovery branch blocked by frontmatter ---");
+s.section("Scenario B: crdtOnly recovery branch blocked by frontmatter");
 const scenarioBFix = buildFrontmatterFixture({
 	path: "Notes/scenario-b.md",
 	// Editor matches CRDT C; disk is D — crdtOnly precondition.
@@ -517,7 +504,7 @@ await await scenarioBFix.ingestDiskFileNow("modify");
 	assertEq(ytext?.toString(), "CCCC", "Scenario B: Y.Text still equals CRDT content C");
 
 	// No transaction with the open-idle-recover origin.
-	assert(
+	s.check(
 		!scenarioBFix.transactionOrigins.includes(ORIGIN_DISK_SYNC_OPEN_IDLE_RECOVER),
 		"Scenario B: no Y.Doc transaction with ORIGIN_DISK_SYNC_OPEN_IDLE_RECOVER",
 	);
@@ -534,7 +521,7 @@ await await scenarioBFix.ingestDiskFileNow("modify");
 // invariant under test is the controller's behavior at the seed branch,
 // NOT the realism of the editor binding.
 
-console.log("\n--- Scenario C: seed branch blocked by frontmatter ---");
+s.section("Scenario C: seed branch blocked by frontmatter");
 const scenarioCFix = buildFrontmatterFixture({
 	path: "Notes/scenario-c.md",
 	disk: "DDDD",
@@ -581,7 +568,7 @@ await await scenarioCFix.ingestDiskFileNow("modify");
 // Scenario D — clear-and-readmit cycle (extends Scenario A)
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario D: clear-and-readmit cycle ---");
+s.section("Scenario D: clear-and-readmit cycle");
 {
 	// Capture the event count from the first pass so we can isolate the
 	// second-pass deltas.
@@ -609,19 +596,19 @@ console.log("\n--- Scenario D: clear-and-readmit cycle ---");
 		.filter((e) => e.layer === "recovery" || e.layer === "editor")
 		.map((e) => e.kind);
 
-	assert(
+	s.check(
 		recoveryAndEditorKinds.includes(FLIGHT_KIND.recoveryDecision),
 		"Scenario D: second pass emits recovery.decision",
 	);
-	assert(
+	s.check(
 		recoveryAndEditorKinds.includes(FLIGHT_KIND.recoveryApplyStart),
 		"Scenario D: second pass emits recovery.apply.start",
 	);
-	assert(
+	s.check(
 		recoveryAndEditorKinds.includes(FLIGHT_KIND.recoveryApplyDone),
 		"Scenario D: second pass emits recovery.apply.done",
 	);
-	assert(
+	s.check(
 		recoveryAndEditorKinds.includes(FLIGHT_KIND.editorRepairApplied),
 		"Scenario D: second pass emits editor.repair.applied",
 	);
@@ -631,7 +618,7 @@ console.log("\n--- Scenario D: clear-and-readmit cycle ---");
 	const startIdx = recoveryAndEditorKinds.indexOf(FLIGHT_KIND.recoveryApplyStart);
 	const doneIdx = recoveryAndEditorKinds.indexOf(FLIGHT_KIND.recoveryApplyDone);
 	const repairIdx = recoveryAndEditorKinds.indexOf(FLIGHT_KIND.editorRepairApplied);
-	assert(
+	s.check(
 		decisionIdx < startIdx && startIdx < doneIdx && doneIdx < repairIdx,
 		"Scenario D: ordering is decision -> apply.start -> apply.done -> editor.repair.applied",
 	);
@@ -702,12 +689,12 @@ console.log("\n--- Scenario D: clear-and-readmit cycle ---");
 // failure message below distinguishes "primary signal passed; secondary
 // trace channel regressed" from a primary regression.
 
-console.log("\n--- Scenario E: secondary trace channel observability ---");
+s.section("Scenario E: secondary trace channel observability");
 {
 	const scenarioASnapshotCalls = scenarioAFix.snapshotCalls.filter(
 		(label) => label === "frontmatter-ingest-blocked",
 	);
-	assert(
+	s.check(
 		scenarioASnapshotCalls.length >= 1,
 		"Scenario E: scheduleTraceStateSnapshot(\"frontmatter-ingest-blocked\") fired during Scenario A " +
 		"(secondary trace channel; primary flight evidence already asserted)",
@@ -716,7 +703,7 @@ console.log("\n--- Scenario E: secondary trace channel observability ---");
 	const scenarioCSnapshotCalls = scenarioCFix.snapshotCalls.filter(
 		(label) => label === "frontmatter-ingest-blocked",
 	);
-	assert(
+	s.check(
 		scenarioCSnapshotCalls.length >= 1,
 		"Scenario E: scheduleTraceStateSnapshot(\"frontmatter-ingest-blocked\") fired during Scenario C " +
 		"(secondary trace channel; primary flight evidence already asserted)",
@@ -745,15 +732,4 @@ console.log("\n--- Scenario E: secondary trace channel observability ---");
 		"Scenario E: no \"recovery-postcondition-skipped\" trace during Scenario C's block pass",
 	);
 }
-
-// -------------------------------------------------------------------
-// Wrap up
-// -------------------------------------------------------------------
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

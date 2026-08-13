@@ -20,19 +20,9 @@ import {
 	TOMBSTONE_REAP_ORIGIN,
 	TOMBSTONE_REAP_GRACE_MS,
 } from "../../server/src/tombstoneReaper";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  \x1b[32mPASS\x1b[0m  ${msg}`);
-		passed++;
-	} else {
-		console.log(`  \x1b[31mFAIL\x1b[0m  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("tombstone-reaper");
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
@@ -93,7 +83,7 @@ const encodedBytes = (doc: Y.Doc): number => Y.encodeStateAsUpdate(doc).byteLeng
 
 // ---------------------------------------------------------------------------
 
-console.log("\n--- Test 1: old tombstones reaped, active files untouched ---");
+s.section("Test 1: old tombstones reaped, active files untouched");
 {
 	const doc = buildVault([
 		{ id: "active", path: "keep.md", chars: 50_000, legacyPathMap: true },
@@ -103,16 +93,16 @@ console.log("\n--- Test 1: old tombstones reaped, active files untouched ---");
 
 	const result = reapTombstonedBodies(doc, { now: NOW });
 
-	assert(result.reaped === 1, `reaped exactly one body (got ${result.reaped})`);
-	assert(result.charsFreed === 50_000, `reported chars freed (got ${result.charsFreed})`);
-	assert(bodyOf(doc, "old") === null, "tombstoned body is gone");
-	assert(bodyOf(doc, "active")?.length === 50_000, "active body is intact");
-	assert(doc.getMap("meta").has("old"), "tombstone metadata preserved");
-	assert(encodedBytes(doc) < before * 0.55, `encoded size roughly halved (${before} -> ${encodedBytes(doc)})`);
+	s.check(result.reaped === 1, `reaped exactly one body (got ${result.reaped})`);
+	s.check(result.charsFreed === 50_000, `reported chars freed (got ${result.charsFreed})`);
+	s.check(bodyOf(doc, "old") === null, "tombstoned body is gone");
+	s.check(bodyOf(doc, "active")?.length === 50_000, "active body is intact");
+	s.check(doc.getMap("meta").has("old"), "tombstone metadata preserved");
+	s.check(encodedBytes(doc) < before * 0.55, `encoded size roughly halved (${before} -> ${encodedBytes(doc)})`);
 	doc.destroy();
 }
 
-console.log("\n--- Test 2: grace window is respected ---");
+s.section("Test 2: grace window is respected");
 {
 	const doc = buildVault([
 		{ id: "young", path: "recent.md", chars: 10_000, deletedAt: NOW - 5 * DAY },
@@ -120,62 +110,62 @@ console.log("\n--- Test 2: grace window is respected ---");
 	]);
 
 	const result = reapTombstonedBodies(doc, { now: NOW });
-	assert(result.withinGrace === 1, `young tombstone held back (withinGrace=${result.withinGrace})`);
-	assert(result.reaped === 1, `old tombstone reaped (reaped=${result.reaped})`);
-	assert(bodyOf(doc, "young")?.length === 10_000, "young body retained");
-	assert(bodyOf(doc, "old") === null, "old body reaped");
+	s.check(result.withinGrace === 1, `young tombstone held back (withinGrace=${result.withinGrace})`);
+	s.check(result.reaped === 1, `old tombstone reaped (reaped=${result.reaped})`);
+	s.check(bodyOf(doc, "young")?.length === 10_000, "young body retained");
+	s.check(bodyOf(doc, "old") === null, "old body reaped");
 
 	// Same document, later: the previously-young tombstone becomes eligible.
 	const later = reapTombstonedBodies(doc, { now: NOW + 40 * DAY });
-	assert(later.reaped === 1, "young body reaped once it ages past the grace window");
-	assert(bodyOf(doc, "young") === null, "formerly-young body now gone");
+	s.check(later.reaped === 1, "young body reaped once it ages past the grace window");
+	s.check(bodyOf(doc, "young") === null, "formerly-young body now gone");
 	doc.destroy();
 }
 
-console.log("\n--- Test 3: default grace is 30 days ---");
+s.section("Test 3: default grace is 30 days");
 {
 	const doc = buildVault([
 		{ id: "d29", path: "a.md", chars: 1_000, deletedAt: NOW - 29 * DAY },
 		{ id: "d31", path: "b.md", chars: 1_000, deletedAt: NOW - 31 * DAY },
 	]);
 	const result = reapTombstonedBodies(doc, { now: NOW });
-	assert(TOMBSTONE_REAP_GRACE_MS === 30 * DAY, "grace constant is 30 days");
-	assert(bodyOf(doc, "d29") !== null, "29-day-old tombstone retained");
-	assert(bodyOf(doc, "d31") === null, "31-day-old tombstone reaped");
-	assert(result.reaped === 1 && result.withinGrace === 1, "counts match the boundary");
+	s.check(TOMBSTONE_REAP_GRACE_MS === 30 * DAY, "grace constant is 30 days");
+	s.check(bodyOf(doc, "d29") !== null, "29-day-old tombstone retained");
+	s.check(bodyOf(doc, "d31") === null, "31-day-old tombstone reaped");
+	s.check(result.reaped === 1 && result.withinGrace === 1, "counts match the boundary");
 	doc.destroy();
 }
 
-console.log("\n--- Test 4: unknown-age tombstones are never reaped ---");
+s.section("Test 4: unknown-age tombstones are never reaped");
 {
 	const doc = buildVault([
 		{ id: "legacy", path: "legacy.md", chars: 20_000, legacyDeleted: true },
 		{ id: "legacyNested", path: "legacy2.md", chars: 20_000, legacyDeleted: true, nested: true },
 	]);
 	const result = reapTombstonedBodies(doc, { now: NOW });
-	assert(result.tombstones === 2, "both entries recognised as tombstones");
-	assert(result.unknownAge === 2, `both skipped for unknown age (got ${result.unknownAge})`);
-	assert(result.reaped === 0, "nothing reaped");
-	assert(bodyOf(doc, "legacy")?.length === 20_000, "flat legacy body retained");
-	assert(bodyOf(doc, "legacyNested")?.length === 20_000, "nested legacy body retained");
+	s.check(result.tombstones === 2, "both entries recognised as tombstones");
+	s.check(result.unknownAge === 2, `both skipped for unknown age (got ${result.unknownAge})`);
+	s.check(result.reaped === 0, "nothing reaped");
+	s.check(bodyOf(doc, "legacy")?.length === 20_000, "flat legacy body retained");
+	s.check(bodyOf(doc, "legacyNested")?.length === 20_000, "nested legacy body retained");
 	doc.destroy();
 }
 
-console.log("\n--- Test 5: nested (schema v3) metadata is handled ---");
+s.section("Test 5: nested (schema v3) metadata is handled");
 {
 	const doc = buildVault([
 		{ id: "nestedOld", path: "n1.md", chars: 30_000, deletedAt: NOW - 90 * DAY, nested: true },
 		{ id: "nestedActive", path: "n2.md", chars: 30_000, nested: true, legacyPathMap: true },
 	]);
 	const result = reapTombstonedBodies(doc, { now: NOW });
-	assert(result.reaped === 1, `nested tombstone reaped (got ${result.reaped})`);
-	assert(bodyOf(doc, "nestedOld") === null, "nested tombstoned body gone");
-	assert(bodyOf(doc, "nestedActive")?.length === 30_000, "nested active body intact");
-	assert(doc.getMap("meta").get("nestedOld") instanceof Y.Map, "nested tombstone still a Y.Map");
+	s.check(result.reaped === 1, `nested tombstone reaped (got ${result.reaped})`);
+	s.check(bodyOf(doc, "nestedOld") === null, "nested tombstoned body gone");
+	s.check(bodyOf(doc, "nestedActive")?.length === 30_000, "nested active body intact");
+	s.check(doc.getMap("meta").get("nestedOld") instanceof Y.Map, "nested tombstone still a Y.Map");
 	doc.destroy();
 }
 
-console.log("\n--- Test 6a: legacy path model — a stale pathToId entry vetoes a reap ---");
+s.section("Test 6a: legacy path model — a stale pathToId entry vetoes a reap");
 {
 	// Under the legacy model getFileId() consults pathToId FIRST, so an entry
 	// pointing at a tombstoned id still authorises that id and must veto.
@@ -183,13 +173,13 @@ console.log("\n--- Test 6a: legacy path model — a stale pathToId entry vetoes 
 	doc.transact(() => { doc.getMap<string>("pathToId").set("c.md", "conflict"); });
 
 	const result = reapTombstonedBodies(doc, { now: NOW });
-	assert(result.conflicted === 1, `conflict detected (got ${result.conflicted})`);
-	assert(result.reaped === 0, "nothing reaped while pathToId still authorises the id");
-	assert(bodyOf(doc, "conflict")?.length === 5_000, "body preserved");
+	s.check(result.conflicted === 1, `conflict detected (got ${result.conflicted})`);
+	s.check(result.reaped === 0, "nothing reaped while pathToId still authorises the id");
+	s.check(bodyOf(doc, "conflict")?.length === 5_000, "body preserved");
 	doc.destroy();
 }
 
-console.log("\n--- Test 6b: v2 path model — dormant pathToId drift does NOT veto ---");
+s.section("Test 6b: v2 path model — dormant pathToId drift does NOT veto");
 {
 	// Under v2 the client resolves from meta alone and no longer writes
 	// pathToId, so leftover entries are dead weight and must not pin a body.
@@ -198,27 +188,27 @@ console.log("\n--- Test 6b: v2 path model — dormant pathToId drift does NOT ve
 	doc.transact(() => { doc.getMap<string>("pathToId").set("d.md", "drift"); });
 
 	const result = reapTombstonedBodies(doc, { now: NOW });
-	assert(result.conflicted === 0, `no conflict under v2 (got ${result.conflicted})`);
-	assert(result.reaped === 1, `body reaped despite stale pathToId (got ${result.reaped})`);
-	assert(bodyOf(doc, "drift") === null, "body reclaimed");
-	assert(doc.getMap("meta").has("drift"), "tombstone still preserved");
+	s.check(result.conflicted === 0, `no conflict under v2 (got ${result.conflicted})`);
+	s.check(result.reaped === 1, `body reaped despite stale pathToId (got ${result.reaped})`);
+	s.check(bodyOf(doc, "drift") === null, "body reclaimed");
+	s.check(doc.getMap("meta").has("drift"), "tombstone still preserved");
 	doc.destroy();
 }
 
-console.log("\n--- Test 6c: an active meta entry always vetoes, in any model ---");
+s.section("Test 6c: an active meta entry always vetoes, in any model");
 {
 	for (const schema of [null, 2]) {
 		const doc = buildVault([{ id: "live", path: "l.md", chars: 3_000 }], schema);
 		// Same id also carries a tombstone claim? Impossible for one key, so
 		// assert the simpler invariant: an active entry is never a candidate.
 		const result = reapTombstonedBodies(doc, { now: NOW });
-		assert(result.reaped === 0, `active file untouched (schema=${String(schema)})`);
-		assert(bodyOf(doc, "live")?.length === 3_000, `active body intact (schema=${String(schema)})`);
+		s.check(result.reaped === 0, `active file untouched (schema=${String(schema)})`);
+		s.check(bodyOf(doc, "live")?.length === 3_000, `active body intact (schema=${String(schema)})`);
 		doc.destroy();
 	}
 }
 
-console.log("\n--- Test 7: budget caps a pass and reports the remainder ---");
+s.section("Test 7: budget caps a pass and reports the remainder");
 {
 	const specs: FileSpec[] = [];
 	for (let i = 0; i < 10; i++) {
@@ -227,20 +217,20 @@ console.log("\n--- Test 7: budget caps a pass and reports the remainder ---");
 	const doc = buildVault(specs);
 
 	const first = reapTombstonedBodies(doc, { now: NOW, maxPerRun: 4 });
-	assert(first.reaped === 4, `first pass respected the budget (got ${first.reaped})`);
-	assert(first.remaining === 6, `remainder reported (got ${first.remaining})`);
+	s.check(first.reaped === 4, `first pass respected the budget (got ${first.reaped})`);
+	s.check(first.remaining === 6, `remainder reported (got ${first.remaining})`);
 
 	const second = reapTombstonedBodies(doc, { now: NOW, maxPerRun: 4 });
-	assert(second.reaped === 4, "second pass continues");
+	s.check(second.reaped === 4, "second pass continues");
 	const third = reapTombstonedBodies(doc, { now: NOW, maxPerRun: 4 });
-	assert(third.reaped === 2 && third.remaining === 0, "third pass finishes");
+	s.check(third.reaped === 2 && third.remaining === 0, "third pass finishes");
 
 	const fourth = reapTombstonedBodies(doc, { now: NOW, maxPerRun: 4 });
-	assert(fourth.reaped === 0, "idempotent once everything is reaped");
+	s.check(fourth.reaped === 0, "idempotent once everything is reaped");
 	doc.destroy();
 }
 
-console.log("\n--- Test 8: reaping uses a tagged origin and one transaction ---");
+s.section("Test 8: reaping uses a tagged origin and one transaction");
 {
 	const doc = buildVault([
 		{ id: "a", path: "a.md", chars: 1_000, deletedAt: NOW - 60 * DAY },
@@ -250,24 +240,24 @@ console.log("\n--- Test 8: reaping uses a tagged origin and one transaction ---"
 	doc.on("update", (_update: Uint8Array, origin: unknown) => { origins.push(origin); });
 
 	reapTombstonedBodies(doc, { now: NOW });
-	assert(origins.length === 1, `single update emitted (got ${origins.length})`);
-	assert(origins[0] === TOMBSTONE_REAP_ORIGIN, `origin is tagged (got ${String(origins[0])})`);
+	s.check(origins.length === 1, `single update emitted (got ${origins.length})`);
+	s.check(origins[0] === TOMBSTONE_REAP_ORIGIN, `origin is tagged (got ${String(origins[0])})`);
 	doc.destroy();
 }
 
-console.log("\n--- Test 9: a clean document costs nothing ---");
+s.section("Test 9: a clean document costs nothing");
 {
 	const doc = buildVault([{ id: "active", path: "a.md", chars: 1_000, legacyPathMap: true }]);
 	let updates = 0;
 	doc.on("update", () => { updates++; });
 
 	const result = reapTombstonedBodies(doc, { now: NOW });
-	assert(result.reaped === 0, "nothing to reap");
-	assert(updates === 0, "no transaction performed, so no update emitted");
+	s.check(result.reaped === 0, "nothing to reap");
+	s.check(updates === 0, "no transaction performed, so no update emitted");
 	doc.destroy();
 }
 
-console.log("\n--- Test 10: reaping converges with a peer that edited offline ---");
+s.section("Test 10: reaping converges with a peer that edited offline");
 {
 	const server = buildVault([{ id: "f", path: "f.md", chars: 200, deletedAt: NOW - 60 * DAY }]);
 	const device = new Y.Doc();
@@ -280,7 +270,7 @@ console.log("\n--- Test 10: reaping converges with a peer that edited offline --
 	const deviceUpdate = Y.encodeStateAsUpdate(device, Y.encodeStateVector(server));
 
 	const result = reapTombstonedBodies(server, { now: NOW });
-	assert(result.reaped === 1, "server reaped the body");
+	s.check(result.reaped === 1, "server reaped the body");
 	const serverUpdate = Y.encodeStateAsUpdate(server, Y.encodeStateVector(device));
 
 	Y.applyUpdate(server, deviceUpdate);
@@ -288,15 +278,15 @@ console.log("\n--- Test 10: reaping converges with a peer that edited offline --
 
 	const a = Y.encodeStateAsUpdate(server);
 	const b = Y.encodeStateAsUpdate(device);
-	assert(Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0, "both peers converge byte-identically");
-	assert(!server.getMap("idToText").has("f"), "body stays gone on the server");
-	assert(!device.getMap("idToText").has("f"), "body is gone on the device too — no resurrection");
-	assert(server.getMap("meta").has("f"), "tombstone survives convergence");
+	s.check(Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0, "both peers converge byte-identically");
+	s.check(!server.getMap("idToText").has("f"), "body stays gone on the server");
+	s.check(!device.getMap("idToText").has("f"), "body is gone on the device too — no resurrection");
+	s.check(server.getMap("meta").has("f"), "tombstone survives convergence");
 	server.destroy();
 	device.destroy();
 }
 
-console.log("\n--- Test 11: reclamation survives an encode/decode round trip ---");
+s.section("Test 11: reclamation survives an encode/decode round trip");
 {
 	const doc = buildVault([{ id: "f", path: "f.md", chars: 100_000, deletedAt: NOW - 60 * DAY }]);
 	const before = encodedBytes(doc);
@@ -305,15 +295,15 @@ console.log("\n--- Test 11: reclamation survives an encode/decode round trip ---
 
 	const reloaded = new Y.Doc();
 	Y.applyUpdate(reloaded, Y.encodeStateAsUpdate(doc));
-	assert(after < before / 10, `reap collapsed the body (${before} -> ${after})`);
-	assert(encodedBytes(reloaded) === after, "reloaded document is the same size");
-	assert(!reloaded.getMap("idToText").has("f"), "body still absent after reload");
-	assert(reloaded.getMap("meta").has("f"), "tombstone still present after reload");
+	s.check(after < before / 10, `reap collapsed the body (${before} -> ${after})`);
+	s.check(encodedBytes(reloaded) === after, "reloaded document is the same size");
+	s.check(!reloaded.getMap("idToText").has("f"), "body still absent after reload");
+	s.check(reloaded.getMap("meta").has("f"), "tombstone still present after reload");
 	doc.destroy();
 	reloaded.destroy();
 }
 
-console.log("\n--- Test 12: a reap is persisted, because it is a deletion-only change ---");
+s.section("Test 12: a reap is persisted, because it is a deletion-only change");
 {
 	// The reason this integration matters: a reap changes nothing about the
 	// state vector, so the old save gate skipped it and the bodies came back on
@@ -348,21 +338,21 @@ console.log("\n--- Test 12: a reap is persisted, because it is a deletion-only c
 	const result = reapTombstonedBodies(doc, { now: NOW });
 	const svAfter = Buffer.from(Y.encodeStateVector(doc)).toString("hex");
 
-	assert(result.reaped === 1, `reaped the old body (got ${result.reaped})`);
-	assert(svBefore === svAfter, "state vector unchanged by the reap (precondition)");
+	s.check(result.reaped === 1, `reaped the old body (got ${result.reaped})`);
+	s.check(svBefore === svAfter, "state vector unchanged by the reap (precondition)");
 
 	const save = await coordinator.enqueueSave();
-	assert(save.success, "the reap was saved");
-	assert(save.method !== "skipped", `the reap was NOT skipped (method=${save.method})`);
+	s.check(save.success, "the reap was saved");
+	s.check(save.method !== "skipped", `the reap was NOT skipped (method=${save.method})`);
 
 	// Replay storage the way VaultSyncServer's cold load does.
 	const reloaded = new Y.Doc();
 	if (snapshot) Y.applyUpdate(reloaded, snapshot);
 	for (const entry of journal) Y.applyUpdate(reloaded, entry);
 
-	assert(!reloaded.getMap("idToText").has("old"), "reaped body did NOT resurrect on reload");
-	assert(reloaded.getMap("meta").has("old"), "tombstone survived the reload");
-	assert(
+	s.check(!reloaded.getMap("idToText").has("old"), "reaped body did NOT resurrect on reload");
+	s.check(reloaded.getMap("meta").has("old"), "tombstone survived the reload");
+	s.check(
 		(reloaded.getMap<Y.Text>("idToText").get("keep")?.length ?? 0) === 20_000,
 		"active file survived the reload intact",
 	);
@@ -372,7 +362,7 @@ console.log("\n--- Test 12: a reap is persisted, because it is a deletion-only c
 	reloaded.destroy();
 }
 
-console.log("\n--- Test 13: a forced checkpoint stops storage replaying reaped content ---");
+s.section("Test 13: a forced checkpoint stops storage replaying reaped content");
 {
 	// The property that matters is NOT "the live doc shrank" — it is "a cold
 	// load never re-materialises the reaped bodies".  A journal is replayed
@@ -415,12 +405,12 @@ console.log("\n--- Test 13: a forced checkpoint stops storage replaying reaped c
 
 		const { snapshot, journal } = peek();
 		const worst = worstReplayEntry(snapshot, journal);
-		assert(worst > 300_000, `append-only storage still replays the big body (worst entry ${worst} bytes)`);
+		s.check(worst > 300_000, `append-only storage still replays the big body (worst entry ${worst} bytes)`);
 
 		const reloaded = new Y.Doc();
 		if (snapshot) Y.applyUpdate(reloaded, snapshot);
 		for (const e of journal) Y.applyUpdate(reloaded, e);
-		assert(!reloaded.getMap("idToText").has("old"), "settles to the reaped state either way");
+		s.check(!reloaded.getMap("idToText").has("old"), "settles to the reaped state either way");
 		c.dispose(); doc.destroy(); reloaded.destroy();
 	}
 
@@ -431,26 +421,26 @@ console.log("\n--- Test 13: a forced checkpoint stops storage replaying reaped c
 		await c.enqueueSave();
 		c.setInitialStateVector(Y.encodeStateVector(doc));
 		const result = reapTombstonedBodies(doc, { now: NOW });
-		assert(result.reaped === 1, "reaped the body");
+		s.check(result.reaped === 1, "reaped the body");
 		const save = await c.forceCheckpoint("tombstone-reap");
-		assert(save.success, "forced checkpoint succeeded");
-		assert(save.method === "checkpoint-fallback", `used the checkpoint path (got ${save.method})`);
+		s.check(save.success, "forced checkpoint succeeded");
+		s.check(save.method === "checkpoint-fallback", `used the checkpoint path (got ${save.method})`);
 
 		const { snapshot, journal } = peek();
-		assert(journal.length === 0, `journal cleared (got ${journal.length} entries)`);
+		s.check(journal.length === 0, `journal cleared (got ${journal.length} entries)`);
 		const worst = worstReplayEntry(snapshot, journal);
-		assert(worst < 60_000, `storage no longer replays the big body (worst entry ${worst} bytes)`);
+		s.check(worst < 60_000, `storage no longer replays the big body (worst entry ${worst} bytes)`);
 
 		const reloaded = new Y.Doc();
 		if (snapshot) Y.applyUpdate(reloaded, snapshot);
-		assert(!reloaded.getMap("idToText").has("old"), "reaped body absent after reload");
-		assert(reloaded.getMap("meta").has("old"), "tombstone survives");
-		assert((reloaded.getMap<Y.Text>("idToText").get("keep")?.length ?? 0) === 10_000, "active file intact");
+		s.check(!reloaded.getMap("idToText").has("old"), "reaped body absent after reload");
+		s.check(reloaded.getMap("meta").has("old"), "tombstone survives");
+		s.check((reloaded.getMap<Y.Text>("idToText").get("keep")?.length ?? 0) === 10_000, "active file intact");
 		c.dispose(); doc.destroy(); reloaded.destroy();
 	}
 }
 
-console.log("\n--- Test 14: forceCheckpoint leaves the document clean and retries on failure ---");
+s.section("Test 14: forceCheckpoint leaves the document clean and retries on failure");
 {
 	const { PersistenceCoordinator } = await import("../../server/src/persistenceCoordinator");
 	const doc = buildVault([{ id: "a", path: "a.md", chars: 1_000, legacyPathMap: true }]);
@@ -470,18 +460,18 @@ console.log("\n--- Test 14: forceCheckpoint leaves the document clean and retrie
 
 	fail = true;
 	const bad = await c.forceCheckpoint("tombstone-reap");
-	assert(!bad.success, "failure surfaces");
-	assert(c.health.dirty, "document left dirty so the next save retries");
+	s.check(!bad.success, "failure surfaces");
+	s.check(c.health.dirty, "document left dirty so the next save retries");
 
 	fail = false;
 	const good = await c.forceCheckpoint("tombstone-reap");
-	assert(good.success, "retry succeeds");
-	assert(!c.health.dirty, "clean after a successful checkpoint");
-	assert(snapshot !== null, "snapshot written");
+	s.check(good.success, "retry succeeds");
+	s.check(!c.health.dirty, "clean after a successful checkpoint");
+	s.check(snapshot !== null, "snapshot written");
 	c.dispose(); doc.destroy();
 }
 
-console.log("\n--- Test 15: skip reasons overlap instead of hiding each other ---");
+s.section("Test 15: skip reasons overlap instead of hiding each other");
 {
 	// The regression this pins cost a wrong inference on a live vault.  The
 	// counters used to partition, so the conflict check returned before the age
@@ -503,45 +493,38 @@ console.log("\n--- Test 15: skip reasons overlap instead of hiding each other --
 
 	const result = reapTombstonedBodies(doc, { now: NOW });
 
-	assert(result.tombstones === 4, `four tombstones (got ${result.tombstones})`);
-	assert(result.withBody === 4, `all four still hold a body (got ${result.withBody})`);
-	assert(result.conflicted === 2, `both referenced ones counted (got ${result.conflicted})`);
-	assert(result.withinGrace === 2, `both young ones counted (got ${result.withinGrace})`);
-	assert(result.reaped === 1, `only the unblocked one reaped (got ${result.reaped})`);
-	assert(bodyOf(doc, "neither") === null, "the unblocked body is gone");
-	assert(bodyOf(doc, "both") !== null, "the doubly-blocked body is kept");
+	s.check(result.tombstones === 4, `four tombstones (got ${result.tombstones})`);
+	s.check(result.withBody === 4, `all four still hold a body (got ${result.withBody})`);
+	s.check(result.conflicted === 2, `both referenced ones counted (got ${result.conflicted})`);
+	s.check(result.withinGrace === 2, `both young ones counted (got ${result.withinGrace})`);
+	s.check(result.reaped === 1, `only the unblocked one reaped (got ${result.reaped})`);
+	s.check(bodyOf(doc, "neither") === null, "the unblocked body is gone");
+	s.check(bodyOf(doc, "both") !== null, "the doubly-blocked body is kept");
 
 	// The point: the counters overlap, so they exceed the candidate pool.  A
 	// partition would have reported conflicted 2 / withinGrace 1 and silently
 	// lost the fact that "both" was young as well.
-	assert(
+	s.check(
 		result.conflicted + result.withinGrace + result.unknownAge > result.withBody - result.reaped,
 		"skip reasons overlap rather than partitioning the pool",
 	);
 	doc.destroy();
 }
 
-console.log("\n--- Test 16: already-reaped tombstones are reported, not silently ignored ---");
+s.section("Test 16: already-reaped tombstones are reported, not silently ignored");
 {
 	const doc = buildVault([
 		{ id: "gone", path: "g.md", chars: 1_000, deletedAt: NOW - 60 * DAY },
 		{ id: "stays", path: "s.md", chars: 1_000, deletedAt: NOW - 60 * DAY },
 	]);
 	const first = reapTombstonedBodies(doc, { now: NOW });
-	assert(first.reaped === 2 && first.alreadyReaped === 0, "first pass reaps both");
+	s.check(first.reaped === 2 && first.alreadyReaped === 0, "first pass reaps both");
 
 	const second = reapTombstonedBodies(doc, { now: NOW });
-	assert(second.tombstones === 2, "tombstones still counted after reaping");
-	assert(second.alreadyReaped === 2, `both reported as already reaped (got ${second.alreadyReaped})`);
-	assert(second.withBody === 0, "no bodies remain in the candidate pool");
-	assert(second.reaped === 0, "idempotent");
+	s.check(second.tombstones === 2, "tombstones still counted after reaping");
+	s.check(second.alreadyReaped === 2, `both reported as already reaped (got ${second.alreadyReaped})`);
+	s.check(second.withBody === 0, "no bodies remain in the candidate pool");
+	s.check(second.reaped === 0, "idempotent");
 	doc.destroy();
 }
-
-// ---------------------------------------------------------------------------
-
-console.log(`\n${"─".repeat(56)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(56)}\n`);
-
-if (failed > 0) process.exit(1);
+await s.done();

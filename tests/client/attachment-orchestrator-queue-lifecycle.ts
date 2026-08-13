@@ -1,26 +1,16 @@
 import { TFile } from "obsidian";
 import { AttachmentOrchestrator } from "../../src/runtime/attachmentOrchestrator";
 import type { BlobQueueSnapshot } from "../../src/sync/blobSync";
+import { suite, until } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, message: string): void {
-	if (condition) {
-		console.log(`  PASS  ${message}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${message}`);
-	failed++;
-}
+const s = suite("attachment-orchestrator-queue-lifecycle");
 
 function assertSnapshot(
 	actual: BlobQueueSnapshot | null,
 	expected: BlobQueueSnapshot | null,
 	message: string,
 ): void {
-	assert(JSON.stringify(actual) === JSON.stringify(expected), message);
+	s.check(JSON.stringify(actual) === JSON.stringify(expected), message);
 }
 
 function bytes(text: string): ArrayBuffer {
@@ -36,11 +26,7 @@ async function sha256Hex(data: ArrayBuffer): Promise<string> {
 }
 
 async function waitFor(condition: () => boolean, message: string): Promise<void> {
-	const deadline = Date.now() + 1000;
-	while (!condition()) {
-		if (Date.now() >= deadline) throw new Error(`Timed out: ${message}`);
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	}
+	await until(condition, { timeoutMs: 1000, intervalMs: 0, message });
 }
 
 interface Fixture {
@@ -166,7 +152,7 @@ async function drainRestoredDownload(
 	);
 }
 
-console.log("\n--- Attachment orchestrator queue lifecycle ---");
+s.section("Attachment orchestrator queue lifecycle");
 
 {
 	const remoteData = bytes("restored-download");
@@ -182,7 +168,7 @@ console.log("\n--- Attachment orchestrator queue lifecycle ---");
 	fixture.orchestrator.hydrateSavedQueue(savedQueue);
 	fixture.orchestrator.start("hydrate", false);
 	const importedQueue = fixture.orchestrator.manager?.exportQueue();
-	assert(
+	s.check(
 		importedQueue?.uploads.length === 0 &&
 			importedQueue.downloads.length === 1 &&
 			importedQueue.downloads[0]?.path === savedQueue.downloads[0]?.path &&
@@ -198,11 +184,11 @@ console.log("\n--- Attachment orchestrator queue lifecycle ---");
 	}));
 	const stopping = fixture.orchestrator.stop("drained");
 	await Promise.resolve();
-	assert(fixture.orchestrator.manager === null, "stop removes the manager before terminal persistence");
+	s.check(fixture.orchestrator.manager === null, "stop removes the manager before terminal persistence");
 	assertSnapshot(fixture.getPersistedQueue(), savedQueue, "saved queue remains durable until terminal clear resolves");
 	releaseClear?.();
 	await stopping;
-	assert(fixture.clearCalls() === 1, "empty active manager clears persisted queue at stop");
+	s.check(fixture.clearCalls() === 1, "empty active manager clears persisted queue at stop");
 	assertSnapshot(fixture.getPersistedQueue(), null, "drained queue is removed from durable state");
 
 	const recreated = makeFixture(fixture.getPersistedQueue());
@@ -240,13 +226,13 @@ console.log("\n--- Attachment orchestrator queue lifecycle ---");
 	await drainRestoredDownload(fixture, remoteData);
 	const stopping = fixture.orchestrator.stop("status-tick-race");
 	await Promise.resolve();
-	assert(fixture.clearCalls() === 0, "terminal clear waits behind the earlier status-tick save");
+	s.check(fixture.clearCalls() === 0, "terminal clear waits behind the earlier status-tick save");
 	fixture.orchestrator.handleStatusTick();
-	assert(fixture.persistCalls() === 1, "status ticks cannot queue stale snapshots after stop begins");
+	s.check(fixture.persistCalls() === 1, "status ticks cannot queue stale snapshots after stop begins");
 
 	releasePersist?.();
 	await stopping;
-	assert(fixture.clearCalls() === 1, "terminal clear runs after the delayed status-tick save");
+	s.check(fixture.clearCalls() === 1, "terminal clear runs after the delayed status-tick save");
 	assertSnapshot(fixture.getPersistedQueue(), null, "terminal clear wins over a delayed periodic save");
 }
 
@@ -260,8 +246,8 @@ console.log("\n--- Attachment orchestrator queue lifecycle ---");
 	fixture.orchestrator.start("nonempty-control", false);
 	const expectedPersistedQueue = fixture.orchestrator.manager?.exportQueue() ?? null;
 	await fixture.orchestrator.destroy();
-	assert(fixture.persistCalls() === 1, "nonempty active queue is persisted during destroy");
-	assert(fixture.clearCalls() === 0, "nonempty active queue is not cleared during destroy");
+	s.check(fixture.persistCalls() === 1, "nonempty active queue is persisted during destroy");
+	s.check(fixture.clearCalls() === 0, "nonempty active queue is not cleared during destroy");
 	assertSnapshot(fixture.getPersistedQueue(), expectedPersistedQueue, "destroy retains the nonempty queue snapshot");
 }
 
@@ -273,10 +259,8 @@ console.log("\n--- Attachment orchestrator queue lifecycle ---");
 	const fixture = makeFixture(savedQueue);
 	fixture.orchestrator.hydrateSavedQueue(savedQueue);
 	await fixture.orchestrator.destroy();
-	assert(fixture.persistCalls() === 0, "unstarted queue is not re-persisted");
-	assert(fixture.clearCalls() === 0, "unstarted queue is not cleared");
+	s.check(fixture.persistCalls() === 0, "unstarted queue is not re-persisted");
+	s.check(fixture.clearCalls() === 0, "unstarted queue is not cleared");
 	assertSnapshot(fixture.getPersistedQueue(), savedQueue, "saved queue survives when attachment sync never starts");
 }
-
-console.log(`\n${passed} passed, ${failed} failed`);
-if (failed > 0) process.exit(1);
+await s.done();

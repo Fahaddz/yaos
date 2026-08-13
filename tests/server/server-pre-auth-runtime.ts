@@ -35,19 +35,9 @@
 import { rejectUnauthorizedVaultRequest } from "../../server/src/routes/auth";
 import { handleSyncSocketRoute } from "../../server/src/routes/syncSocket";
 import type { AuthState, Env } from "../../server/src/routes/types";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("server-pre-auth-runtime");
 
 // ── Fake Env — DO access throws ───────────────────────────────────────────────
 
@@ -95,94 +85,87 @@ async function parseJsonBody(resp: Response): Promise<unknown> {
 
 // ── Test 1: rejectUnauthorizedVaultRequest — unclaimed ────────────────────────
 
-console.log("\n--- Test 1: rejectUnauthorizedVaultRequest — unclaimed ---");
+s.section("Test 1: rejectUnauthorizedVaultRequest — unclaimed");
 {
 	const rejection = await rejectUnauthorizedVaultRequest(httpReq(), fakeEnv, unclaimed, "test-vault");
-	assert(rejection !== null, "unclaimed: rejection returned (not null)");
-	assert(rejection?.reason === "unclaimed", "unclaimed: typed reason is 'unclaimed'");
-	assert(rejection?.response.status === 503, "unclaimed: HTTP 503");
+	s.check(rejection !== null, "unclaimed: rejection returned (not null)");
+	s.check(rejection?.reason === "unclaimed", "unclaimed: typed reason is 'unclaimed'");
+	s.check(rejection?.response.status === 503, "unclaimed: HTTP 503");
 	const body = await parseJsonBody(rejection!.response);
-	assert((body as { error?: string })?.error === "unclaimed", "unclaimed: body has error=unclaimed");
+	s.check((body as { error?: string })?.error === "unclaimed", "unclaimed: body has error=unclaimed");
 }
 
 // ── Test 2: rejectUnauthorizedVaultRequest — server_misconfigured ─────────────
 
-console.log("\n--- Test 2: rejectUnauthorizedVaultRequest — server_misconfigured ---");
+s.section("Test 2: rejectUnauthorizedVaultRequest — server_misconfigured");
 {
 	const rejection = await rejectUnauthorizedVaultRequest(httpReq(), fakeEnv, misconfigured, "test-vault");
-	assert(rejection !== null, "misconfigured: rejection returned");
-	assert(rejection?.reason === "server_misconfigured", "misconfigured: typed reason is 'server_misconfigured'");
-	assert(rejection?.response.status === 503, "misconfigured: HTTP 503");
+	s.check(rejection !== null, "misconfigured: rejection returned");
+	s.check(rejection?.reason === "server_misconfigured", "misconfigured: typed reason is 'server_misconfigured'");
+	s.check(rejection?.response.status === 503, "misconfigured: HTTP 503");
 	const body = await parseJsonBody(rejection!.response);
-	assert((body as { error?: string })?.error === "server_misconfigured", "misconfigured: body has error=server_misconfigured");
+	s.check((body as { error?: string })?.error === "server_misconfigured", "misconfigured: body has error=server_misconfigured");
 }
 
 // ── Test 3: rejectUnauthorizedVaultRequest — unauthorized ─────────────────────
 
-console.log("\n--- Test 3: rejectUnauthorizedVaultRequest — unauthorized (wrong token) ---");
+s.section("Test 3: rejectUnauthorizedVaultRequest — unauthorized (wrong token)");
 {
 	const rejection = await rejectUnauthorizedVaultRequest(httpReq("wrong-token"), fakeEnv, envAuth, "test-vault");
-	assert(rejection !== null, "unauthorized: rejection returned");
-	assert(rejection?.reason === "unauthorized", "unauthorized: typed reason is 'unauthorized'");
-	assert(rejection?.response.status === 401, "unauthorized: HTTP 401");
+	s.check(rejection !== null, "unauthorized: rejection returned");
+	s.check(rejection?.reason === "unauthorized", "unauthorized: typed reason is 'unauthorized'");
+	s.check(rejection?.response.status === 401, "unauthorized: HTTP 401");
 	const body = await parseJsonBody(rejection!.response);
-	assert((body as { error?: string })?.error === "unauthorized", "unauthorized: body has error=unauthorized");
+	s.check((body as { error?: string })?.error === "unauthorized", "unauthorized: body has error=unauthorized");
 }
 
 // ── Test 4: rejectUnauthorizedVaultRequest — authorized (no rejection) ────────
 
-console.log("\n--- Test 4: rejectUnauthorizedVaultRequest — authorized returns null ---");
+s.section("Test 4: rejectUnauthorizedVaultRequest — authorized returns null");
 {
 	const rejection = await rejectUnauthorizedVaultRequest(httpReq("correct-secret"), fakeEnv, envAuth, "test-vault");
-	assert(rejection === null, "authorized: returns null (request proceeds to handler)");
+	s.check(rejection === null, "authorized: returns null (request proceeds to handler)");
 	// fakeEnv DO traps were never triggered — if they had been, the test would have thrown
-	assert(true, "authorized: DO namespace was not touched");
+	s.check(true, "authorized: DO namespace was not touched");
 }
 
 // ── Test 5: handleSyncSocketRoute — unclaimed (non-WS) ───────────────────────
 
-console.log("\n--- Test 5: handleSyncSocketRoute — unclaimed (HTTP, no WebSocket upgrade) ---");
+s.section("Test 5: handleSyncSocketRoute — unclaimed (HTTP, no WebSocket upgrade)");
 {
 	const resp = await handleSyncSocketRoute(syncHttpReq(), fakeEnv, unclaimed, "test-vault");
-	assert(resp.status === 503, "unclaimed socket route: HTTP 503");
+	s.check(resp.status === 503, "unclaimed socket route: HTTP 503");
 	const body = await parseJsonBody(resp);
-	assert((body as { error?: string })?.error === "unclaimed", "unclaimed socket route: body has error=unclaimed");
+	s.check((body as { error?: string })?.error === "unclaimed", "unclaimed socket route: body has error=unclaimed");
 }
 
 // ── Test 6: handleSyncSocketRoute — server_misconfigured (non-WS) ────────────
 
-console.log("\n--- Test 6: handleSyncSocketRoute — server_misconfigured (HTTP) ---");
+s.section("Test 6: handleSyncSocketRoute — server_misconfigured (HTTP)");
 {
 	const resp = await handleSyncSocketRoute(syncHttpReq(), fakeEnv, misconfigured, "test-vault");
-	assert(resp.status === 503, "misconfigured socket route: HTTP 503");
+	s.check(resp.status === 503, "misconfigured socket route: HTTP 503");
 	const body = await parseJsonBody(resp);
-	assert((body as { error?: string })?.error === "server_misconfigured", "misconfigured socket route: body has error=server_misconfigured");
+	s.check((body as { error?: string })?.error === "server_misconfigured", "misconfigured socket route: body has error=server_misconfigured");
 }
 
 // ── Test 7: handleSyncSocketRoute — unauthorized (non-WS) ────────────────────
 
-console.log("\n--- Test 7: handleSyncSocketRoute — unauthorized (HTTP, wrong token) ---");
+s.section("Test 7: handleSyncSocketRoute — unauthorized (HTTP, wrong token)");
 {
 	const resp = await handleSyncSocketRoute(syncHttpReq("wrong-token"), fakeEnv, envAuth, "test-vault");
-	assert(resp.status === 401, "unauthorized socket route: HTTP 401");
+	s.check(resp.status === 401, "unauthorized socket route: HTTP 401");
 	const body = await parseJsonBody(resp);
-	assert((body as { error?: string })?.error === "unauthorized", "unauthorized socket route: body has error=unauthorized");
+	s.check((body as { error?: string })?.error === "unauthorized", "unauthorized socket route: body has error=unauthorized");
 }
 
 // ── Test 8: DO trap never fired in any of the above ───────────────────────────
 
-console.log("\n--- Test 8: DO trap summary — none of the above rejection paths touched the namespace ---");
+s.section("Test 8: DO trap summary — none of the above rejection paths touched the namespace");
 {
 	// If any of tests 1-7 had called DO methods, they would have thrown and
 	// the process would have exited with an unhandled error before reaching here.
 	// Reaching this point proves all seven rejection paths respected INV-SEC-01.
-	assert(true, "all pre-auth rejections completed without touching YAOS_SYNC or YAOS_CONFIG");
+	s.check(true, "all pre-auth rejections completed without touching YAOS_SYNC or YAOS_CONFIG");
 }
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-
-console.log(`\n${"─".repeat(55)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(55)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();

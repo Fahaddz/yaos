@@ -14,26 +14,16 @@ import {
 	listSnapshots,
 	type SnapshotIndex,
 } from "../../server/src/snapshot";
+import { suite } from "../harness.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("snapshot-lookup");
 
 function assertEqual(actual: unknown, expected: unknown, msg: string): void {
-	assert(actual === expected, `${msg} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`);
+	s.check(actual === expected, `${msg} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`);
 }
 
 /** Build a minimal R2Object-like mock. */
@@ -75,14 +65,14 @@ function snapshotIdForDate(utcDate: Date): string {
 // dayFromSnapshotId tests
 // ---------------------------------------------------------------------------
 
-console.log("\n--- dayFromSnapshotId: valid snapshotId derives correct day ---");
+s.section("dayFromSnapshotId: valid snapshotId derives correct day");
 {
 	const knownDate = new Date("2026-05-27T14:30:00.000Z");
 	const id = snapshotIdForDate(knownDate);
 	assertEqual(dayFromSnapshotId(id), "2026-05-27", "derives 2026-05-27 from known timestamp");
 }
 
-console.log("\n--- dayFromSnapshotId: UTC midnight stays on the same day ---");
+s.section("dayFromSnapshotId: UTC midnight stays on the same day");
 {
 	// 2026-05-27T00:00:00.000Z should yield "2026-05-27", not "2026-05-26".
 	const utcMidnight = new Date("2026-05-27T00:00:00.000Z");
@@ -95,7 +85,7 @@ console.log("\n--- dayFromSnapshotId: UTC midnight stays on the same day ---");
 	assertEqual(dayFromSnapshotId(id2), "2026-05-26", "one ms before UTC midnight is prior day");
 }
 
-console.log("\n--- dayFromSnapshotId: round-trip matches today() ---");
+s.section("dayFromSnapshotId: round-trip matches today()");
 {
 	// Generate a snapshotId the same way generateSnapshotId() does.
 	const now = Date.now();
@@ -105,18 +95,18 @@ console.log("\n--- dayFromSnapshotId: round-trip matches today() ---");
 	assertEqual(dayFromSnapshotId(id), expected, "round-trip matches UTC date at creation time");
 }
 
-console.log("\n--- dayFromSnapshotId: empty string returns null ---");
+s.section("dayFromSnapshotId: empty string returns null");
 {
 	assertEqual(dayFromSnapshotId(""), null, "empty string → null");
 }
 
-console.log("\n--- dayFromSnapshotId: missing hyphen returns null ---");
+s.section("dayFromSnapshotId: missing hyphen returns null");
 {
 	assertEqual(dayFromSnapshotId("lkjhgfdsa"), null, "no hyphen → null");
 	assertEqual(dayFromSnapshotId("-suffix"), null, "hyphen at index 0 → null (no prefix)");
 }
 
-console.log("\n--- dayFromSnapshotId: non-base36 prefix returns null ---");
+s.section("dayFromSnapshotId: non-base36 prefix returns null");
 {
 	// Symbols that are not alphanumeric force the regex to fail.
 	assertEqual(dayFromSnapshotId("!@#$-abcdef01"), null, "symbol prefix → null");
@@ -127,20 +117,20 @@ console.log("\n--- dayFromSnapshotId: non-base36 prefix returns null ---");
 	assertEqual(dayFromSnapshotId("abc!def-abcdef01"), null, "mixed-valid prefix with symbol → null");
 }
 
-console.log("\n--- dayFromSnapshotId: zero timestamp returns null ---");
+s.section("dayFromSnapshotId: zero timestamp returns null");
 {
 	// parseInt("0", 36) === 0, which is not a valid creation time.
 	assertEqual(dayFromSnapshotId("0-abcdef01"), null, "ts=0 → null");
 }
 
-console.log("\n--- dayFromSnapshotId: negative timestamp returns null ---");
+s.section("dayFromSnapshotId: negative timestamp returns null");
 {
 	// "-1-abcdef01" has an empty prefix (hyphen at index 0), so the regex
 	// fails before any numeric parsing.
-	assert(dayFromSnapshotId("-1-abcdef01") === null, "leading hyphen (negative-looking) → null");
+	s.check(dayFromSnapshotId("-1-abcdef01") === null, "leading hyphen (negative-looking) → null");
 }
 
-console.log("\n--- dayFromSnapshotId: empty suffix returns null ---");
+s.section("dayFromSnapshotId: empty suffix returns null");
 {
 	// Regex requires [0-9a-f]{8,} after the hyphen.
 	assertEqual(dayFromSnapshotId("lkjhgfdsa-"), null, "hyphen with empty suffix → null");
@@ -148,16 +138,16 @@ console.log("\n--- dayFromSnapshotId: empty suffix returns null ---");
 	assertEqual(dayFromSnapshotId("lkjhgfdsa-abcdef0"), null, "suffix with 7 hex chars → null");
 	// Exactly 8 is the minimum; this should be valid.
 	const id8 = `${Date.now().toString(36)}-abcdef01`;
-	assert(dayFromSnapshotId(id8) !== null, "suffix with exactly 8 hex chars → valid");
+	s.check(dayFromSnapshotId(id8) !== null, "suffix with exactly 8 hex chars → valid");
 }
 
-console.log("\n--- dayFromSnapshotId: uppercase suffix hex returns null ---");
+s.section("dayFromSnapshotId: uppercase suffix hex returns null");
 {
 	// Suffix must be lowercase hex [0-9a-f]; uppercase letters fail the regex.
 	assertEqual(dayFromSnapshotId("lkjhgfdsa-ABCDEF01"), null, "uppercase hex suffix → null");
 }
 
-console.log("\n--- dayFromSnapshotId: overflowing timestamp returns null ---");
+s.section("dayFromSnapshotId: overflowing timestamp returns null");
 {
 	// A very long lowercase base-36 string produces a value > Number.MAX_SAFE_INTEGER.
 	// 36^11 ≈ 1.3e17 > MAX_SAFE_INTEGER (9e15).  Use 14 'z' chars to be safe.
@@ -169,7 +159,7 @@ console.log("\n--- dayFromSnapshotId: overflowing timestamp returns null ---");
 // getSnapshotPayload: operation count tests
 // ---------------------------------------------------------------------------
 
-console.log("\n--- getSnapshotPayload: exactly 2 bucket.get() calls, 0 list calls ---");
+s.section("getSnapshotPayload: exactly 2 bucket.get() calls, 0 list calls");
 {
 	let getCalls = 0;
 	let listCalls = 0;
@@ -194,7 +184,7 @@ console.log("\n--- getSnapshotPayload: exactly 2 bucket.get() calls, 0 list call
 
 	const result = await getSnapshotPayload(vaultId, snapshotId, bucket);
 
-	assert(result !== null, "result is not null for valid snapshot");
+	s.check(result !== null, "result is not null for valid snapshot");
 	assertEqual(getCalls, 2, "exactly 2 bucket.get() calls");
 	assertEqual(listCalls, 0, "zero bucket.list() calls");
 }
@@ -203,7 +193,7 @@ console.log("\n--- getSnapshotPayload: exactly 2 bucket.get() calls, 0 list call
 // getSnapshotPayload: hit / miss combinations
 // ---------------------------------------------------------------------------
 
-console.log("\n--- getSnapshotPayload: returns correct index and payload ---");
+s.section("getSnapshotPayload: returns correct index and payload");
 {
 	const vaultId = "vault-hit";
 	const snapshotId = snapshotIdForDate(new Date("2026-01-15T08:00:00.000Z"));
@@ -227,13 +217,13 @@ console.log("\n--- getSnapshotPayload: returns correct index and payload ---");
 
 	const result = await getSnapshotPayload(vaultId, snapshotId, bucket);
 
-	assert(result !== null, "result is not null");
+	s.check(result !== null, "result is not null");
 	assertEqual(result?.index.snapshotId, snapshotId, "index.snapshotId matches");
 	assertEqual(result?.index.vaultId, vaultId, "index.vaultId matches");
-	assert(result?.payload instanceof Uint8Array, "payload is Uint8Array");
+	s.check(result?.payload instanceof Uint8Array, "payload is Uint8Array");
 }
 
-console.log("\n--- getSnapshotPayload: missing index.json returns null ---");
+s.section("getSnapshotPayload: missing index.json returns null");
 {
 	let getCalls = 0;
 	const vaultId = "vault-miss-index";
@@ -250,11 +240,11 @@ console.log("\n--- getSnapshotPayload: missing index.json returns null ---");
 
 	const result = await getSnapshotPayload(vaultId, snapshotId, bucket);
 
-	assert(result === null, "null when index.json is absent");
+	s.check(result === null, "null when index.json is absent");
 	assertEqual(getCalls, 2, "still fetches both keys in parallel before checking");
 }
 
-console.log("\n--- getSnapshotPayload: missing crdt.bin.gz returns null ---");
+s.section("getSnapshotPayload: missing crdt.bin.gz returns null");
 {
 	let getCalls = 0;
 	const vaultId = "vault-miss-payload";
@@ -272,7 +262,7 @@ console.log("\n--- getSnapshotPayload: missing crdt.bin.gz returns null ---");
 
 	const result = await getSnapshotPayload(vaultId, snapshotId, bucket);
 
-	assert(result === null, "null when crdt.bin.gz is absent");
+	s.check(result === null, "null when crdt.bin.gz is absent");
 	assertEqual(getCalls, 2, "still fetches both keys in parallel before checking");
 }
 
@@ -280,7 +270,7 @@ console.log("\n--- getSnapshotPayload: missing crdt.bin.gz returns null ---");
 // getSnapshotPayload: malformed / invalid snapshotId — no bucket I/O
 // ---------------------------------------------------------------------------
 
-console.log("\n--- getSnapshotPayload: invalid base36 timestamp does not list bucket ---");
+s.section("getSnapshotPayload: invalid base36 timestamp does not list bucket");
 {
 	let listCalls = 0;
 
@@ -300,7 +290,7 @@ console.log("\n--- getSnapshotPayload: invalid base36 timestamp does not list bu
 // getSnapshotPayload: malformed / invalid snapshotId — no bucket I/O
 // ---------------------------------------------------------------------------
 
-console.log("\n--- getSnapshotPayload: uppercase prefix performs no bucket I/O ---");
+s.section("getSnapshotPayload: uppercase prefix performs no bucket I/O");
 {
 	let getCalls = 0;
 	let listCalls = 0;
@@ -310,12 +300,12 @@ console.log("\n--- getSnapshotPayload: uppercase prefix performs no bucket I/O -
 	} as unknown as R2Bucket;
 
 	const result = await getSnapshotPayload("vault", "UPPER-abcdef01", bucket);
-	assert(result === null, "uppercase prefix → null");
+	s.check(result === null, "uppercase prefix → null");
 	assertEqual(getCalls, 0, "uppercase prefix: 0 bucket.get() calls");
 	assertEqual(listCalls, 0, "uppercase prefix: 0 bucket.list() calls");
 }
 
-console.log("\n--- getSnapshotPayload: malformed snapshotId performs no bucket I/O ---");
+s.section("getSnapshotPayload: malformed snapshotId performs no bucket I/O");
 {
 	const cases: [string, string][] = [
 		["", "empty string"],
@@ -333,7 +323,7 @@ console.log("\n--- getSnapshotPayload: malformed snapshotId performs no bucket I
 			list: async () => { listCalls++; return { objects: [], truncated: false }; },
 		} as unknown as R2Bucket;
 		const result = await getSnapshotPayload("vault", id, bucket);
-		assert(result === null, `${label} → null`);
+		s.check(result === null, `${label} → null`);
 		assertEqual(getCalls, 0, `${label}: 0 bucket.get() calls`);
 		assertEqual(listCalls, 0, `${label}: 0 bucket.list() calls`);
 	}
@@ -343,7 +333,7 @@ console.log("\n--- getSnapshotPayload: malformed snapshotId performs no bucket I
 // Payload key schema: lock that crdt.bin.gz is fetched, not configured
 // ---------------------------------------------------------------------------
 
-console.log("\n--- getSnapshotPayload: fetches exactly index.json and crdt.bin.gz keys ---");
+s.section("getSnapshotPayload: fetches exactly index.json and crdt.bin.gz keys");
 {
 	const vaultId = "vault-key-shape";
 	const snapshotId = snapshotIdForDate(new Date("2026-06-01T09:00:00.000Z"));
@@ -364,11 +354,11 @@ console.log("\n--- getSnapshotPayload: fetches exactly index.json and crdt.bin.g
 	await getSnapshotPayload(vaultId, snapshotId, bucket);
 
 	assertEqual(fetchedKeys.length, 2, "exactly 2 keys fetched");
-	assert(
+	s.check(
 		fetchedKeys.some((k) => k === `v1/${vaultId}/snapshots/${expectedDay}/${snapshotId}/index.json`),
 		"index.json key has correct full path",
 	);
-	assert(
+	s.check(
 		fetchedKeys.some((k) => k === `v1/${vaultId}/snapshots/${expectedDay}/${snapshotId}/crdt.bin.gz`),
 		"crdt.bin.gz key has correct full path (schema-fixed; not derived from index)",
 	);
@@ -378,7 +368,7 @@ console.log("\n--- getSnapshotPayload: fetches exactly index.json and crdt.bin.g
 // listSnapshots: still uses bucket.list (unchanged)
 // ---------------------------------------------------------------------------
 
-console.log("\n--- listSnapshots: still calls bucket.list (unchanged contract) ---");
+s.section("listSnapshots: still calls bucket.list (unchanged contract)");
 {
 	let listCalls = 0;
 
@@ -391,17 +381,6 @@ console.log("\n--- listSnapshots: still calls bucket.list (unchanged contract) -
 	} as unknown as R2Bucket;
 
 	await listSnapshots("vault-list-test", bucket);
-	assert(listCalls >= 1, "listSnapshots still calls bucket.list at least once");
+	s.check(listCalls >= 1, "listSnapshots still calls bucket.list at least once");
 }
-
-// ---------------------------------------------------------------------------
-// Summary
-// ---------------------------------------------------------------------------
-
-console.log("\n──────────────────────────────────────────────────");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log("──────────────────────────────────────────────────");
-
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

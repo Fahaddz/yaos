@@ -30,28 +30,17 @@ import type {
 	FlightEventInput,
 	FlightPathEventInput,
 } from "../../src/observability/flightEnvelope";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string): void {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}`);
-	failed++;
-}
+const s = suite("controller-recovery-orchestration-amplifier");
 
 function assertEq<T>(actual: T, expected: T, msg: string): void {
-	if (actual === expected) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-		return;
-	}
-	console.error(`  FAIL  ${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`);
-	failed++;
+	s.check(
+		actual === expected,
+		actual === expected
+			? msg
+			: `${msg}\n        expected=${String(expected)}\n        actual=${String(actual)}`,
+	);
 }
 
 function makeTFile(path: string): TFile {
@@ -286,7 +275,7 @@ function buildFixture(initial: {
 // Test 0 — taxonomy bumped, new flight kind present
 // -------------------------------------------------------------------
 
-console.log("\n--- Test 0: taxonomy bumped to 10, recovery.amplification.quarantined defined ---");
+s.section("Test 0: taxonomy bumped to 10, recovery.amplification.quarantined defined");
 {
 	assertEq(FLIGHT_TAXONOMY_VERSION, 12, "FLIGHT_TAXONOMY_VERSION === 12");
 	assertEq(
@@ -300,7 +289,7 @@ console.log("\n--- Test 0: taxonomy bumped to 10, recovery.amplification.quarant
 // Scenario 1 — localOnly idle guard fires when editor was just typed
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario 1: localOnly idle guard defers when editor typed recently ---");
+s.section("Scenario 1: localOnly idle guard defers when editor typed recently");
 {
 	const fix = buildFixture({
 		path: "Notes/scenario-1.md",
@@ -316,8 +305,8 @@ console.log("\n--- Scenario 1: localOnly idle guard defers when editor typed rec
 	const localOnlySkip = skipped.find(
 		(e) => e.data.reason === "recent-editor-activity-local-only",
 	);
-	assert(localOnlySkip !== undefined, "recovery.skipped emitted with recent-editor-activity-local-only");
-	assert(
+	s.check(localOnlySkip !== undefined, "recovery.skipped emitted with recent-editor-activity-local-only");
+	s.check(
 		typeof localOnlySkip?.data.idleMs === "number" &&
 		(localOnlySkip!.data.idleMs as number) >= 0 &&
 		(localOnlySkip!.data.idleMs as number) < 3000,
@@ -347,12 +336,12 @@ console.log("\n--- Scenario 1: localOnly idle guard defers when editor typed rec
 	const applyStart = newEvents.find((e) => e.kind === FLIGHT_KIND.recoveryApplyStart);
 	const applyDone = newEvents.find((e) => e.kind === FLIGHT_KIND.recoveryApplyDone);
 	const repair = newEvents.find((e) => e.kind === FLIGHT_KIND.editorRepairApplied);
-	assert(decision !== undefined, "second pass: recovery.decision emitted");
-	assert(applyStart !== undefined, "second pass: recovery.apply.start emitted");
-	assert(applyDone !== undefined, "second pass: recovery.apply.done emitted");
+	s.check(decision !== undefined, "second pass: recovery.decision emitted");
+	s.check(applyStart !== undefined, "second pass: recovery.apply.start emitted");
+	s.check(applyDone !== undefined, "second pass: recovery.apply.done emitted");
 	// Healthy binding: repair must NOT be called. Reviewer item:
 	// "Stop unconditional editor repair unless binding health is bad."
-	assert(repair === undefined, "second pass: NO editor.repair.applied (binding healthy)");
+	s.check(repair === undefined, "second pass: NO editor.repair.applied (binding healthy)");
 	// recovery.decision now carries a binding-health snapshot for RCA.
 	assertEq(decision?.data.anyBindingUnhealthy, false, "second pass: anyBindingUnhealthy === false");
 
@@ -363,7 +352,7 @@ console.log("\n--- Scenario 1: localOnly idle guard defers when editor typed rec
 // Scenario 2 — monotonic-growth amplification quarantine on cycle 3
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario 2: monotonic-growth quarantine fires on cycle 3 ---");
+s.section("Scenario 2: monotonic-growth quarantine fires on cycle 3");
 {
 	const fix = buildFixture({
 		path: "Notes/scenario-2.md",
@@ -435,7 +424,7 @@ console.log("\n--- Scenario 2: monotonic-growth quarantine fires on cycle 3 ---"
 // Scenario 3 — fingerprint quarantine still fires on identical-diff repeat
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario 3: fingerprint quarantine still trips on its shape ---");
+s.section("Scenario 3: fingerprint quarantine still trips on its shape");
 {
 	const fix = buildFixture({
 		path: "Notes/scenario-3.md",
@@ -464,7 +453,7 @@ console.log("\n--- Scenario 3: fingerprint quarantine still trips on its shape -
 // Scenario 4 — pause via idle guard resets the amplification detector
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario 4: pause from idle guard resets the amplification detector ---");
+s.section("Scenario 4: pause from idle guard resets the amplification detector");
 {
 	const fix = buildFixture({
 		path: "Notes/scenario-4.md",
@@ -501,7 +490,7 @@ console.log("\n--- Scenario 4: pause from idle guard resets the amplification de
 		(e) => e.kind === FLIGHT_KIND.recoverySkipped &&
 			e.data.reason === "recent-editor-activity-local-only",
 	);
-	assert(pauseSkip !== undefined, "pause emitted recent-editor-activity-local-only skip");
+	s.check(pauseSkip !== undefined, "pause emitted recent-editor-activity-local-only skip");
 
 	// Drop the recent-editor-activity stub so the next call re-enters the
 	// recovery branch. The amplification history was cleared by the skip.
@@ -521,12 +510,12 @@ console.log("\n--- Scenario 4: pause from idle guard resets the amplification de
 	const finalRepair = finalEvents.find((e) => e.kind === FLIGHT_KIND.editorRepairApplied);
 	const finalAmpQuarantined = finalEvents.find((e) => e.kind === FLIGHT_KIND.recoveryAmplificationQuarantined);
 
-	assert(finalDecision !== undefined, "final cycle: recovery.decision emitted");
-	assert(finalApplyStart !== undefined, "final cycle: recovery.apply.start emitted");
-	assert(finalApplyDone !== undefined, "final cycle: recovery.apply.done emitted");
+	s.check(finalDecision !== undefined, "final cycle: recovery.decision emitted");
+	s.check(finalApplyStart !== undefined, "final cycle: recovery.apply.start emitted");
+	s.check(finalApplyDone !== undefined, "final cycle: recovery.apply.done emitted");
 	// Binding healthy → no repair (conditional-repair rule).
-	assert(finalRepair === undefined, "final cycle: NO editor.repair.applied (binding healthy)");
-	assert(finalAmpQuarantined === undefined, "final cycle: NO recovery.amplification.quarantined (history cleared)");
+	s.check(finalRepair === undefined, "final cycle: NO editor.repair.applied (binding healthy)");
+	s.check(finalAmpQuarantined === undefined, "final cycle: NO recovery.amplification.quarantined (history cleared)");
 
 	assertEq(fix.ytext.toString(), "z".repeat(60), "Y.Text equals final disk after recovery");
 }
@@ -535,7 +524,7 @@ console.log("\n--- Scenario 4: pause from idle guard resets the amplification de
 // Scenario 5 — unhealthy binding gets repaired
 // -------------------------------------------------------------------
 
-console.log("\n--- Scenario 5: unhealthy binding triggers editor.repair.applied ---");
+s.section("Scenario 5: unhealthy binding triggers editor.repair.applied");
 {
 	const fix = buildFixture({
 		path: "Notes/scenario-5.md",
@@ -552,15 +541,15 @@ console.log("\n--- Scenario 5: unhealthy binding triggers editor.repair.applied 
 	const applyDone = fix.captured.find((e) => e.kind === FLIGHT_KIND.recoveryApplyDone);
 	const repair = fix.captured.find((e) => e.kind === FLIGHT_KIND.editorRepairApplied);
 
-	assert(decision !== undefined, "unhealthy: recovery.decision emitted");
-	assert(applyDone !== undefined, "unhealthy: recovery.apply.done emitted");
+	s.check(decision !== undefined, "unhealthy: recovery.decision emitted");
+	s.check(applyDone !== undefined, "unhealthy: recovery.apply.done emitted");
 	// Unhealthy binding → repair IS called.
-	assert(repair !== undefined, "unhealthy binding: editor.repair.applied emitted");
+	s.check(repair !== undefined, "unhealthy binding: editor.repair.applied emitted");
 	assertEq(decision?.data.anyBindingUnhealthy, true, "anyBindingUnhealthy === true");
 	const health = decision?.data.bindingHealth as Array<{ healthy: boolean; reasons: string[] }>;
-	assert(Array.isArray(health) && health.length === 1, "bindingHealth array has one entry");
-	assert(health[0]?.healthy === false, "bindingHealth[0].healthy === false");
-	assert(health[0]?.reasons.length > 0, "bindingHealth[0].reasons populated");
+	s.check(Array.isArray(health) && health.length === 1, "bindingHealth array has one entry");
+	s.check(health[0]?.healthy === false, "bindingHealth[0].healthy === false");
+	s.check(health[0]?.reasons.length > 0, "bindingHealth[0].reasons populated");
 
 	// Now flip to healthy and force another recovery — repair must NOT
 	// be called this time even though content recovery applies.
@@ -574,16 +563,8 @@ console.log("\n--- Scenario 5: unhealthy binding triggers editor.repair.applied 
 	const newDecision = newEvents.find((e) => e.kind === FLIGHT_KIND.recoveryDecision);
 	const newApplyDone = newEvents.find((e) => e.kind === FLIGHT_KIND.recoveryApplyDone);
 	const newRepair = newEvents.find((e) => e.kind === FLIGHT_KIND.editorRepairApplied);
-	assert(newDecision !== undefined, "healthy pass: recovery.decision emitted");
-	assert(newApplyDone !== undefined, "healthy pass: recovery.apply.done emitted");
-	assert(newRepair === undefined, "healthy pass: NO editor.repair.applied");
+	s.check(newDecision !== undefined, "healthy pass: recovery.decision emitted");
+	s.check(newApplyDone !== undefined, "healthy pass: recovery.apply.done emitted");
+	s.check(newRepair === undefined, "healthy pass: NO editor.repair.applied");
 }
-
-// -------------------------------------------------------------------
-// Summary
-// -------------------------------------------------------------------
-
-console.log(`\nResults: ${passed} passed, ${failed} failed`);
-if (failed > 0) {
-	process.exit(1);
-}
+await s.done();

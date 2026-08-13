@@ -18,23 +18,13 @@
 import * as Y from "yjs";
 import { UpdateTracker } from "../../src/sync/updateTracker";
 import { deriveSyncFacts, type SyncFactsSnapshot, type SyncFacts } from "../../src/runtime/connectionFacts";
+import { suite } from "../harness.ts";
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-	if (condition) {
-		console.log(`  PASS  ${msg}`);
-		passed++;
-	} else {
-		console.error(`  FAIL  ${msg}`);
-		failed++;
-	}
-}
+const s = suite("sync-facts");
 
 // ── UpdateTracker ─────────────────────────────────────────────────────────────
 
-console.log("\n--- Test 1: local update while connected sets lastLocalUpdateAt and lastLocalUpdateWhileConnectedAt ---");
+s.section("Test 1: local update while connected sets lastLocalUpdateAt and lastLocalUpdateWhileConnectedAt");
 {
 	const doc = new Y.Doc();
 	const fakeProvider = { __sentinel: "provider" };
@@ -48,16 +38,16 @@ console.log("\n--- Test 1: local update while connected sets lastLocalUpdateAt a
 		text.insert(0, "hello");
 	}, "local-origin");
 
-	assert(tracker.lastLocalUpdateAt !== null, "lastLocalUpdateAt set after local update");
-	assert(tracker.lastLocalUpdateWhileConnectedAt !== null, "lastLocalUpdateWhileConnectedAt set when connected");
-	assert(tracker.lastRemoteUpdateAt === null, "lastRemoteUpdateAt not set");
-	assert(
+	s.check(tracker.lastLocalUpdateAt !== null, "lastLocalUpdateAt set after local update");
+	s.check(tracker.lastLocalUpdateWhileConnectedAt !== null, "lastLocalUpdateWhileConnectedAt set when connected");
+	s.check(tracker.lastRemoteUpdateAt === null, "lastRemoteUpdateAt not set");
+	s.check(
 		tracker.lastLocalUpdateAt === tracker.lastLocalUpdateWhileConnectedAt,
 		"lastLocalUpdateWhileConnectedAt equals lastLocalUpdateAt when connected",
 	);
 }
 
-console.log("\n--- Test 2: local update while offline sets lastLocalUpdateAt but NOT lastLocalUpdateWhileConnectedAt ---");
+s.section("Test 2: local update while offline sets lastLocalUpdateAt but NOT lastLocalUpdateWhileConnectedAt");
 {
 	const doc = new Y.Doc();
 	const fakeProvider = { __sentinel: "provider" };
@@ -71,11 +61,11 @@ console.log("\n--- Test 2: local update while offline sets lastLocalUpdateAt but
 		text.insert(0, "offline edit");
 	}, "local-origin");
 
-	assert(tracker.lastLocalUpdateAt !== null, "lastLocalUpdateAt set after offline edit");
-	assert(tracker.lastLocalUpdateWhileConnectedAt === null, "lastLocalUpdateWhileConnectedAt null when offline");
+	s.check(tracker.lastLocalUpdateAt !== null, "lastLocalUpdateAt set after offline edit");
+	s.check(tracker.lastLocalUpdateWhileConnectedAt === null, "lastLocalUpdateWhileConnectedAt null when offline");
 }
 
-console.log("\n--- Test 3: remote update (provider origin) sets lastRemoteUpdateAt only ---");
+s.section("Test 3: remote update (provider origin) sets lastRemoteUpdateAt only");
 {
 	const doc = new Y.Doc();
 	const fakeProvider = { __sentinel: "provider" };
@@ -93,12 +83,12 @@ console.log("\n--- Test 3: remote update (provider origin) sets lastRemoteUpdate
 
 	Y.applyUpdate(doc, update, fakeProvider);
 
-	assert(tracker.lastRemoteUpdateAt !== null, "lastRemoteUpdateAt set after remote update");
-	assert(tracker.lastLocalUpdateAt === null, "lastLocalUpdateAt not set for remote update");
-	assert(tracker.lastLocalUpdateWhileConnectedAt === null, "lastLocalUpdateWhileConnectedAt not set for remote update");
+	s.check(tracker.lastRemoteUpdateAt !== null, "lastRemoteUpdateAt set after remote update");
+	s.check(tracker.lastLocalUpdateAt === null, "lastLocalUpdateAt not set for remote update");
+	s.check(tracker.lastLocalUpdateWhileConnectedAt === null, "lastLocalUpdateWhileConnectedAt not set for remote update");
 }
 
-console.log("\n--- Test 4: persistence-origin updates are ignored ---");
+s.section("Test 4: persistence-origin updates are ignored");
 {
 	const doc = new Y.Doc();
 	const fakeProvider = { __sentinel: "provider" };
@@ -117,12 +107,12 @@ console.log("\n--- Test 4: persistence-origin updates are ignored ---");
 
 	Y.applyUpdate(doc, update, fakePersistence);
 
-	assert(tracker.lastLocalUpdateAt === null, "IDB cache load does not set lastLocalUpdateAt");
-	assert(tracker.lastLocalUpdateWhileConnectedAt === null, "IDB cache load does not set lastLocalUpdateWhileConnectedAt");
-	assert(tracker.lastRemoteUpdateAt === null, "IDB cache load does not set lastRemoteUpdateAt");
+	s.check(tracker.lastLocalUpdateAt === null, "IDB cache load does not set lastLocalUpdateAt");
+	s.check(tracker.lastLocalUpdateWhileConnectedAt === null, "IDB cache load does not set lastLocalUpdateWhileConnectedAt");
+	s.check(tracker.lastRemoteUpdateAt === null, "IDB cache load does not set lastRemoteUpdateAt");
 }
 
-console.log("\n--- Test 5: lastLocalUpdateWhileConnectedAt only updates when connected at update time ---");
+s.section("Test 5: lastLocalUpdateWhileConnectedAt only updates when connected at update time");
 {
 	const doc = new Y.Doc();
 	const fakeProvider = { __sentinel: "provider" };
@@ -135,13 +125,13 @@ console.log("\n--- Test 5: lastLocalUpdateWhileConnectedAt only updates when con
 
 	// Offline edit
 	doc.transact(() => { text.insert(0, "offline"); }, "edit-1");
-	assert(tracker.lastLocalUpdateWhileConnectedAt === null, "no lastLocalUpdateWhileConnectedAt after offline edit");
+	s.check(tracker.lastLocalUpdateWhileConnectedAt === null, "no lastLocalUpdateWhileConnectedAt after offline edit");
 
 	// Go online, make another edit
 	connected = true;
 	doc.transact(() => { text.insert(7, " online"); }, "edit-2");
-	assert(tracker.lastLocalUpdateWhileConnectedAt !== null, "lastLocalUpdateWhileConnectedAt set after online edit");
-	assert(tracker.lastLocalUpdateAt! >= tracker.lastLocalUpdateWhileConnectedAt!, "lastLocalUpdateAt >= lastLocalUpdateWhileConnectedAt");
+	s.check(tracker.lastLocalUpdateWhileConnectedAt !== null, "lastLocalUpdateWhileConnectedAt set after online edit");
+	s.check(tracker.lastLocalUpdateAt! >= tracker.lastLocalUpdateWhileConnectedAt!, "lastLocalUpdateAt >= lastLocalUpdateWhileConnectedAt");
 }
 
 // ── deriveSyncFacts ────────────────────────────────────────────────────────────
@@ -159,50 +149,50 @@ function makeSnapshot(overrides: Partial<SyncFactsSnapshot> = {}): SyncFactsSnap
 	};
 }
 
-console.log("\n--- Test 6: connected → authAccepted=true, serverReachable=true, websocketOpen=true ---");
+s.section("Test 6: connected → authAccepted=true, serverReachable=true, websocketOpen=true");
 {
 	const facts = deriveSyncFacts(makeSnapshot({ connected: true }), "online");
-	assert(facts.websocketOpen === true, "websocketOpen is true");
-	assert(facts.authAccepted === true, "authAccepted is true when connected");
-	assert(facts.serverReachable === true, "serverReachable is true when connected");
+	s.check(facts.websocketOpen === true, "websocketOpen is true");
+	s.check(facts.authAccepted === true, "authAccepted is true when connected");
+	s.check(facts.serverReachable === true, "serverReachable is true when connected");
 	// pendingLocalCount is ALWAYS null — "connected" does not prove pending = 0.
-	assert(facts.pendingLocalCount === null, "pendingLocalCount is null even when connected (no server ack)");
-	assert(facts.headlineState === "online", "headlineState matches input");
+	s.check(facts.pendingLocalCount === null, "pendingLocalCount is null even when connected (no server ack)");
+	s.check(facts.headlineState === "online", "headlineState matches input");
 }
 
-console.log("\n--- Test 7: fatal auth unauthorized → authAccepted=false, serverReachable=true ---");
+s.section("Test 7: fatal auth unauthorized → authAccepted=false, serverReachable=true");
 {
 	const facts = deriveSyncFacts(
 		makeSnapshot({ fatalAuthError: true, fatalAuthCode: "unauthorized" }),
 		"auth_failed",
 	);
-	assert(facts.websocketOpen === false, "websocketOpen is false");
-	assert(facts.authAccepted === false, "authAccepted is false for explicit rejection");
-	assert(facts.serverReachable === true, "serverReachable is true (server responded with rejection)");
-	assert(facts.lastAuthRejectCode === "unauthorized", "lastAuthRejectCode captured");
-	assert(facts.pendingLocalCount === null, "pendingLocalCount is null (not connected)");
+	s.check(facts.websocketOpen === false, "websocketOpen is false");
+	s.check(facts.authAccepted === false, "authAccepted is false for explicit rejection");
+	s.check(facts.serverReachable === true, "serverReachable is true (server responded with rejection)");
+	s.check(facts.lastAuthRejectCode === "unauthorized", "lastAuthRejectCode captured");
+	s.check(facts.pendingLocalCount === null, "pendingLocalCount is null (not connected)");
 }
 
-console.log("\n--- Test 8: not connected, no auth error → serverReachable=null, authAccepted=null ---");
+s.section("Test 8: not connected, no auth error → serverReachable=null, authAccepted=null");
 {
 	const facts = deriveSyncFacts(makeSnapshot(), "offline");
-	assert(facts.serverReachable === null, "serverReachable is null (unknown — no connection, no auth error)");
-	assert(facts.authAccepted === null, "authAccepted is null (unknown)");
-	assert(facts.websocketOpen === false, "websocketOpen is false");
-	assert(facts.pendingLocalCount === null, "pendingLocalCount is null");
+	s.check(facts.serverReachable === null, "serverReachable is null (unknown — no connection, no auth error)");
+	s.check(facts.authAccepted === null, "authAccepted is null (unknown)");
+	s.check(facts.websocketOpen === false, "websocketOpen is false");
+	s.check(facts.pendingLocalCount === null, "pendingLocalCount is null");
 }
 
-console.log("\n--- Test 9: auth server_misconfigured → authAccepted=false, serverReachable=true ---");
+s.section("Test 9: auth server_misconfigured → authAccepted=false, serverReachable=true");
 {
 	const facts = deriveSyncFacts(
 		makeSnapshot({ fatalAuthError: true, fatalAuthCode: "server_misconfigured" }),
 		"auth_failed",
 	);
-	assert(facts.authAccepted === false, "authAccepted false for server_misconfigured");
-	assert(facts.serverReachable === true, "serverReachable true — server did respond");
+	s.check(facts.authAccepted === false, "authAccepted false for server_misconfigured");
+	s.check(facts.serverReachable === true, "serverReachable true — server did respond");
 }
 
-console.log("\n--- Test 10: update_required → authAccepted=true (auth passed, schema blocked) ---");
+s.section("Test 10: update_required → authAccepted=true (auth passed, schema blocked)");
 {
 	// update_required means the server checked credentials first, then rejected the
 	// connection for schema/version reasons. Auth itself was accepted. This is a
@@ -212,12 +202,12 @@ console.log("\n--- Test 10: update_required → authAccepted=true (auth passed, 
 		makeSnapshot({ fatalAuthError: true, fatalAuthCode: "update_required" }),
 		"server_update_required",
 	);
-	assert(facts.authAccepted === true, "authAccepted is true for update_required (auth passed, schema blocked)");
-	assert(facts.serverReachable === true, "serverReachable true — server did respond");
-	assert(facts.lastAuthRejectCode === "update_required", "reject code is captured");
+	s.check(facts.authAccepted === true, "authAccepted is true for update_required (auth passed, schema blocked)");
+	s.check(facts.serverReachable === true, "serverReachable true — server did respond");
+	s.check(facts.lastAuthRejectCode === "update_required", "reject code is captured");
 }
 
-console.log("\n--- Test 11: update timestamps flow through deriveSyncFacts ---");
+s.section("Test 11: update timestamps flow through deriveSyncFacts");
 {
 	const now = Date.now();
 	const facts = deriveSyncFacts(
@@ -229,20 +219,15 @@ console.log("\n--- Test 11: update timestamps flow through deriveSyncFacts ---")
 		}),
 		"online",
 	);
-	assert(facts.lastLocalUpdateAt === now - 5000, "lastLocalUpdateAt passed through");
-	assert(facts.lastLocalUpdateWhileConnectedAt === now - 5000, "lastLocalUpdateWhileConnectedAt passed through");
-	assert(facts.lastRemoteUpdateAt === now - 3000, "lastRemoteUpdateAt passed through");
-	assert(facts.pendingLocalCount === null, "pendingLocalCount is null (no server ack mechanism)");
+	s.check(facts.lastLocalUpdateAt === now - 5000, "lastLocalUpdateAt passed through");
+	s.check(facts.lastLocalUpdateWhileConnectedAt === now - 5000, "lastLocalUpdateWhileConnectedAt passed through");
+	s.check(facts.lastRemoteUpdateAt === now - 3000, "lastRemoteUpdateAt passed through");
+	s.check(facts.pendingLocalCount === null, "pendingLocalCount is null (no server ack mechanism)");
 }
 
-console.log("\n--- Test 12: pendingBlobUploads flows through deriveSyncFacts ---");
+s.section("Test 12: pendingBlobUploads flows through deriveSyncFacts");
 {
 	const facts = deriveSyncFacts(makeSnapshot({ pendingBlobUploads: 3 }), "offline");
-	assert(facts.pendingBlobUploads === 3, "pendingBlobUploads passed through");
+	s.check(facts.pendingBlobUploads === 3, "pendingBlobUploads passed through");
 }
-
-console.log(`\n${"─".repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(50)}\n`);
-
-process.exit(failed > 0 ? 1 : 0);
+await s.done();
