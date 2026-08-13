@@ -150,7 +150,8 @@ s.section("Test 6: no raw string literals as applyDiffToYText origin in src/ (FU
 		const source = readFileSync(file, "utf8");
 		let m: RegExpExecArray | null;
 		while ((m = RAW_ORIGIN_RE.exec(source)) !== null) {
-			violations.push({ file: file.replace(ROOT + "/", ""), origin: m[1] });
+			// Group 1 is mandatory in RAW_ORIGIN_RE, so a match always carries it.
+			violations.push({ file: file.replace(ROOT + "/", ""), origin: m[1]! });
 		}
 	}
 

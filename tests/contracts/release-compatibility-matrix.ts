@@ -5,11 +5,10 @@ import type { ServerCapabilities } from "../../src/sync/serverCapabilities";
 import type { UpdateManifest } from "../../src/update/updateManifest";
 import { SCHEMA_VERSION } from "../../src/sync/schema";
 import {
-	SERVER_MAX_SCHEMA_VERSION,
 	SERVER_MIN_COMPATIBLE_PLUGIN_VERSION_FOR_SERVER,
 	SERVER_MIN_COMPATIBLE_SERVER_VERSION_FOR_PLUGIN,
-	SERVER_MIN_SCHEMA_VERSION,
 	SERVER_RECOMMENDED_PLUGIN_VERSION,
+	SERVER_SCHEMA_VERSION,
 	SERVER_VERSION,
 } from "../../server/src/version";
 import { readSource, repoRoot, suite } from "../harness.ts";
@@ -49,14 +48,10 @@ s.check(parseVersion(SERVER_VERSION) !== null, "server version is numeric semver
 s.check(atLeast(SERVER_VERSION, SERVER_MIN_COMPATIBLE_SERVER_VERSION_FOR_PLUGIN), "current server satisfies the plugin's advertised server floor");
 s.check(atLeast(packageJson.version, SERVER_MIN_COMPATIBLE_PLUGIN_VERSION_FOR_SERVER), "current plugin satisfies the server's advertised plugin floor");
 s.check(atLeast(packageJson.version, SERVER_RECOMMENDED_PLUGIN_VERSION), "current plugin meets the server recommendation");
-s.check(
-	SERVER_MIN_SCHEMA_VERSION === SERVER_MAX_SCHEMA_VERSION,
-	"server publishes a single pinned schema version (min === max)",
-);
-s.check(SERVER_MAX_SCHEMA_VERSION === SCHEMA_VERSION, "the pinned server schema equals the current plugin schema");
+s.check(SERVER_SCHEMA_VERSION === SCHEMA_VERSION, "the pinned server schema equals the current plugin schema");
 for (const version of [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1]) {
 	s.check(
-		version !== SERVER_MIN_SCHEMA_VERSION && version !== SERVER_MAX_SCHEMA_VERSION,
+		version !== SERVER_SCHEMA_VERSION,
 		`schema v${version} is not admitted by the pinned server`,
 	);
 }
@@ -82,7 +77,6 @@ s.section("Emitted release artifact contract");
 		"emitted manifest has the server's plugin floor",
 	);
 	s.check(emittedManifest.releaseType === "compatible", "emitted manifest reflects the non-migration release type");
-	s.check(emittedManifest.migrationRequired === false, "emitted manifest marks the release as non-migrating");
 	s.check(emittedManifest.autoUpdateEligible === false, "emitted manifest disables unattended updates");
 	s.check(emittedManifest.upgradeOrder === "either", "emitted manifest declares either upgrade order");
 	s.check(
@@ -102,7 +96,6 @@ s.section("Emitted release artifact contract");
 	) as {
 		serverVersion: string;
 		pluginVersion: string;
-		migrationRequired: boolean;
 		protectedFiles: string[];
 		updateOwnedPaths: string[];
 	};
@@ -111,7 +104,6 @@ s.section("Emitted release artifact contract");
 		.split("\n");
 	s.check(embeddedManifest.serverVersion === SERVER_VERSION, "server archive manifest has the current server version");
 	s.check(embeddedManifest.pluginVersion === manifest.version, "server archive manifest has the current plugin version");
-	s.check(embeddedManifest.migrationRequired === false, "server archive manifest matches migration policy");
 	s.check(
 		JSON.stringify(embeddedManifest.protectedFiles) === JSON.stringify(["wrangler.toml"]),
 		"server archive protects only operator-owned wrangler.toml",
@@ -141,9 +133,7 @@ s.section("Runtime compatibility decision matrix");
 		serverVersion: SERVER_VERSION,
 		minPluginVersion: null,
 		recommendedPluginVersion: SERVER_RECOMMENDED_PLUGIN_VERSION,
-		minSchemaVersion: SERVER_MIN_SCHEMA_VERSION,
-		maxSchemaVersion: SERVER_MAX_SCHEMA_VERSION,
-		migrationRequired: false,
+		schemaVersion: SERVER_SCHEMA_VERSION,
 		updateProvider: null,
 		updateRepoUrl: null,
 	};
@@ -151,7 +141,6 @@ s.section("Runtime compatibility decision matrix");
 		latestServerVersion: SERVER_VERSION,
 		latestPluginVersion: manifest.version,
 		releaseType: "compatible",
-		migrationRequired: false,
 		autoUpdateEligible: false,
 		minCompatibleServerVersionForPlugin: SERVER_MIN_COMPATIBLE_SERVER_VERSION_FOR_PLUGIN,
 		minCompatiblePluginVersionForServer: SERVER_MIN_COMPATIBLE_PLUGIN_VERSION_FOR_SERVER,
@@ -227,13 +216,13 @@ s.section("Runtime compatibility decision matrix");
 
 	const blockedBelowPin = evaluateCompatibility({
 		pluginVersion: manifest.version,
-		schemaVersion: SERVER_MIN_SCHEMA_VERSION - 1,
+		schemaVersion: SERVER_SCHEMA_VERSION - 1,
 	});
 	s.check(blockedBelowPin.blocked, "local schema one below the pinned server schema is blocked at runtime");
 
 	const blockedAbovePin = evaluateCompatibility({
 		pluginVersion: manifest.version,
-		schemaVersion: SERVER_MAX_SCHEMA_VERSION + 1,
+		schemaVersion: SERVER_SCHEMA_VERSION + 1,
 	});
 	s.check(blockedAbovePin.blocked, "local schema one above the pinned server schema is blocked at runtime");
 

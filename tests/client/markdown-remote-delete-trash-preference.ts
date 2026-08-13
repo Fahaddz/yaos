@@ -118,7 +118,7 @@ function buildFixture(opts: FixtureOptions): Fixture {
 		stat: { mtime: number; size: number };
 	};
 	file.path = opts.path;
-	file.stat = { mtime: 1, size: opts.diskContent.length };
+	file.stat = { ctime: 1, mtime: 1, size: opts.diskContent.length };
 
 	const files = new Map<string, TFile & { path: string; stat: { mtime: number; size: number } }>();
 	files.set(opts.path, file);

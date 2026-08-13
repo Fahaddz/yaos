@@ -38,14 +38,16 @@ const traces: Array<{ event: string; details: Record<string, unknown> | undefine
 
 const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
 file.path = path;
-file.stat = { mtime: 1, size: diskContent.length };
+file.stat = { ctime: 1, mtime: 1, size: diskContent.length };
 
-const view = new MarkdownView() as MarkdownView & {
-	file: TFile;
-	editor: { getValue(): string };
-};
-view.file = file;
-view.editor = { getValue: () => baseline };
+// `new MarkdownView()` needs a WorkspaceLeaf this fixture has no way to build,
+// and the deferral paths under test only read `view.file` and
+// `view.editor.getValue()` — so the view is a prototype instance (instanceof
+// still holds for the runtime mock) carrying exactly those two members.
+const view = Object.assign(Object.create(MarkdownView.prototype) as MarkdownView, {
+	file,
+	editor: { getValue: (): string => baseline },
+});
 
 const doc = new Y.Doc();
 const ytext = doc.getText("content");

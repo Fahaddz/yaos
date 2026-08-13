@@ -19,7 +19,7 @@ s.section("Teardown lifecycle");
 	);
 
 	let teardownRuns = 0;
-	let releaseTeardown: (() => void) | null = null;
+	let releaseTeardown!: () => void;
 	const teardownBarrier = new Promise<void>((resolve) => {
 		releaseTeardown = resolve;
 	});
@@ -41,7 +41,7 @@ s.section("Teardown lifecycle");
 		"closing invalidates an in-flight initialization generation",
 	);
 
-	releaseTeardown?.();
+	releaseTeardown();
 	await first;
 	s.check(lifecycle.beginTeardown(async () => { teardownRuns++; }) === first, "settled teardown promise remains retained");
 	s.check(teardownRuns === 1, "retained settled promise still prevents duplicate teardown");
@@ -57,7 +57,7 @@ s.section("Teardown lifecycle");
 {
 	const lifecycle = new RuntimeTeardownCoordinator();
 	const order: string[] = [];
-	let releaseStartup: (() => void) | null = null;
+	let releaseStartup!: () => void;
 	const startupBlocked = new Promise<void>((resolve) => {
 		releaseStartup = resolve;
 	});
@@ -77,7 +77,7 @@ s.section("Teardown lifecycle");
 	await lifecycle.beginTeardown(async () => {
 		order.push("teardown-complete");
 	});
-	releaseStartup?.();
+	releaseStartup();
 	await staleStartup;
 	s.check(
 		order.join(",") === "startup-waiting,teardown-complete,startup-aborted",

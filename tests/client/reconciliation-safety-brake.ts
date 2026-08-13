@@ -15,6 +15,19 @@ function makeTFile(path: string): TFile {
 	return file;
 }
 
+type BoundMarkdownView = MarkdownView & { file: TFile; editor: { getValue(): string } };
+
+// `new MarkdownView()` requires a WorkspaceLeaf that this fixture has no way to
+// build, and the recovery paths under test only read `view.file` and
+// `view.editor.getValue()` — so the view is a prototype instance (instanceof
+// still holds for the runtime mock) carrying exactly those two members.
+function makeBoundView(file: TFile, getValue: () => string): BoundMarkdownView {
+	return Object.assign(Object.create(MarkdownView.prototype), {
+		file,
+		editor: { getValue },
+	});
+}
+
 s.section("Test 1: updateIndex removes blocked paths from the index");
 {
 	const index: DiskIndex = {
@@ -29,8 +42,8 @@ s.section("Test 1: updateIndex removes blocked paths from the index");
 
 	const next = updateIndex(index, stats, { excludePaths: ["blocked.md"] });
 	s.check(!("blocked.md" in next), "blocked path is unindexed, not preserved");
-	s.check(next["clean.md"].mtime === 2, "unblocked path advances mtime");
-	s.check(next["new.md"].mtime === 2, "new unblocked path is indexed");
+	s.check(next["clean.md"]?.mtime === 2, "unblocked path advances mtime");
+	s.check(next["new.md"]?.mtime === 2, "new unblocked path is indexed");
 }
 
 s.section("Test 2: same-stat excluded paths are still unindexed");
@@ -246,12 +259,7 @@ s.section("Test 5: bound recovery force-replaces when CRDT changes after authori
 	ytext.insert(0, "abcX");
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => diskContent };
+	const view = makeBoundView(file, () => diskContent);
 
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	const transactionOrigins: unknown[] = [];
@@ -354,12 +362,7 @@ s.section("Test 6: bound ambiguous divergence creates a conflict artifact");
 	ytext.insert(0, crdtContent);
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => editorContent };
+	const view = makeBoundView(file, () => editorContent);
 
 	const createdFiles = new Map<string, string>();
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
@@ -464,12 +467,7 @@ s.section("Test 7: repeated identical recovery fingerprint is quarantined");
 	ytext.insert(0, crdtContent);
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => diskContent };
+	const view = makeBoundView(file, () => diskContent);
 
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let diskIndex: DiskIndex = {};
@@ -569,12 +567,7 @@ s.section("Test 8: successful recovery clears quarantine fingerprint");
 	ytext.insert(0, "stale");
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => "disk version A" };
+	const view = makeBoundView(file, () => "disk version A");
 
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let diskIndex: DiskIndex = {};
@@ -673,12 +666,7 @@ s.section("Test 9: convergence failure does not create infinite conflict artifac
 	ytext.insert(0, crdtContent);
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => editorContent };
+	const view = makeBoundView(file, () => editorContent);
 
 	const createdFiles = new Map<string, string>();
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
@@ -790,12 +778,7 @@ s.section("Test 10: second reconcile after successful convergence does not creat
 	ytext.insert(0, crdtContent);
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => editorContent };
+	const view = makeBoundView(file, () => editorContent);
 
 	const createdFiles = new Map<string, string>();
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
@@ -895,12 +878,7 @@ s.section("Test 11: artifact creation failure does NOT trigger convergence");
 	ytext.insert(0, crdtContent);
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => editorContent };
+	const view = makeBoundView(file, () => editorContent);
 
 	const traces: Array<{ source: string; msg: string; details?: Record<string, unknown> }> = [];
 	let diskIndex: DiskIndex = {};

@@ -74,7 +74,7 @@ export class TraceRateLimiter {
 	private compactWindow(now: number): void {
 		const cutoff = now - this.windowMs;
 		// Sliding window is small (bounded by maxPerWindow); shift is fine.
-		while (this.admitted.length > 0 && this.admitted[0] < cutoff) {
+		while (this.admitted.length > 0 && this.admitted[0]! < cutoff) {
 			this.admitted.shift();
 		}
 	}

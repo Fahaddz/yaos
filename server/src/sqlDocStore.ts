@@ -183,7 +183,7 @@ export class SqlDocStore {
 
 		this.snapshotByteCount = sizes?.total ?? 0;
 		let snapshot: Uint8Array | null = null;
-		if ((sizes?.cnt ?? 0) > 0) {
+		if (sizes && sizes.cnt > 0) {
 			snapshot = new Uint8Array(sizes.total);
 			let offset = 0;
 			const cursor = this.storage.sql.exec<{ data: ArrayBuffer }>(

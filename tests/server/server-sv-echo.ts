@@ -99,8 +99,9 @@ s.section("Test 5: trySendSvEcho frames custom message and reports bytes");
 	s.check(result.kind === "baseline", "send helper preserves kind");
 	s.check(result.bytes > 0, "send helper reports framed message bytes");
 	s.check(sent.length === 1, "send helper sends exactly one message");
-	s.check(sent[0]?.startsWith("__YPS:"), "send helper uses y-partyserver custom-message prefix");
-	s.check(parseSvEchoMessage(sent[0]?.slice("__YPS:".length) ?? "") !== null, "framed payload parses after prefix removal");
+	const framed = sent[0] ?? "";
+	s.check(framed.startsWith("__YPS:"), "send helper uses y-partyserver custom-message prefix");
+	s.check(parseSvEchoMessage(framed.slice("__YPS:".length)) !== null, "framed payload parses after prefix removal");
 
 	doc.destroy();
 }

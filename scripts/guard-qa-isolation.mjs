@@ -3,8 +3,11 @@
 /**
  * guard-qa-isolation.mjs
  *
- * Verifies that src/sync/, src/runtime/, and src/telemetry/ do not import
- * QA/scenario/Puppeteer machinery directly. The fence rules:
+ * The single src/ -> qa/ fence, plus the finer-grained rules for the sync,
+ * runtime and telemetry trees. The fence rules:
+ *
+ *   No file under src/ may import anything under qa/, in any import form
+ *   (named, side-effect, or dynamic).
  *
  *   Product sync/runtime code must NOT import:
  *   - qaDebugApi
@@ -37,6 +40,16 @@ const TELEMETRY_FORBIDDEN = [
 	/from\s+["'].*qaDebugApi/,
 	/from\s+["'].*yaosUnsafeQaPort/,
 	/import.*YaosUnsafeQaPort/,
+];
+
+// The whole-of-src fence: no file under src/ may import the qa/ tree at all,
+// by any import form. This is the only src -> qa check in the repo; it used to
+// be duplicated inside guard-production-bundles.mjs, which checked bundle
+// output and source trees at once and matched `from "..."` only — so a
+// side-effect `import "../../qa/x"` slipped through it.
+const SRC_QA_IMPORT_FORBIDDEN = [
+	/(?:from|import)\s+["'][^"']*\/qa\//,
+	/import\s*\(\s*["'][^"']*\/qa\//,
 ];
 
 // No known exceptions remain — QA offline simulation is now entirely inside
@@ -72,7 +85,7 @@ function scanDir(dir, forbiddenPatterns) {
 		}
 		if (stat.isDirectory()) {
 			scanDir(fullPath, forbiddenPatterns);
-		} else if (entry.endsWith(".ts")) {
+		} else if (entry.endsWith(".ts") || entry.endsWith(".js")) {
 			checkFile(fullPath, forbiddenPatterns);
 		}
 	}
@@ -92,15 +105,17 @@ function checkFile(filePath, forbiddenPatterns) {
 	}
 }
 
+scanDir("src", SRC_QA_IMPORT_FORBIDDEN);
 scanDir("src/sync", SYNC_RUNTIME_FORBIDDEN);
 scanDir("src/runtime", SYNC_RUNTIME_FORBIDDEN);
 scanDir("src/telemetry", TELEMETRY_FORBIDDEN);
 
 if (violations > 0) {
 	console.error(`\nFAIL: ${violations} QA isolation violation(s).`);
+	console.error("  src/ must not import from qa/.");
 	console.error("  src/sync/ and src/runtime/ must not import QA machinery.");
 	console.error("  src/telemetry/ must not import Puppeteer/mutation harness.");
 	process.exit(1);
 } else {
-	console.log("PASS: src/sync/, src/runtime/, and src/telemetry/ are QA-isolated.");
+	console.log("PASS: src/ does not import from qa/; src/sync/, src/runtime/, and src/telemetry/ are QA-isolated.");
 }

@@ -16,13 +16,15 @@
 // name a path that has since been deleted or renamed.
 //
 // ONE RUNNER FOR ALL. Every suite runs under `node --import jiti/register`.
-// jiti passes plain JavaScript through untouched, so there is no reason to
-// distinguish .mjs suites from .ts suites — the old runner's JITI/NODE column
-// was noise, and had already drifted into being inconsistent.
+// ONE DIALECT FOR ALL. Suites are TypeScript, full stop. tests/run-suites.mjs
+// is the single plain-JS file in tests/ because it is the bootstrap that does
+// the spawning. The old .ts/.mjs split was generational rather than
+// principled, and it cost two bridge files whose only job was to let a .mjs
+// suite reach a .ts module.
 //
 // ONE HARNESS FOR ALL. A suite reports through tests/harness.ts:
 //
-//   import { suite } from "../harness.ts";   // "../harness.mjs" from a .mjs suite
+//   import { suite } from "../harness.ts";
 //   const s = suite("my-suite");
 //   s.section("Test 1: …");
 //   s.check(cond, "message");                // boolean form, counted
@@ -79,9 +81,20 @@ const OBSIDIAN_MOCK = fileURLToPath(new URL("./mocks/obsidian.ts", import.meta.u
 // that calls it causes the test to fail loudly (FU-4 invariant).
 const PARTYSERVER_MOCK = fileURLToPath(new URL("./mocks/partyserver.ts", import.meta.url));
 
+// Redirect "@shared/*" to the canonical cross-tree modules. tsc and esbuild
+// resolve this from the `paths` entry in tsconfig.json, but jiti does its own
+// runtime resolution and does not read tsconfig, so the alias has to be
+// restated here. Prefix mapping, so new @shared modules need no change.
+const SHARED_DIR = fileURLToPath(new URL("../server/src/shared", import.meta.url));
+
 const JITI_ENV = {
 	...process.env,
-	JITI_ALIAS: JSON.stringify({ yjs: ROOT_YJS, obsidian: OBSIDIAN_MOCK, partyserver: PARTYSERVER_MOCK }),
+	JITI_ALIAS: JSON.stringify({
+		yjs: ROOT_YJS,
+		obsidian: OBSIDIAN_MOCK,
+		partyserver: PARTYSERVER_MOCK,
+		"@shared": SHARED_DIR,
+	}),
 };
 
 const RUNNER = ["node", "--import", "jiti/register"];
@@ -92,9 +105,8 @@ const RUNNER = ["node", "--import", "jiti/register"];
 // -----------------------------------------------------------------------
 
 // The four suite buckets. Everything else under tests/ is infrastructure —
-// this runner, suites.json, the shared pinned-schema-version helper, mocks/,
-// fixtures/ and manual/ — and is not a discovery candidate at all, so it needs
-// no excuse in suites.json either.
+// this runner, suites.json, harness.ts, mocks/, fixtures/ and manual/ — and is
+// not a discovery candidate at all, so it needs no excuse in suites.json.
 const BUCKETS = ["client", "server", "contracts", "live"];
 
 // The suites that cannot live in a bucket: they guard this runner's own
@@ -107,7 +119,7 @@ const ROOT_SUITES = ["tests/harness-self.ts", "tests/suite-discovery.ts"];
 export function discoverCandidates() {
 	const bucketed = BUCKETS.flatMap((bucket) =>
 		readdirSync(join(TESTS_DIR, bucket))
-			.filter((name) => name.endsWith(".ts") || name.endsWith(".mjs"))
+			.filter((name) => name.endsWith(".ts"))
 			.map((name) => `tests/${bucket}/${name}`),
 	);
 	return [...ROOT_SUITES, ...bucketed].sort();

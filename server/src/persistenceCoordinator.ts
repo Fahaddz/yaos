@@ -487,7 +487,7 @@ export class PersistenceCoordinator {
 			this.trace?.("save.full_encode", { reason: "update_stream_gap" });
 			delta = Y.encodeStateAsUpdate(this.document, baseStateVector);
 		} else if (batch.length === 1) {
-			delta = batch[0];
+			delta = batch[0]!;
 		} else {
 			try {
 				delta = Y.mergeUpdates(batch);

@@ -3,11 +3,20 @@
 /**
  * lint-changed.mjs — New-file lint gate with baseline-debt reporting.
  *
+ * One script, three file selections. Only the git query that produces the file
+ * list changes; the gate policy below is identical in every mode, because a
+ * second policy is how the old lint-staged.mjs ended up failing on other
+ * people's baseline debt whenever you touched a legacy file.
+ *
+ *   (default)     committed changes vs a base ref (origin/main)
+ *   --staged      files staged in the index (pre-commit check)
+ *   --worktree    every file modified vs HEAD (staged + unstaged)
+ *
  * Policy:
- *   - New files (not present at base ref) must have zero lint errors.
- *   - Modified files (present at base ref) are linted and errors reported,
- *     but they do not fail the gate. This is an interim policy while
- *     baseline debt exists in files like src/main.ts.
+ *   - New files (not present at the comparison ref) must have zero lint errors.
+ *   - Modified files (present at the ref) are linted and errors reported, but
+ *     they do not fail the gate. This is an interim policy while baseline debt
+ *     exists in files like src/main.ts.
  *
  * In CI (CI=true), missing base refs and diff failures are hard errors.
  * Locally, they are skipped with a warning.
@@ -15,6 +24,8 @@
  * Usage:
  *   node scripts/lint-changed.mjs               # compare against origin/main
  *   node scripts/lint-changed.mjs --base HEAD~1 # compare against specific ref
+ *   node scripts/lint-changed.mjs --staged      # lint staged files
+ *   node scripts/lint-changed.mjs --worktree    # lint all modified files
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -22,12 +33,29 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
-let base = "origin/main";
 
+const staged = args.includes("--staged");
+const worktree = args.includes("--worktree");
+if (staged && worktree) {
+	console.error("lint — --staged and --worktree are mutually exclusive.");
+	process.exit(2);
+}
+
+let base = "origin/main";
 const baseIdx = args.indexOf("--base");
 if (baseIdx !== -1 && args[baseIdx + 1]) {
 	base = args[baseIdx + 1];
 }
+
+// The mode fixes both halves of the comparison: which files are candidates,
+// and which ref decides whether a candidate is new or pre-existing.
+const label = staged ? "lint:staged" : worktree ? "lint:worktree" : "lint:changed";
+const diffFilter = "--diff-filter=ACMR";
+const mode = staged
+	? { ref: "HEAD", diffArgs: [diffFilter, "--cached"], verifyRef: false }
+	: worktree
+		? { ref: "HEAD", diffArgs: [diffFilter, "HEAD"], verifyRef: false }
+		: { ref: base, diffArgs: [diffFilter, `${base}...HEAD`], verifyRef: true };
 
 const isCi = process.env.CI === "true";
 
@@ -38,32 +66,28 @@ const isCi = process.env.CI === "true";
  */
 function skipOrFail(message) {
 	if (isCi) {
-		console.error(`lint:changed — ERROR: ${message}`);
+		console.error(`${label} — ERROR: ${message}`);
 		process.exit(1);
 	}
-	console.log(`lint:changed — ${message}, skipping outside CI.`);
+	console.log(`${label} — ${message}, skipping outside CI.`);
 	process.exit(0);
 }
 
-// Verify base ref exists.
-{
-	const result = spawnSync("git", ["rev-parse", base], { stdio: "ignore" });
+if (mode.verifyRef) {
+	const result = spawnSync("git", ["rev-parse", mode.ref], { stdio: "ignore" });
 	if (result.status !== 0) {
-		skipOrFail(`base ref '${base}' not found`);
+		skipOrFail(`base ref '${mode.ref}' not found`);
 	}
 }
 
-// Get changed/added/modified/renamed files relative to base.
+// Collect candidate files.
 let diffOutput = "";
 {
-	let result = spawnSync(
-		"git", ["diff", "--name-only", "--diff-filter=ACMR", `${base}...HEAD`],
-		{ encoding: "utf8" },
-	);
-	if (result.status !== 0) {
+	let result = spawnSync("git", ["diff", "--name-only", ...mode.diffArgs], { encoding: "utf8" });
+	if (result.status !== 0 && !staged && !worktree) {
 		// Three-dot may fail (detached HEAD). Try two-dot.
 		result = spawnSync(
-			"git", ["diff", "--name-only", "--diff-filter=ACMR", base],
+			"git", ["diff", "--name-only", diffFilter, base],
 			{ encoding: "utf8" },
 		);
 	}
@@ -74,7 +98,7 @@ let diffOutput = "";
 }
 
 if (!diffOutput) {
-	console.log("lint:changed — no changed files, nothing to lint.");
+	console.log(`${label} — no changed files, nothing to lint.`);
 	process.exit(0);
 }
 
@@ -85,16 +109,16 @@ const files = diffOutput
 	.filter((f) => existsSync(f));
 
 if (files.length === 0) {
-	console.log("lint:changed — no lintable TypeScript files changed.");
+	console.log(`${label} — no lintable TypeScript files changed.`);
 	process.exit(0);
 }
 
-// Classify files: new (not in base) vs modified (existed at base).
+// Classify files: new (not at the comparison ref) vs modified (already there).
 const newFiles = [];
 const modifiedFiles = [];
 
 for (const f of files) {
-	const result = spawnSync("git", ["cat-file", "-e", `${base}:${f}`], { stdio: "ignore" });
+	const result = spawnSync("git", ["cat-file", "-e", `${mode.ref}:${f}`], { stdio: "ignore" });
 	if (result.status === 0) {
 		modifiedFiles.push(f);
 	} else {
@@ -102,7 +126,7 @@ for (const f of files) {
 	}
 }
 
-console.log(`lint:changed — ${files.length} file(s): ${newFiles.length} new, ${modifiedFiles.length} modified`);
+console.log(`${label} — ${files.length} file(s): ${newFiles.length} new, ${modifiedFiles.length} modified`);
 for (const f of newFiles) console.log(`  [new]      ${f}`);
 for (const f of modifiedFiles) console.log(`  [modified] ${f}`);
 
@@ -119,7 +143,7 @@ function lintErrorCounts(filePaths) {
 		maxBuffer: 50 * 1024 * 1024,
 	});
 	if (result.status === 2) {
-		console.error("lint:changed — ESLint fatal error:");
+		console.error(`${label} — ESLint fatal error:`);
 		console.error(result.stderr || result.stdout);
 		process.exit(2);
 	}
@@ -132,7 +156,7 @@ function lintErrorCounts(filePaths) {
 	return counts;
 }
 
-// Lint all changed files.
+// Lint all candidate files.
 const counts = lintErrorCounts(files.map((f) => resolve(f)));
 
 // Gate new files: must have zero errors.
@@ -157,7 +181,7 @@ for (const f of modifiedFiles) {
 }
 
 if (newFileFailures.length > 0) {
-	console.error(`\nlint:changed — FAIL: ${newFileErrors} error(s) in ${newFileFailures.length} new file(s):`);
+	console.error(`\n${label} — FAIL: ${newFileErrors} error(s) in ${newFileFailures.length} new file(s):`);
 	for (const { file, errors } of newFileFailures) {
 		console.error(`  ${file}: ${errors} error(s)`);
 	}
@@ -171,7 +195,7 @@ if (newFileFailures.length > 0) {
 }
 
 if (baselineErrors > 0) {
-	console.log(`\nlint:changed — passed. (${baselineErrors} pre-existing error(s) in modified files, not gated.)`);
+	console.log(`\n${label} — passed. (${baselineErrors} pre-existing error(s) in modified files, not gated.)`);
 } else {
-	console.log("\nlint:changed — passed.");
+	console.log(`\n${label} — passed.`);
 }

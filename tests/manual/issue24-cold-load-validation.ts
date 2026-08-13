@@ -37,18 +37,23 @@
  */
 
 import * as Y from "yjs";
-// @ts-ignore
 import YSyncProvider from "y-partyserver/provider";
-// @ts-ignore
 import WebSocket from "ws";
 
-const HOST = process.env.YAOS_TEST_HOST;
-const TOKEN = process.env.YAOS_TEST_TOKEN;
-const VAULT_ID = process.env.YAOS_TEST_VAULT_ID;
-if (!HOST || !TOKEN || !VAULT_ID) {
+// The three env vars are read into `*_ENV` locals and re-bound as `string`
+// after the guard: `process.exit` narrows the module-level flow, but hoisted
+// function declarations below (connectDevice, fetchDebug) are analysed against
+// the *declared* type, so they would still see `string | undefined`.
+const HOST_ENV = process.env.YAOS_TEST_HOST;
+const TOKEN_ENV = process.env.YAOS_TEST_TOKEN;
+const VAULT_ID_ENV = process.env.YAOS_TEST_VAULT_ID;
+if (!HOST_ENV || !TOKEN_ENV || !VAULT_ID_ENV) {
 	console.error("Required: YAOS_TEST_HOST, YAOS_TEST_TOKEN, and YAOS_TEST_VAULT_ID env vars.");
 	process.exit(1);
 }
+const HOST: string = HOST_ENV;
+const TOKEN: string = TOKEN_ENV;
+const VAULT_ID: string = VAULT_ID_ENV;
 const FILE_COUNT = parseInt(process.env.YAOS_TEST_FILE_COUNT || "700", 10);
 const PHASE = process.env.PHASE || "seed";
 
@@ -67,7 +72,7 @@ function connectDevice(label: string): Promise<{
 	pathToId: Y.Map<string>;
 	idToText: Y.Map<Y.Text>;
 	sys: Y.Map<unknown>;
-	provider: any;
+	provider: YSyncProvider;
 	createFile: (path: string, content: string) => string;
 	readFile: (path: string) => string | null;
 	getPathCount: () => number;

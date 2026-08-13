@@ -12,10 +12,7 @@ import {
 	createNestedDeletedMeta,
 	computeMetaShapeStats,
 } from "../../src/sync/fileMeta";
-import {
-	SERVER_MIN_SCHEMA_VERSION,
-	SERVER_MAX_SCHEMA_VERSION,
-} from "../../server/src/version";
+import { SERVER_SCHEMA_VERSION } from "../../server/src/version";
 import { SCHEMA_VERSION } from "../../src/sync/schema";
 import { suite } from "../harness.ts";
 
@@ -95,15 +92,12 @@ s.section("Schema gate: server pins exactly one schema version");
 
 {
 	// Admission is an equality test, not a range test: the server accepts the
-	// single version the plugin writes and nothing else. The min/max pair is
-	// still published (via /api/capabilities) so the plugin can explain a
-	// mismatch, but the two values are equal by construction.
-	assertEqual(SERVER_MIN_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_MIN_SCHEMA_VERSION === SCHEMA_VERSION");
-	assertEqual(SERVER_MAX_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_MAX_SCHEMA_VERSION === SCHEMA_VERSION");
-	assertEqual(SERVER_MIN_SCHEMA_VERSION, SERVER_MAX_SCHEMA_VERSION, "the published envelope is a single value (min === max)");
+	// single version the plugin writes and nothing else. The value is still
+	// published (via /api/capabilities) so the plugin can explain a mismatch.
+	assertEqual(SERVER_SCHEMA_VERSION, EXPECTED_SCHEMA_VERSION, "SERVER_SCHEMA_VERSION === SCHEMA_VERSION");
 	for (const version of [EXPECTED_SCHEMA_VERSION - 1, EXPECTED_SCHEMA_VERSION + 1]) {
 		s.check(
-			version !== SERVER_MIN_SCHEMA_VERSION && version !== SERVER_MAX_SCHEMA_VERSION,
+			version !== SERVER_SCHEMA_VERSION,
 			`schema v${version} is outside the pinned server version`,
 		);
 	}

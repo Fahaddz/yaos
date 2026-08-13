@@ -66,8 +66,9 @@ function makeFixture(initialPersistedQueue: BlobQueueSnapshot | null): Fixture {
 					path: string;
 					stat: { mtime: number; size: number };
 				};
+				const writtenAt = clock++;
 				file.path = path;
-				file.stat = { mtime: clock++, size: data.byteLength };
+				file.stat = { ctime: writtenAt, mtime: writtenAt, size: data.byteLength };
 				files.set(path, { file, data });
 			},
 			adapter: {
@@ -178,7 +179,7 @@ s.section("Attachment orchestrator queue lifecycle");
 
 	await drainRestoredDownload(fixture, remoteData);
 
-	let releaseClear: (() => void) | null = null;
+	let releaseClear!: () => void;
 	fixture.setClearBarrier(new Promise((resolve) => {
 		releaseClear = resolve;
 	}));
@@ -186,7 +187,7 @@ s.section("Attachment orchestrator queue lifecycle");
 	await Promise.resolve();
 	s.check(fixture.orchestrator.manager === null, "stop removes the manager before terminal persistence");
 	assertSnapshot(fixture.getPersistedQueue(), savedQueue, "saved queue remains durable until terminal clear resolves");
-	releaseClear?.();
+	releaseClear();
 	await stopping;
 	s.check(fixture.clearCalls() === 1, "empty active manager clears persisted queue at stop");
 	assertSnapshot(fixture.getPersistedQueue(), null, "drained queue is removed from durable state");
@@ -216,7 +217,7 @@ s.section("Attachment orchestrator queue lifecycle");
 	fixture.orchestrator.hydrateSavedQueue(savedQueue);
 	fixture.orchestrator.start("status-tick-race", false);
 
-	let releasePersist: (() => void) | null = null;
+	let releasePersist!: () => void;
 	fixture.setPersistBarrier(new Promise((resolve) => {
 		releasePersist = resolve;
 	}));
@@ -230,7 +231,7 @@ s.section("Attachment orchestrator queue lifecycle");
 	fixture.orchestrator.handleStatusTick();
 	s.check(fixture.persistCalls() === 1, "status ticks cannot queue stale snapshots after stop begins");
 
-	releasePersist?.();
+	releasePersist();
 	await stopping;
 	s.check(fixture.clearCalls() === 1, "terminal clear runs after the delayed status-tick save");
 	assertSnapshot(fixture.getPersistedQueue(), null, "terminal clear wins over a delayed periodic save");

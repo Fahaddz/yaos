@@ -3,19 +3,8 @@ import { getSocketAuthToken, isAuthorized } from "./auth";
 import { json, withCors } from "./http";
 import { fetchVaultSchemaVersion } from "./trace";
 import { verifyTicket } from "./ticket";
-import {
-	SERVER_MAX_SCHEMA_VERSION,
-	SERVER_MIN_SCHEMA_VERSION,
-} from "../version";
+import { SERVER_SCHEMA_VERSION } from "../version";
 import type { AuthState, Env, FatalAuthCode } from "./types";
-
-/**
- * The single schema version this server admits. `SERVER_MIN_SCHEMA_VERSION` and
- * `SERVER_MAX_SCHEMA_VERSION` are equal by construction (server/src/version.ts);
- * admission is an equality test, and the min/max pair is only carried into
- * rejection payloads so clients can render the published envelope.
- */
-const SERVER_SCHEMA_VERSION = SERVER_MAX_SCHEMA_VERSION;
 
 export function parseSyncPath(pathname: string): { vaultId: string } | null {
 	const directMatch = pathname.match(/^\/vault\/sync\/([^/]+)$/);
@@ -226,16 +215,14 @@ export async function handleSyncSocketRoute(
 				vaultIdHint: vaultId.slice(0, 8),
 				reason: "client_schema_unsupported",
 				clientSchemaVersion,
-				minSchemaVersion: SERVER_MIN_SCHEMA_VERSION,
-				maxSchemaVersion: SERVER_MAX_SCHEMA_VERSION,
+				serverSchemaVersion: SERVER_SCHEMA_VERSION,
 			}),
 		);
 		return returnSocketResponse(req, rejectSocket(req, "update_required", {
 			reason: "client_schema_unsupported",
 			clientSchemaVersion,
 			roomSchemaVersion: null,
-			minSchemaVersion: SERVER_MIN_SCHEMA_VERSION,
-			maxSchemaVersion: SERVER_MAX_SCHEMA_VERSION,
+			serverSchemaVersion: SERVER_SCHEMA_VERSION,
 		}));
 	}
 

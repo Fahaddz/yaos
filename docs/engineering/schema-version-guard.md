@@ -13,7 +13,7 @@ literal `2` directly in `vaultSync.ts`:
 | 3 | `vaultSync.ts` does NOT contain `export const SCHEMA_VERSION = N` | Constant re-inlined as a literal |
 | 4 | `SCHEMA_VERSION` value in `schema.ts` equals `EXPECTED_SCHEMA_VERSION` | Version bumped in source but guard not updated, or vice versa |
 | 5 | `server/src/version.ts` exists | Server contract deleted. This is a hard failure, never a warning: that file is the only place the admitted schema version is declared to clients |
-| 6 | `SERVER_MIN_SCHEMA_VERSION === SERVER_MAX_SCHEMA_VERSION === EXPECTED_SCHEMA_VERSION` | Server and plugin disagree, or the pin was widened back into a range |
+| 6 | `SERVER_SCHEMA_VERSION === EXPECTED_SCHEMA_VERSION` | Server and plugin disagree |
 
 The guard exits non-zero if any check fails and prints `FAIL: <reason>` for
 each violation.
@@ -23,10 +23,9 @@ each violation.
 The server admits exactly one schema version. WebSocket admission in
 `server/src/routes/syncSocket.ts` is an equality test against that single value,
 and a client that declares no schema at all is rejected outright. The published
-`minSchemaVersion` / `maxSchemaVersion` pair in `/api/capabilities` therefore
-always carries the same number twice; it survives as a pair only so the plugin
-can tell the user *which* side is out of date. Check 6 is what stops the pin
-from silently drifting back into a range.
+`schemaVersion` field in `/api/capabilities` carries that one number so the
+plugin can tell the user *which* side is out of date. Check 6 is what stops the
+server pin and the plugin from drifting apart.
 
 ---
 
@@ -64,17 +63,15 @@ export const SCHEMA_VERSION = 4;
 
 Find:
 ```
-SERVER_MIN_SCHEMA_VERSION = 3
-SERVER_MAX_SCHEMA_VERSION = 3
+SERVER_SCHEMA_VERSION = 3
 ```
-Set both to:
+Set to:
 ```
-SERVER_MIN_SCHEMA_VERSION = 4
-SERVER_MAX_SCHEMA_VERSION = 4
+SERVER_SCHEMA_VERSION = 4
 ```
 
-Both constants must always equal the plugin's `SCHEMA_VERSION`. Setting them to
-different values is a guard failure, not a transition window: an older client is
+The constant must always equal the plugin's `SCHEMA_VERSION`. Setting it to a
+different value is a guard failure, not a transition window: an older client is
 refused at admission with `update_required`, so the upgrade path is "redeploy
 the server and update the plugin", never "run a mixed fleet".
 
@@ -97,7 +94,7 @@ version bump.
 | File | Pattern to find | New value |
 |------|----------------|-----------|
 | `src/sync/schema.ts` | `export const SCHEMA_VERSION = 3` | `= 4` |
-| `server/src/version.ts` | `SERVER_MIN_SCHEMA_VERSION` and `SERVER_MAX_SCHEMA_VERSION`, both `= 3` | both `= 4` |
+| `server/src/version.ts` | `SERVER_SCHEMA_VERSION = 3` | `= 4` |
 | `scripts/guard-schema-version.mjs` | `EXPECTED_SCHEMA_VERSION = 3` | `= 4` |
 
 ---
@@ -117,7 +114,7 @@ PASS: src/sync/schema.ts exists
 PASS: src/sync/schema.ts: SCHEMA_VERSION = 4
 PASS: src/sync/vaultSync.ts imports from "./schema"
 PASS: src/sync/vaultSync.ts has no inlined SCHEMA_VERSION literal
-PASS: server/src/version.ts pins schema v4 (min === max === plugin SCHEMA_VERSION)
+PASS: server/src/version.ts pins schema v4 (SERVER_SCHEMA_VERSION === plugin SCHEMA_VERSION)
 
 PASS: schema version guard — all checks passed.
 ```
@@ -129,19 +126,20 @@ npm run test:regressions
 ```
 
 That command runs the guard against the repository and then runs
-`tests/contracts/schema-version-guard.mjs`, a hermetic temporary-fixture regression. It
-builds fixtures containing valid plugin schema files and then, in turn, omits
-`server/src/version.ts`, declares a `1..3` range, and declares a correct pin.
-The first two must exit non-zero and the third must exit zero. That stops the
-guard from silently downgrading a missing server compatibility contract to a
-warning, and stops the pin from being widened back into a range.
+`tests/contracts/schema-version-guard.ts`, a hermetic temporary-fixture
+regression. It builds fixtures containing valid plugin schema files and then, in
+turn, omits `server/src/version.ts`, pins a version other than the plugin's, and
+declares a correct pin. The first two must exit non-zero and the third must exit
+zero. That stops the guard from silently downgrading a missing server
+compatibility contract to a warning, and stops the server pin from drifting away
+from the plugin.
 
 ---
 
 ## How to test that the guard catches a regression
 
 The automated temporary-fixture regression covers the missing-server-contract
-and widened-range cases. To manually test the original plugin-side regression
+and mismatched-pin cases. To manually test the original plugin-side regression
 without leaving a source edit behind:
 
 1. In `src/sync/vaultSync.ts`, temporarily add:

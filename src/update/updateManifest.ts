@@ -4,7 +4,6 @@ export interface UpdateManifest {
 	latestServerVersion: string;
 	latestPluginVersion: string;
 	releaseType: "compatible" | "guided-breaking" | "migration-required";
-	migrationRequired: boolean;
 	autoUpdateEligible: boolean;
 	minCompatibleServerVersionForPlugin: string | null;
 	minCompatiblePluginVersionForServer: string | null;
@@ -21,7 +20,6 @@ export function isUpdateManifest(value: unknown): value is UpdateManifest {
 		(candidate.releaseType === "compatible" ||
 			candidate.releaseType === "guided-breaking" ||
 			candidate.releaseType === "migration-required") &&
-		typeof candidate.migrationRequired === "boolean" &&
 		typeof candidate.autoUpdateEligible === "boolean" &&
 		(candidate.minCompatibleServerVersionForPlugin === null ||
 			typeof candidate.minCompatibleServerVersionForPlugin === "string") &&

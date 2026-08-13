@@ -343,7 +343,7 @@ s.section("Test 8: importUntrackedFiles through real ReconciliationController");
 	let ensureFileCalls: Array<{ path: string; content: string; opts: any }> = [];
 
 	// Create a real TFile mock
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
+	const file = new TFile() as InstanceType<typeof TFile> & { path: string; stat: { mtime: number; size: number } };
 	file.path = "notes/revived-via-controller.md";
 	(file as any).stat = { mtime: 99, size: 25 };
 
@@ -445,11 +445,11 @@ s.section("Test 8: importUntrackedFiles through real ReconciliationController");
 	// Verify ensureFile was called with reviveTombstone: true
 	s.check(ensureFileCalls.length === 1, "ensureFile called once during import");
 	s.check(
-		ensureFileCalls[0].opts?.reviveTombstone === true,
+		ensureFileCalls[0]?.opts?.reviveTombstone === true,
 		"ensureFile called with reviveTombstone: true",
 	);
 	s.check(
-		ensureFileCalls[0].opts?.reviveReason === "import-untracked-local-file",
+		ensureFileCalls[0]?.opts?.reviveReason === "import-untracked-local-file",
 		"ensureFile called with correct reviveReason",
 	);
 

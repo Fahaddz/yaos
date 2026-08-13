@@ -20,12 +20,30 @@ import {
 	TOMBSTONE_REAP_ORIGIN,
 	TOMBSTONE_REAP_GRACE_MS,
 } from "../../server/src/tombstoneReaper";
+import type { DocStoreCoalesceResult } from "../../server/src/persistenceCoordinator.ts";
 import { suite } from "../harness.ts";
 
 const s = suite("tombstone-reaper");
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
+
+/**
+ * `DocStore.coalesceJournal` over an in-memory journal: merge every entry into
+ * one, as the SQL store does.  The coordinator only reaches this above its
+ * entry-count threshold, which none of the fakes below get near, but DocStore
+ * requires the member so a fake without it is not a DocStore at all.
+ */
+function coalesceEntries(journal: Uint8Array[]): DocStoreCoalesceResult {
+	if (journal.length <= 1) {
+		const totalBytes = journal.reduce((sum, entry) => sum + entry.byteLength, 0);
+		return { status: "noop", stats: { entryCount: journal.length, totalBytes } };
+	}
+	const merged = Y.mergeUpdates(journal);
+	journal.length = 0;
+	journal.push(merged);
+	return { status: "ok", stats: { entryCount: 1, totalBytes: merged.byteLength } };
+}
 
 interface FileSpec {
 	id: string;
@@ -327,6 +345,7 @@ s.section("Test 12: a reap is persisted, because it is a deletion-only change");
 		getJournalStats() {
 			return { entryCount: journal.length, totalBytes: journal.reduce((s, e) => s + e.byteLength, 0) };
 		},
+		coalesceJournal() { return coalesceEntries(journal); },
 	};
 
 	const coordinator = new PersistenceCoordinator(doc, store);
@@ -386,6 +405,7 @@ s.section("Test 13: a forced checkpoint stops storage replaying reaped content")
 			getJournalStats() {
 				return { entryCount: journal.length, totalBytes: journal.reduce((s, e) => s + e.byteLength, 0) };
 			},
+			coalesceJournal() { return coalesceEntries(journal); },
 		};
 		return { doc, store, journal, peek: () => ({ snapshot, journal }) };
 	};
@@ -454,6 +474,7 @@ s.section("Test 14: forceCheckpoint leaves the document clean and retries on fai
 			snapshot = u.slice(); journal.length = 0;
 		},
 		getJournalStats() { return { entryCount: journal.length, totalBytes: 0 }; },
+		coalesceJournal() { return coalesceEntries(journal); },
 	};
 	const c = new PersistenceCoordinator(doc, store);
 	await c.enqueueSave();

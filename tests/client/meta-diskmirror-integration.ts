@@ -45,10 +45,7 @@ import {
 	type MetaChangeBatch,
 } from "../../src/sync/fileMeta";
 import { SCHEMA_VERSION } from "../../src/sync/schema";
-import {
-	SERVER_MIN_SCHEMA_VERSION,
-	SERVER_MAX_SCHEMA_VERSION,
-} from "../../server/src/version";
+import { SERVER_SCHEMA_VERSION } from "../../server/src/version";
 import { suite } from "../harness.ts";
 
 // ── Test runner ──────────────────────────────────────────────────────────────
@@ -84,7 +81,7 @@ function makeMirrorHarness() {
 	const metaDeepHandler = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
 		const origin = events[0]?.transaction.origin;
 		const isLocal = isLocalOrigin(origin, fakeProvider);
-		let changes;
+		let changes: MetaChangeBatch["changes"];
 		const affected = extractAffectedFileIds(events, meta);
 		if (affected !== null) {
 			changes = computeIncrementalMetaChanges(snapshot, meta, affected);
@@ -601,13 +598,7 @@ s.section("Schema version constants: client and server pin the same single versi
 
 {
 	assertEqual(SCHEMA_VERSION, 3, "SCHEMA_VERSION from schema.ts is 3");
-	assertEqual(SERVER_MIN_SCHEMA_VERSION, SCHEMA_VERSION, "SERVER_MIN_SCHEMA_VERSION pins the client schema");
-	assertEqual(SERVER_MAX_SCHEMA_VERSION, SCHEMA_VERSION, "SERVER_MAX_SCHEMA_VERSION pins the client schema");
-	assertEqual(
-		SERVER_MIN_SCHEMA_VERSION,
-		SERVER_MAX_SCHEMA_VERSION,
-		"the server admits exactly one schema version (min === max)",
-	);
+	assertEqual(SERVER_SCHEMA_VERSION, SCHEMA_VERSION, "SERVER_SCHEMA_VERSION pins the client schema");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

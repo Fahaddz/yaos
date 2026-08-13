@@ -21,14 +21,6 @@ function readStringConst(source, name) {
 	return match[1];
 }
 
-function readBooleanConst(source, name) {
-	const match = source.match(new RegExp(`export const ${name} = (true|false);`));
-	if (!match) {
-		throw new Error(`Unable to read boolean constant ${name} from server/src/version.ts`);
-	}
-	return match[1] === "true";
-}
-
 const serverVersion = readStringConst(serverVersionSource, "SERVER_VERSION");
 const minCompatibleServerVersionForPlugin = readStringConst(
 	serverVersionSource,
@@ -37,10 +29,6 @@ const minCompatibleServerVersionForPlugin = readStringConst(
 const minCompatiblePluginVersionForServer = readStringConst(
 	serverVersionSource,
 	"SERVER_MIN_COMPATIBLE_PLUGIN_VERSION_FOR_SERVER",
-);
-const migrationRequired = readBooleanConst(
-	serverVersionSource,
-	"SERVER_MIGRATION_REQUIRED",
 );
 
 if (serverPackage.version !== serverVersion) {
@@ -52,8 +40,7 @@ if (serverPackage.version !== serverVersion) {
 const updateManifest = {
 	latestServerVersion: serverVersion,
 	latestPluginVersion: pluginManifest.version,
-	releaseType: migrationRequired ? "migration-required" : "compatible",
-	migrationRequired,
+	releaseType: "compatible",
 	autoUpdateEligible: false,
 	minCompatibleServerVersionForPlugin,
 	minCompatiblePluginVersionForServer,
@@ -74,7 +61,6 @@ const serverZipManifest = {
 		"tsconfig.json",
 		"src",
 	],
-	migrationRequired,
 };
 
 mkdirSync(outputDir, { recursive: true });

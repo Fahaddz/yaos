@@ -27,10 +27,10 @@ class FakeSqlStorage {
 
 		// CREATE TABLE IF NOT EXISTS
 		if (trimmed.startsWith("CREATE TABLE IF NOT EXISTS")) {
-			const match = trimmed.match(/CREATE TABLE IF NOT EXISTS (\w+)/);
-			if (match && !this.tables.has(match[1])) {
-				this.tables.set(match[1], []);
-				this.autoIncrements.set(match[1], 1);
+			const table = trimmed.match(/CREATE TABLE IF NOT EXISTS (\w+)/)?.[1];
+			if (table !== undefined && !this.tables.has(table)) {
+				this.tables.set(table, []);
+				this.autoIncrements.set(table, 1);
 			}
 			return new FakeSqlCursor<T>([]);
 		}

@@ -1,4 +1,4 @@
-import { mapWithConcurrency } from "../concurrency";
+import { mapWithConcurrency } from "../shared/concurrency";
 import { MAX_BLOB_UPLOAD_BYTES } from "../contracts";
 import { blobKey } from "../snapshot";
 import type { Env, JsonResponse } from "./types";

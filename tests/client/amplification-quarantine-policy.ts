@@ -316,8 +316,8 @@ s.section("Test 17: Quarantine decision does NOT return newHistory");
 	});
 	s.check(result.quarantined === true, "quarantine triggered");
 	if (result.quarantined) {
-		// TypeScript enforces this, but let's be explicit:
-		// @ts-expect-error — newHistory does not exist on quarantined decision
+		// `in` probes at runtime the same contract the discriminated union
+		// enforces at compile time.
 		const hasNewHistory = "newHistory" in result;
 		s.check(!hasNewHistory, "quarantine decision has no newHistory (caller should delete)");
 		s.check("triggerSlice" in result, "quarantine decision has triggerSlice");

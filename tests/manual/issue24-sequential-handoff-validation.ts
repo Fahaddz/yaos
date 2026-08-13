@@ -27,17 +27,21 @@
  */
 
 import * as Y from "yjs";
-// @ts-ignore
 import YSyncProvider from "y-partyserver/provider";
-// @ts-ignore
 import WebSocket from "ws";
 
-const HOST = process.env.YAOS_TEST_HOST;
-const TOKEN = process.env.YAOS_TEST_TOKEN;
-if (!HOST || !TOKEN) {
+// `HOST`/`TOKEN` are re-bound as `string` after the guard: `process.exit`
+// narrows the module-level flow, but the hoisted `connectDevice` declaration
+// below is analysed against the *declared* type and would still see
+// `string | undefined`.
+const HOST_ENV = process.env.YAOS_TEST_HOST;
+const TOKEN_ENV = process.env.YAOS_TEST_TOKEN;
+if (!HOST_ENV || !TOKEN_ENV) {
 	console.error("Required: YAOS_TEST_HOST and YAOS_TEST_TOKEN env vars.");
 	process.exit(1);
 }
+const HOST: string = HOST_ENV;
+const TOKEN: string = TOKEN_ENV;
 const VAULT_ID = process.env.YAOS_TEST_VAULT_ID || "issue24-handoff-" + Date.now().toString(36);
 const FILE_COUNT = parseInt(process.env.YAOS_TEST_FILE_COUNT || "100", 10);
 

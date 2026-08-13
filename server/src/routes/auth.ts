@@ -2,11 +2,9 @@ import { sha256Hex } from "../hex";
 import { buildMobileSetupUrl, renderSetupQrDataUrl } from "../setupQr";
 import type { StoredServerConfig } from "../config";
 import {
-	SERVER_MAX_SCHEMA_VERSION,
-	SERVER_MIGRATION_REQUIRED,
 	SERVER_MIN_PLUGIN_VERSION,
-	SERVER_MIN_SCHEMA_VERSION,
 	SERVER_RECOMMENDED_PLUGIN_VERSION,
+	SERVER_SCHEMA_VERSION,
 	SERVER_VERSION,
 } from "../version";
 import { json } from "./http";
@@ -243,9 +241,7 @@ export function getCapabilities(
 	serverVersion: string;
 	minPluginVersion: string | null;
 	recommendedPluginVersion: string | null;
-	minSchemaVersion: number | null;
-	maxSchemaVersion: number | null;
-	migrationRequired: boolean;
+	schemaVersion: number;
 	updateProvider: UpdateProvider | null;
 	updateRepoUrl: string | null;
 	updateRepoBranch: string | null;
@@ -261,9 +257,7 @@ export function getCapabilities(
 		serverVersion: SERVER_VERSION,
 		minPluginVersion: SERVER_MIN_PLUGIN_VERSION,
 		recommendedPluginVersion: SERVER_RECOMMENDED_PLUGIN_VERSION,
-		minSchemaVersion: SERVER_MIN_SCHEMA_VERSION,
-		maxSchemaVersion: SERVER_MAX_SCHEMA_VERSION,
-		migrationRequired: SERVER_MIGRATION_REQUIRED,
+		schemaVersion: SERVER_SCHEMA_VERSION,
 		updateProvider: options.includePrivateUpdateMetadata ? (config?.updateProvider ?? null) : null,
 		updateRepoUrl: options.includePrivateUpdateMetadata ? (config?.updateRepoUrl ?? null) : null,
 		updateRepoBranch: options.includePrivateUpdateMetadata ? (config?.updateRepoBranch ?? null) : null,

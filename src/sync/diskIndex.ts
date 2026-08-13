@@ -7,7 +7,8 @@
  * "_diskIndex" in the plugin's data.json.
  */
 import { type App, TFile, normalizePath } from "obsidian";
-import { mapWithConcurrency } from "../utils/concurrency";
+import { mapWithConcurrency } from "@shared/concurrency";
+import { fnv1a32, toHex8 } from "../utils/fnv1a";
 
 const DEFAULT_STAT_CONCURRENCY = 16;
 
@@ -26,12 +27,7 @@ const DEFAULT_STAT_CONCURRENCY = 16;
  * entry or a duplicate conflict artifact, not data corruption.
  */
 export function contentFingerprint(text: string): string {
-	let h = 0x811c9dc5;
-	for (let i = 0; i < text.length; i++) {
-		h ^= text.charCodeAt(i);
-		h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
-	}
-	return h.toString(16).padStart(8, "0") + ":" + text.length;
+	return `${toHex8(fnv1a32(text))}:${text.length}`;
 }
 
 /**

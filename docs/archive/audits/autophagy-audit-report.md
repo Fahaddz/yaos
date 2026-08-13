@@ -33,10 +33,10 @@ Commands run on `main` at audit time (2026-05-31).
 ### Production build & guards
 
 ```
-npm run build                          → PASS
-npm run guard:production-bundles:strict → PASS (main.js 490.7 KB, telemetry.js 69.5 KB)
-npm run guard:schema-version           → PASS (v3 aligned)
-npm run test:regressions                 → PASS (84 suites, 0 failed)
+npm run build                     → PASS
+npm run guard:production-bundles  → PASS (main.js 490.7 KB, telemetry.js 69.5 KB)
+npm run guard:schema-version      → PASS (v3 aligned)
+npm run test:regressions          → PASS (84 suites, 0 failed)
 ```
 
 ### Symbol grep (production `main.js`)
@@ -115,11 +115,11 @@ In `reconciliationController.ts`, the `updatedOnDisk` loop only enters the recon
 
 | Question | Verdict | Finding |
 |---|---|---|
-| Production omits unsafe symbols? | **MOSTLY YES** | `getEngineControlPort`, `pauseEditorPropagation`, `setExternalEditPolicyOverride`, `__qaOnly` absent from `main.js`. Guard passes strict mode. |
+| Production omits unsafe symbols? | **MOSTLY YES** | `getEngineControlPort`, `pauseEditorPropagation`, `setExternalEditPolicyOverride`, `__qaOnly` absent from `main.js`. Guard passes. |
 | QA product includes them? | **YES** | `product-main.js` has `getEngineControlPort`, control port methods. Harness fatal-checks for missing port. |
 | Harness without product mounting `__YAOS_DEBUG__`? | **NO** (by design) | Product refuses to mount debug API; harness plugin mounts it. Scenarios require harness. |
 | APIs unavailable vs renamed? | **RELOCATED** | Mutation API in `qa/harness/qaDebugApi.ts`; Engine control DCE-gated via `__YAOS_QA_HARNESS_ENABLED__`. |
-| Guard fail closed? | **YES per script** | Both guards exit 1 on violation. **CI gap:** `release.yml` runs `test:ci` not `guard:production-bundles:strict`. |
+| Guard fail closed? | **YES per script** | Both guards exit 1 on violation. **CI gap:** `release.yml` runs `test:ci` not `guard:production-bundles`. |
 | Guard scans artifacts + source? | **YES** | `guard-production-bundles.mjs`: bundle strings + `src/` import fence. `guard-qa-isolation.mjs`: `src/sync`, `src/runtime`, `src/telemetry`. |
 
 ### Residual production surfaces
@@ -260,12 +260,12 @@ Release ships both bundles (`.github/workflows/release.yml`).
 
 - `src/sync/schema.ts`: `SCHEMA_VERSION = 3`
 - `src/sync/vaultSync.ts`: imports from `"./schema"` (no inlined export)
-- `server/src/version.ts`: `SERVER_MIN_SCHEMA_VERSION = 3`, `SERVER_MAX_SCHEMA_VERSION = 3`
+- `server/src/version.ts`: `SERVER_SCHEMA_VERSION = 3`
 
 ### Guard (`scripts/guard-schema-version.mjs`)
 
 - In `test:regressions` via `package.json`
-- Checks: schema.ts exists, vaultSync imports from schema, no inlined `export const SCHEMA_VERSION`, server min/max match
+- Checks: schema.ts exists, vaultSync imports from schema, no inlined `export const SCHEMA_VERSION`, server pin matches the plugin
 - **Limitation:** Does not catch non-export inlines or shadow imports
 - **Deletion test:** Fails if `schema.ts` deleted
 
@@ -354,7 +354,7 @@ Setting `SCHEMA_VERSION = 2` → guard fails with exit 1. **Verified.**
 1. **Fix** open/bound authoritative `updatedOnDisk` flush regression (Claim A) — behavior bug, not refactor polish.
 2. **Keep** schema guard, policy modules, QA product split, bundle guards — high value, proven.
 3. **Harden** telemetry load: try/catch + NoopTraceSink fallback + version constant check (Claim E).
-4. **Add** `guard:production-bundles:strict` to release CI (Claim B).
+4. **Add** `guard:production-bundles` to release CI (Claim B).
 5. **Migrate** `vaultSync` off `FLIGHT_KIND` to `PRODUCT_EVENT_KIND` / TraceSink (Claim D).
 6. **Narrow** `TelemetryRuntimeHost` to read-only ports (Claim C).
 7. **Fix** `waitForReceiptAfter` fallback (Claim H) — remove stale-echo false-pass.

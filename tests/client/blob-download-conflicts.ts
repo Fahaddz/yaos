@@ -36,8 +36,9 @@ function makeHarness() {
 			path: string;
 			stat: { mtime: number; size: number };
 		});
+		const writtenAt = clock++;
 		file.path = path;
-		file.stat = { mtime: clock++, size: data.byteLength };
+		file.stat = { ctime: existing?.file.stat.ctime ?? writtenAt, mtime: writtenAt, size: data.byteLength };
 		const stored = { file, data };
 		files.set(path, stored);
 		return stored;
@@ -508,7 +509,7 @@ s.section("Test 13: rerunResets below cap allows fresh restart");
 		path: "restartable.png",
 		hash: "def456",
 		sizeBytes: 200,
-		status: "processing" as const,
+		status: "processing" as "pending" | "processing",
 		retries: 4, // > MAX_RETRIES
 		readyAt: 0,
 		needsRerun: true,

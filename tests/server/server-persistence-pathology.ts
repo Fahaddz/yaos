@@ -840,8 +840,9 @@ s.section("Test 14b: PersistenceCoordinator — entry pressure coalesces, byte p
 		getSnapshotBytes() { return snapshotBytes; },
 		coalesceJournal() {
 			coalesces++;
-			journal = [Y.mergeUpdates(journal)];
-			return { status: "ok" as const, stats: { entryCount: 1, totalBytes: journal[0].byteLength } };
+			const merged = Y.mergeUpdates(journal);
+			journal = [merged];
+			return { status: "ok" as const, stats: { entryCount: 1, totalBytes: merged.byteLength } };
 		},
 	};
 
@@ -888,8 +889,9 @@ s.section("Test 14b2: PersistenceCoordinator — the byte arm scales with the sn
 		getSnapshotBytes() { return snapshotBytes; },
 		coalesceJournal() {
 			coalesces++;
-			journal = [Y.mergeUpdates(journal)];
-			return { status: "ok" as const, stats: { entryCount: 1, totalBytes: journal[0].byteLength } };
+			const merged = Y.mergeUpdates(journal);
+			journal = [merged];
+			return { status: "ok" as const, stats: { entryCount: 1, totalBytes: merged.byteLength } };
 		},
 	};
 

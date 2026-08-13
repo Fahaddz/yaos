@@ -36,7 +36,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 s.section("Test 1: runSingleFlight shares one in-flight cold-start load");
 {
 	let loadCalls = 0;
-	let releaseLoad: (() => void) | null = null;
+	let releaseLoad!: () => void;
 	const loadGate = new Promise<void>((resolve) => {
 		releaseLoad = resolve;
 	});
@@ -49,7 +49,7 @@ s.section("Test 1: runSingleFlight shares one in-flight cold-start load");
 		});
 
 	const pending = Promise.all([loadRoom(), loadRoom(), loadRoom()]);
-	releaseLoad?.();
+	releaseLoad();
 	await pending;
 
 	s.check(loadCalls === 1, "concurrent cold-start callers share one load task");

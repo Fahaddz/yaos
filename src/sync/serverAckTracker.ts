@@ -15,6 +15,7 @@ import { encodeBytesBase64, decodeBytesBase64 } from "./svEchoMessage";
 import { isAckTrackedLocalOrigin } from "./ackOrigins";
 import type { CandidateStore, ScopeKey, ScopeMetadata, PersistedCandidateState } from "./candidateStore";
 import type { TraceRecord } from "../observability/traceContext";
+import { fnv1a32Bytes, toHex8 } from "../utils/fnv1a";
 
 export type { ScopeKey, ScopeMetadata, PersistedCandidateState } from "./candidateStore";
 
@@ -353,14 +354,8 @@ export class ServerAckTracker {
 	// ── Private ──────────────────────────────────────────────────────────────
 
 	private _computeSvHash(sv: Uint8Array): string {
-		// Simple FNV-1a hash of the SV bytes, formatted as 8 hex chars.
-		// NOT cryptographic — just a short fingerprint for correlation.
-		let h = 0x811c9dc5;
-		for (let i = 0; i < sv.byteLength; i++) {
-			h ^= sv[i]!;
-			h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
-		}
-		return h.toString(16).padStart(8, "0");
+		// Short non-cryptographic fingerprint for correlation only.
+		return toHex8(fnv1a32Bytes(sv));
 	}
 
 	private _validateCandidateAgainstDoc(): void {

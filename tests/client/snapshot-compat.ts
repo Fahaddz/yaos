@@ -117,7 +117,7 @@ function testListNormalization(): void {
 
 	const fromOld = normalizeSnapshotListResponse(OLD_SERVER_LIST);
 	assertEqual(fromOld.length, 2, "parses old server { snapshots } response");
-	assertEqual(fromOld[0].snapshotId, "s1", "first snapshot ID correct");
+	assertEqual(fromOld[0]?.snapshotId, "s1", "first snapshot ID correct");
 
 	const fromNewDefault = normalizeSnapshotListResponse(NEW_SERVER_LIST_DEFAULT);
 	assertEqual(fromNewDefault.length, 1, "parses new server default response");

@@ -23,7 +23,7 @@ import { suite } from "../harness.ts";
 
 const s = suite("status-label");
 
-function label(state: ConnectionState, transfer?: string): string {
+function label(state: ConnectionState, transfer?: string | null): string {
 	return getLabelFromConnectionState(state, transfer);
 }
 
@@ -82,6 +82,8 @@ s.check(!withoutTransfer.includes("null"), "null transferStatus not rendered");
 
 s.section("Test 4b: server receipt status labels distinguish current and historical facts");
 const receiptBase = {
+	// Untracked by default; every case that cares overrides it in the spread.
+	serverAppliedLocalState: null,
 	lastServerReceiptEchoAt: null,
 	lastKnownServerReceiptEchoAt: null,
 	candidatePersistenceHealthy: true,

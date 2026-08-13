@@ -24,9 +24,9 @@ import { join } from "node:path";
 import { readSource, repoRoot, sleep, suite, until, withTempDir } from "./harness.ts";
 
 const s = suite("harness-self");
-// Child fixtures are written as .mjs, so they import through the bridge — which
-// gives tests/harness.mjs its coverage too.
-const HARNESS = join(repoRoot(), "tests/harness.mjs");
+// Child fixtures are written as .ts and run under the same
+// `node --import jiti/register` the real runner uses.
+const HARNESS = join(repoRoot(), "tests/harness.ts");
 
 interface Ran {
 	readonly status: number | null;
@@ -37,7 +37,7 @@ interface Ran {
 
 /** Write `body` as a child suite, run it the way the runner does, capture all of it. */
 function runChildSuite(dir: string, label: string, body: string): Ran {
-	const file = join(dir, `${label}.mjs`);
+	const file = join(dir, `${label}.ts`);
 	writeFileSync(file, `import { suite, sleep } from ${JSON.stringify(HARNESS)};\n${body}`);
 	const result = spawnSync("node", ["--import", "jiti/register", file], {
 		cwd: repoRoot(),

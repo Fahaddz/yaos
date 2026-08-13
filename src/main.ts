@@ -86,7 +86,7 @@ import {
 } from "./status/statusBarController";
 import { CoalescedStatusRefresh } from "./status/coalescedStatusRefresh";
 import { formatUnknown, yTextToString } from "./utils/format";
-import { randomBase64Url } from "./utils/base64url";
+import { randomId } from "./utils/randomId";
 import { ConfirmModal } from "./ui/ConfirmModal";
 import { runSchemaMigrationToV2 } from "./migrations/schemaV2";
 import { isLocalOrigin } from "./sync/origins";
@@ -1083,7 +1083,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	// -------------------------------------------------------------------
 
 	private newOpId(): string {
-		return `op-${randomBase64Url(10)}`;
+		return `op-${randomId(14)}`;
 	}
 
 	private registerVaultEvents(): void {
@@ -2181,7 +2181,6 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			pluginVersion: this.manifest.version,
 			latestPluginVersion: null,
 			pluginUpdateRecommended: false,
-			migrationRequired: false,
 			updateProvider: "unknown",
 			updateRepoUrl: null,
 			updateActionUrl: null,

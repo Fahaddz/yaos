@@ -1,5 +1,5 @@
 import { type App, normalizePath } from "obsidian";
-import { randomBase64Url } from "../../utils/base64url";
+import { randomId } from "../../utils/randomId";
 
 // Re-export product-safe types from observability layer.
 // Product code should import from observability/traceContext directly.
@@ -30,10 +30,6 @@ const FLUSH_DELAY_MS = 400;
 const STATE_WRITE_DELAY_MS = 600;
 const MAX_PENDING_LINES = 2_000;
 const MAX_PENDING_CHARS_APPROX = 512 * 1024;
-
-function randomId(prefix: string): string {
-	return `${prefix}-${randomBase64Url(10)}`;
-}
 
 function isAlreadyExistsError(error: unknown): boolean {
 	if (typeof error === "object" && error !== null && "code" in error) {
@@ -87,8 +83,8 @@ export class PersistentTraceLogger implements TraceLoggerPort {
 	) {
 		this.enabled = options.enabled;
 		this.context = {
-			traceId: randomId("trace"),
-			bootId: randomId("boot"),
+			traceId: `trace-${randomId(14)}`,
+			bootId: `boot-${randomId(14)}`,
 			deviceName: options.deviceName,
 			vaultId: options.vaultId,
 		};

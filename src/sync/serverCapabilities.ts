@@ -11,9 +11,7 @@ export interface ServerCapabilities {
 	serverVersion: string;
 	minPluginVersion: string | null;
 	recommendedPluginVersion: string | null;
-	minSchemaVersion: number | null;
-	maxSchemaVersion: number | null;
-	migrationRequired: boolean;
+	schemaVersion: number | null;
 	updateProvider: "github" | "gitlab" | "unknown" | null;
 	updateRepoUrl: string | null;
 	updateRepoBranch?: string | null;

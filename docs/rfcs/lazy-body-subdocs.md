@@ -125,7 +125,7 @@ Largest change, and the reason this is not a weekend.
 
 One-way, server-side, at cold load: for each `idToText` entry, create a subdoc,
 copy the text, delete the original. Bump `SCHEMA_VERSION`; the existing
-admission gate (`SERVER_MIN_SCHEMA_VERSION`) already refuses older clients, so
+admission gate (`SERVER_SCHEMA_VERSION`) already refuses older clients, so
 the failure mode is "update your plugin" rather than corruption.
 
 Copying the text **discards that note's edit history**, since the content is

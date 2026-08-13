@@ -24,7 +24,7 @@ import {
 import { ORIGIN_SEED, isLocalOrigin } from "./origins";
 import type { VaultSyncSettings } from "../settings";
 import type { TraceHttpContext, TraceRecord } from "../observability/traceContext";
-import { randomBase64Url } from "../utils/base64url";
+import { randomId } from "../utils/randomId";
 import { formatUnknown } from "../utils/format";
 import { UpdateTracker } from "./updateTracker";
 import { ServerAckTracker } from "./serverAckTracker";
@@ -1300,7 +1300,7 @@ export class VaultSync {
 	// -------------------------------------------------------------------
 
 	private generateFileId(): string {
-		return randomBase64Url(12);
+		return randomId(16);
 	}
 
 	ensureFile(

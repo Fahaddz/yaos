@@ -24,7 +24,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { discoverCandidates, discoverSuites, loadRegistry } from "./run-suites.mjs";
-import { suite } from "../harness.ts";
+import { suite } from "./harness.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -112,7 +112,7 @@ const registryPaths = [
 for (const [field, path] of registryPaths) {
 	s.check(
 		candidateSet.has(path),
-		`${field}: "${path}" still exists in tests/ as a *.ts or *.mjs file`,
+		`${field}: "${path}" still exists in tests/ as a *.ts file`,
 	);
 }
 

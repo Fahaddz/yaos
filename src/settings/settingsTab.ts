@@ -17,7 +17,6 @@ interface SettingsUpdateState {
 	pluginVersion: string;
 	latestPluginVersion: string | null;
 	pluginUpdateRecommended: boolean;
-	migrationRequired: boolean;
 	updateRepoUrl: string | null;
 	updateActionUrl: string | null;
 	updateBootstrapUrl: string | null;
@@ -217,9 +216,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			);
 
 			const summaryText = updateState.serverUpdateAvailable
-				? updateState.migrationRequired
-					? "A migration-sensitive server update is available. Use the guided update path."
-					: "A server update is available."
+				? "A server update is available."
 				: updateState.pluginUpdateRecommended
 					? "This device should update the YAOS plugin soon."
 					: "Server and plugin are up to date with the latest cached manifest.";

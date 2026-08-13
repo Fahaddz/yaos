@@ -15,6 +15,8 @@
  * directly under Node.
  */
 
+import { fnv1a32, toHex8 } from "../../utils/fnv1a";
+
 /**
  * Extensions that the redactor recognises as path-shaped string suffixes.
  * Order does not matter; the regex below is built from this list. New
@@ -140,23 +142,17 @@ export async function createPathRedactor(
 	}
 
 	function fallbackHash(path: string): string {
-		// Deterministic FNV-1a-like 32-bit hash, base16. Used only when a
-		// path-shaped string surfaces during deep walk that wasn't seeded
-		// by the caller (e.g. inside a free-form log message). It is
-		// non-cryptographic by design — the salt-derived hash from
-		// compute() is the security boundary; this fallback exists only
-		// to keep redactDeep synchronous. Two strings that hash
-		// identically here would be very unusual collisions inside one
-		// bundle. It carries the pd: prefix rather than p: because it is
-		// NOT in the recorder's pseudonym namespace: such a path was never
-		// seen by the trace, so no event line can be joined to it.
-		let h = 0x811c9dc5;
+		// Used only when a path-shaped string surfaces during deep walk that
+		// wasn't seeded by the caller (e.g. inside a free-form log message).
+		// It is non-cryptographic by design — the salt-derived hash from
+		// compute() is the security boundary; this fallback exists only to keep
+		// redactDeep synchronous. Two strings that hash identically here would
+		// be very unusual collisions inside one bundle. It carries the pd:
+		// prefix rather than p: because it is NOT in the recorder's pseudonym
+		// namespace: such a path was never seen by the trace, so no event line
+		// can be joined to it.
 		const seed = `${salt}${HASH_SEPARATOR}${path}`;
-		for (let i = 0; i < seed.length; i++) {
-			h ^= seed.charCodeAt(i);
-			h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
-		}
-		return `${DEGRADED_PREFIX}${h.toString(16).padStart(8, "0")}`;
+		return `${DEGRADED_PREFIX}${toHex8(fnv1a32(seed))}`;
 	}
 
 	function redactPath(path: string): string {

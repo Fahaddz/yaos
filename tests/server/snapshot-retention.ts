@@ -302,7 +302,7 @@ async function test12_pruneErrorSurfacing(): Promise<void> {
 
 	// The pruneSnapshots function now returns { deleted, failed, errors: string[] }
 	// Verify the type shape
-	const mockResult = { deleted: 3, failed: 1, errors: ["snap-123: network timeout"] };
+	const mockResult = { deleted: 3, failed: 1, errors: ["snap-123: network timeout"] as const };
 	s.check(Array.isArray(mockResult.errors), "errors is an array");
 	s.check(mockResult.errors[0].includes("snap-123"), "error includes snapshot ID");
 	s.check(mockResult.errors[0].includes("network timeout"), "error includes reason");

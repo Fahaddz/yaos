@@ -1,5 +1,5 @@
 import { normalizePath, type App } from "obsidian";
-import { randomBase64Url } from "../../utils/base64url";
+import { randomId } from "../../utils/randomId";
 import {
 	FLIGHT_EVENT_SCHEMA_VERSION,
 	type FlightEvent,
@@ -146,8 +146,8 @@ export class FlightRecorder {
 
 	constructor(private readonly app: App, options: FlightRecorderOptions) {
 		this.mode = options.mode;
-		this.traceId = options.traceId ?? `trace-${randomBase64Url(10)}`;
-		this.bootId = options.bootId ?? `boot-${randomBase64Url(10)}`;
+		this.traceId = options.traceId ?? `trace-${randomId(14)}`;
+		this.bootId = options.bootId ?? `boot-${randomId(14)}`;
 		this.deviceId = options.deviceId;
 		this.vaultIdHash = options.vaultIdHash;
 		this.serverHostHash = options.serverHostHash;

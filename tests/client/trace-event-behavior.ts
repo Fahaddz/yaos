@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import { TFile } from "obsidian";
+import { TFile, type FileStats } from "obsidian";
 import { DiskMirror } from "../../src/sync/diskMirror";
 import { ServerAckTracker } from "../../src/sync/serverAckTracker";
 import { InMemoryCandidateStore, type ScopeKey, type ScopeMetadata } from "../../src/sync/candidateStore";
@@ -22,6 +22,13 @@ function captureTrace(events: CapturedTrace[]) {
 
 function findEvent(events: CapturedTrace[], source: string, msg: string): CapturedTrace | undefined {
 	return events.find((event) => event.source === source && event.msg === msg);
+}
+
+function makeFile(path: string, stat: FileStats): TFile {
+	const file = new TFile();
+	file.path = path;
+	file.stat = stat;
+	return file;
 }
 
 const BASE_SCOPE: ScopeKey & ScopeMetadata = {
@@ -107,9 +114,11 @@ s.section("Test 3: suppression acknowledgement trace fires from observed file st
 	const events: CapturedTrace[] = [];
 	const mirror = makeSuppressionMirror(() => "expected", events);
 	await (mirror as any).suppressWrite("Notes/suppressed.md", "expected");
-	const file = new TFile() as TFile & { path: string; stat: { size: number } };
-	file.path = "Notes/suppressed.md";
-	file.stat = { size: new TextEncoder().encode("expected").length };
+	const file = makeFile("Notes/suppressed.md", {
+		ctime: 1,
+		mtime: 1,
+		size: new TextEncoder().encode("expected").length,
+	});
 
 	const suppressed = await mirror.shouldSuppressModify(file);
 	const acknowledged = findEvent(events, "disk", "suppression-acknowledged");
@@ -123,9 +132,11 @@ s.section("Test 4: suppression mismatch trace fires from changed file state");
 	const events: CapturedTrace[] = [];
 	const mirror = makeSuppressionMirror(() => "changed", events);
 	await (mirror as any).suppressWrite("Notes/suppressed.md", "expected");
-	const file = new TFile() as TFile & { path: string; stat: { size: number } };
-	file.path = "Notes/suppressed.md";
-	file.stat = { size: new TextEncoder().encode("changed").length };
+	const file = makeFile("Notes/suppressed.md", {
+		ctime: 1,
+		mtime: 1,
+		size: new TextEncoder().encode("changed").length,
+	});
 
 	const suppressed = await mirror.shouldSuppressModify(file);
 	const mismatch = findEvent(events, "disk", "suppression-mismatch");
@@ -140,9 +151,7 @@ s.section("Test 5: diskMirror remote delete emits trace with deleteMode");
 	const trashedPaths: string[] = [];
 	const deletedPaths: string[] = [];
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/remote-deleted.md";
-	file.stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/remote-deleted.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const fileContent = "content";
 	const app = {
@@ -190,9 +199,7 @@ s.section("Test 6: diskMirror remote delete falls back to hard delete");
 	const events: CapturedTrace[] = [];
 	const deletedPaths: string[] = [];
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/fallback-deleted.md";
-	file.stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/fallback-deleted.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const fileContent = "content";
 	const app = {
@@ -237,9 +244,7 @@ s.section("Test 7: diskMirror remote delete preserves locally modified markdown"
 	const events: CapturedTrace[] = [];
 	const trashedPaths: string[] = [];
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/locally-modified.md";
-	file.stat = { mtime: 1, size: 20 };
+	const file = makeFile("Notes/locally-modified.md", { ctime: 1, mtime: 1, size: 20 });
 
 	const app = {
 		vault: {
@@ -286,9 +291,7 @@ s.section("Test 8: diskMirror remote delete proceeds when content matches CRDT")
 	const events: CapturedTrace[] = [];
 	const trashedPaths: string[] = [];
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/unchanged.md";
-	file.stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/unchanged.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const matchingContent = "content matches CRDT";
 	const app = {
@@ -335,9 +338,7 @@ s.section("Test 9: diskMirror remote delete preserves when CRDT unavailable");
 {
 	const events: CapturedTrace[] = [];
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/no-crdt-baseline.md";
-	file.stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/no-crdt-baseline.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const app = {
 		vault: {
@@ -385,9 +386,7 @@ s.section("Test 10: diskMirror remote delete suppression fires before delete");
 	const trashedPaths: string[] = [];
 	const suppressedPaths: string[] = [];
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/suppression-test.md";
-	file.stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/suppression-test.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const matchingContent = "same content";
 	const app = {
@@ -439,9 +438,7 @@ s.section("Test 11: diskMirror remote delete falls back when trash throws");
 	const events: CapturedTrace[] = [];
 	const deletedPaths: string[] = [];
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/trash-throws.md";
-	file.stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/trash-throws.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const matchingContent = "same content";
 	const app = {
@@ -487,11 +484,9 @@ s.section("Test 12: known-dirty remote delete revives tombstone (no loop)");
 {
 	const events: CapturedTrace[] = [];
 	let ensureFileCalled = false;
-	let ensureFileArgs: { path: string; content: string; reviveTombstone: boolean } | null = null;
+	const ensureFileCalls: Array<{ path: string; content: string; reviveTombstone: boolean }> = [];
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/dirty-revive.md";
-	file.stat = { mtime: 1, size: 20 };
+	const file = makeFile("Notes/dirty-revive.md", { ctime: 1, mtime: 1, size: 20 });
 
 	const diskContent = "locally edited version";
 	const crdtContent = "old CRDT baseline";
@@ -518,9 +513,9 @@ s.section("Test 12: known-dirty remote delete revives tombstone (no loop)");
 		// CRDT differs from disk — known dirty
 		getTextForPath: () => ({ toString: () => crdtContent }),
 		isFileMetaDeleted: () => false,
-		ensureFile: (path: string, content: string, _device: string, opts: any) => {
+		ensureFile: (path: string, content: string, _device: string, opts?: { reviveTombstone?: boolean }) => {
 			ensureFileCalled = true;
-			ensureFileArgs = { path, content, reviveTombstone: opts?.reviveTombstone ?? false };
+			ensureFileCalls.push({ path, content, reviveTombstone: opts?.reviveTombstone ?? false });
 			return {}; // mock Y.Text
 		},
 	} as any;
@@ -542,8 +537,8 @@ s.section("Test 12: known-dirty remote delete revives tombstone (no loop)");
 	s.check(preserved?.details?.reason === "local-file-modified-since-last-sync", "reason is known-dirty");
 	s.check(!!revived, "tombstone is revived for known-dirty file");
 	s.check(ensureFileCalled, "ensureFile was called to revive");
-	s.check(ensureFileArgs?.reviveTombstone === true, "reviveTombstone: true passed");
-	s.check(ensureFileArgs?.content === diskContent, "disk content used for revive");
+	s.check(ensureFileCalls.at(-1)?.reviveTombstone === true, "reviveTombstone: true passed");
+	s.check(ensureFileCalls.at(-1)?.content === diskContent, "disk content used for revive");
 }
 
 s.section("Test 13: unknown-baseline remote delete does NOT revive tombstone");
@@ -551,9 +546,7 @@ s.section("Test 13: unknown-baseline remote delete does NOT revive tombstone");
 	const events: CapturedTrace[] = [];
 	let ensureFileCalled = false;
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/unknown-baseline.md";
-	file.stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/unknown-baseline.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const app = {
 		vault: {
@@ -619,9 +612,7 @@ s.section("Test 5: Multi-pass: unknown-baseline preserved file is NOT revived by
 	const events: CapturedTrace[] = [];
 	let ensureFileCalled = false;
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/unknown-baseline.md";
-	(file as any).stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/unknown-baseline.md", { ctime: 1, mtime: 1, size: 10 });
 
 	// --- Step 1: Set up DiskMirror and trigger preserve-unresolved ---
 	const app = {
@@ -746,9 +737,7 @@ s.section("Test 6: Multi-pass: read-failure during remote-delete becomes preserv
 	let fileTrashed = false;
 	let fileDeleted = false;
 
-	const file = new TFile() as TFile & { path: string; stat: { mtime: number; size: number } };
-	file.path = "Notes/read-fails.md";
-	file.stat = { mtime: 1, size: 10 };
+	const file = makeFile("Notes/read-fails.md", { ctime: 1, mtime: 1, size: 10 });
 
 	const app = {
 		vault: {

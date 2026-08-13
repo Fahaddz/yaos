@@ -91,8 +91,8 @@ export class FakeSqlStorage {
 		const trimmed = query.trim().replace(/\s+/g, " ");
 
 		if (trimmed.startsWith("CREATE TABLE IF NOT EXISTS")) {
-			const match = trimmed.match(/CREATE TABLE IF NOT EXISTS (\w+)/);
-			if (match) this.rowsOf(match[1]);
+			const table = trimmed.match(/CREATE TABLE IF NOT EXISTS (\w+)/)?.[1];
+			if (table !== undefined) this.rowsOf(table);
 			return new FakeSqlCursor<T>([]);
 		}
 

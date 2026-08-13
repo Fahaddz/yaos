@@ -6,28 +6,34 @@ import { suite } from "../harness.ts";
 
 const s = suite("path-index-collision");
 
+// `Object.create(VaultSync.prototype)` gives the real prototype methods without
+// the constructor's provider/IndexedDB wiring. The fields go in through a single
+// `Object.assign` because most of them are `readonly` (or private) on the class
+// and the fixture is deliberately reaching behind that.
 function makeVaultSyncFixture(): VaultSync {
-	const vaultSync = Object.create(VaultSync.prototype) as VaultSync & Record<string, unknown>;
-	vaultSync.ydoc = new Y.Doc();
-	vaultSync.pathToId = vaultSync.ydoc.getMap("pathToId");
-	vaultSync.idToText = vaultSync.ydoc.getMap("idToText");
-	vaultSync.meta = vaultSync.ydoc.getMap("meta");
-	vaultSync.sys = vaultSync.ydoc.getMap("sys");
-	vaultSync.pathToBlob = vaultSync.ydoc.getMap("pathToBlob");
-	vaultSync.blobMeta = vaultSync.ydoc.getMap("blobMeta");
-	vaultSync.blobTombstones = vaultSync.ydoc.getMap("blobTombstones");
-	vaultSync.provider = {};
-	vaultSync._pathIndex = new Map<string, string>();
-	vaultSync._deletedPathIndex = new Set<string>();
-	vaultSync._pathIndexesDirty = true;
-	vaultSync._metaSnapshot = new Map();
-	vaultSync._metaSemanticListeners = new Set();
-	vaultSync._metaObserverFallbackCount = 0;
-	vaultSync._textToFileId = new WeakMap();
-	vaultSync._eventRing = [];
-	vaultSync.debug = false;
+	const ydoc = new Y.Doc();
+	const vaultSync: VaultSync = Object.assign(Object.create(VaultSync.prototype), {
+		ydoc,
+		pathToId: ydoc.getMap<string>("pathToId"),
+		idToText: ydoc.getMap<Y.Text>("idToText"),
+		meta: ydoc.getMap<unknown>("meta"),
+		sys: ydoc.getMap<unknown>("sys"),
+		pathToBlob: ydoc.getMap("pathToBlob"),
+		blobMeta: ydoc.getMap("blobMeta"),
+		blobTombstones: ydoc.getMap("blobTombstones"),
+		provider: {},
+		_pathIndex: new Map<string, string>(),
+		_deletedPathIndex: new Set<string>(),
+		_pathIndexesDirty: true,
+		_metaSnapshot: new Map(),
+		_metaSemanticListeners: new Set(),
+		_metaObserverFallbackCount: 0,
+		_textToFileId: new WeakMap(),
+		_eventRing: [],
+		debug: false,
+	});
 	vaultSync.sys.set("schemaVersion", 3);
-	return vaultSync as VaultSync;
+	return vaultSync;
 }
 
 s.section("Path-index collision invalidation");
@@ -40,13 +46,13 @@ s.section("Path-index collision invalidation");
 		vaultSync.meta.set("id-b", createNestedActiveMeta(path, 200, "device-b"));
 	});
 
-	const invalidate = (vaultSync as unknown as {
-		invalidatePathIndexesForMetaChanges: (changes: readonly MetaSemanticChange[]) => void;
-	}).invalidatePathIndexesForMetaChanges.bind(vaultSync);
+	const invalidate = (changes: readonly MetaSemanticChange[]): void => {
+		vaultSync["invalidatePathIndexesForMetaChanges"](changes);
+	};
 
 	s.check(vaultSync.getFileId(path) === "id-b", "higher initial mtime wins the collision");
 	s.check(
-		(vaultSync as unknown as { _pathIndexesDirty: boolean })._pathIndexesDirty === false,
+		vaultSync["_pathIndexesDirty"] === false,
 		"initial lookup leaves the lazy index clean",
 	);
 
@@ -56,7 +62,7 @@ s.section("Path-index collision invalidation");
 	invalidate([{ kind: "mtime-changed", fileId: "id-a", path }]);
 
 	s.check(
-		(vaultSync as unknown as { _pathIndexesDirty: boolean })._pathIndexesDirty === true,
+		vaultSync["_pathIndexesDirty"] === true,
 		"mtime-only change dirties an index whose winner depends on mtime",
 	);
 	s.check(vaultSync.getFileId(path) === "id-a", "next lazy lookup recomputes the new mtime winner");
@@ -67,7 +73,7 @@ s.section("Path-index collision invalidation");
 	invalidate([{ kind: "device-changed", fileId: "id-a", path }]);
 
 	s.check(
-		(vaultSync as unknown as { _pathIndexesDirty: boolean })._pathIndexesDirty === false,
+		vaultSync["_pathIndexesDirty"] === false,
 		"device-only change does not dirty the path index",
 	);
 	s.check(vaultSync.getFileId(normalizePath(path)) === "id-a", "device-only change preserves the current winner");

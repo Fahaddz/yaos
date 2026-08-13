@@ -1,4 +1,4 @@
-import { randomBase64Url } from "../utils/base64url";
+import { randomId } from "../utils/randomId";
 
 /** Controls how external disk edits (git, other editors) are imported into CRDT. */
 export type ExternalEditPolicy = "always" | "closed-only" | "never";
@@ -92,9 +92,9 @@ export interface SettingsLoadResult<TState extends Partial<VaultSyncSettings>> {
 	migrated: boolean;
 }
 
-/** Generate a random vault ID (16 bytes, base64url). */
+/** Generate a random vault ID (22 base64url characters). */
 export function generateVaultId(): string {
-	return randomBase64Url(16);
+	return randomId(22);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

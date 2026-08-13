@@ -180,12 +180,14 @@ function buildFrontmatterFixture(options: FixtureOptions): FrontmatterFixture {
 	}
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => editorContent };
+	// `new MarkdownView()` needs a WorkspaceLeaf this fixture has no way to
+	// build, and the guard paths under test only read `view.file` and
+	// `view.editor.getValue()` — so the view is a prototype instance (instanceof
+	// still holds for the runtime mock) carrying exactly those two members.
+	const view = Object.assign(Object.create(MarkdownView.prototype) as MarkdownView, {
+		file,
+		editor: { getValue: (): string => editorContent },
+	});
 
 	const captured: CapturedEvent[] = [];
 	const traces: CapturedTrace[] = [];

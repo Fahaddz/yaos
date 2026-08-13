@@ -57,15 +57,11 @@ This avoids upstream monorepo merge complexity and keeps rollback straightforwar
 
 ## Safety valves
 
-### 1) Migration gate (hard stop)
-
-Updater reads `yaos-server-manifest.json`. If `migrationRequired: true`, automatic update aborts with a clear error and manual migration instruction.
-
-### 2) Wrangler drift warning
+### 1) Wrangler drift warning
 
 Updater compares release `wrangler.toml` expectations against local config and warns when required bindings/vars are missing.
 
-### 3) Compatibility guard
+### 2) Compatibility guard
 
 Server exposes compatibility metadata via `/api/capabilities`. Plugin blocks only incompatible combinations. Legacy/missing version metadata does not hard-block sync.
 

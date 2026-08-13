@@ -241,35 +241,38 @@ interface QaTestInitOptions {
 }
 
 function __qaOnlyForTestInit(opts: QaTestInitOptions): VaultSync {
-	const vs = Object.create(VaultSync.prototype) as VaultSync &
-		Record<string, unknown>;
-	vs.ydoc = new Y.Doc();
-	vs.pathToId = vs.ydoc.getMap("pathToId");
-	vs.idToText = vs.ydoc.getMap("idToText");
-	vs.meta = vs.ydoc.getMap("meta");
-	vs.sys = vs.ydoc.getMap("sys");
-	vs.pathToBlob = vs.ydoc.getMap("pathToBlob");
-	vs.blobMeta = vs.ydoc.getMap("blobMeta");
-	vs.blobTombstones = vs.ydoc.getMap("blobTombstones");
-	vs._textToFileId = new WeakMap();
-	vs._pathIndex = new Map();
-	vs._deletedPathIndex = new Set();
-	vs._pathIndexesDirty = true;
-	vs._localReady = opts.localReady;
-	vs._providerSynced = opts.providerSynced;
-	vs._connectionGeneration = 0;
-	vs._renameBatch = new Map();
-	vs._renameBatchNewToOld = new Map();
-	vs._renameTimer = null;
-	vs._eventRing = [];
-	vs._device = opts.deviceName;
-	vs.debug = false;
-	vs.trace = undefined;
-	vs.onFlightEvent = undefined;
-	vs.onFlightPathEvent = opts.onFlightPathEvent;
-	// `connected` getter reads `this.provider.wsconnected`.
-	vs.provider = { wsconnected: false };
-	return vs as VaultSync;
+	const ydoc = new Y.Doc();
+	// Every field seeded here is `readonly` or private on VaultSync, so they go
+	// in through one Object.assign rather than field-by-field assignment: the
+	// class deliberately forbids what this fixture deliberately does.
+	return Object.assign(Object.create(VaultSync.prototype), {
+		ydoc,
+		pathToId: ydoc.getMap<string>("pathToId"),
+		idToText: ydoc.getMap<Y.Text>("idToText"),
+		meta: ydoc.getMap<unknown>("meta"),
+		sys: ydoc.getMap<unknown>("sys"),
+		pathToBlob: ydoc.getMap("pathToBlob"),
+		blobMeta: ydoc.getMap("blobMeta"),
+		blobTombstones: ydoc.getMap("blobTombstones"),
+		_textToFileId: new WeakMap<Y.Text, string>(),
+		_pathIndex: new Map<string, string>(),
+		_deletedPathIndex: new Set<string>(),
+		_pathIndexesDirty: true,
+		_localReady: opts.localReady,
+		_providerSynced: opts.providerSynced,
+		_connectionGeneration: 0,
+		_renameBatch: new Map<string, string>(),
+		_renameBatchNewToOld: new Map<string, string>(),
+		_renameTimer: null,
+		_eventRing: [],
+		_device: opts.deviceName,
+		debug: false,
+		trace: undefined,
+		onFlightEvent: undefined,
+		onFlightPathEvent: opts.onFlightPathEvent,
+		// `connected` getter reads `this.provider.wsconnected`.
+		provider: { wsconnected: false },
+	});
 }
 
 // -------------------------------------------------------------------
@@ -440,10 +443,11 @@ s.section("Scenario A: authoritative-mode lane admits a no-event disk file");
 
 	// 5.i — reconcile.start
 	const startIdx = fx.events.findIndex((e) => e.kind === "reconcile.start");
+	const startEvent = fx.events[startIdx];
 	s.check(startIdx >= 0, "Scenario A: reconcile.start fires");
-	if (startIdx >= 0) {
+	if (startEvent) {
 		assertEq(
-			fx.events[startIdx].scope,
+			startEvent.scope,
 			"vault",
 			"reconcile.start scope === 'vault'",
 		);
@@ -456,16 +460,17 @@ s.section("Scenario A: authoritative-mode lane admits a no-event disk file");
 			e.path === fx.path &&
 			e.data.decision === "seed-disk-to-crdt",
 	);
+	const decisionEvent = fx.events[decisionIdx];
 	s.check(decisionIdx >= 0, "Scenario A: reconcile.file.decision (seed-disk-to-crdt) fires for test path");
-	if (decisionIdx >= 0) {
-		assertEq(fx.events[decisionIdx].scope, "file", "decision event scope === 'file'");
+	if (decisionEvent) {
+		assertEq(decisionEvent.scope, "file", "decision event scope === 'file'");
 		assertEq(
-			fx.events[decisionIdx].data.reason,
+			decisionEvent.data.reason,
 			"disk-file-not-in-crdt",
 			"decision event reason === 'disk-file-not-in-crdt'",
 		);
 		assertEq(
-			fx.events[decisionIdx].data.conflictRisk,
+			decisionEvent.data.conflictRisk,
 			"none",
 			"decision event conflictRisk === 'none'",
 		);
@@ -475,22 +480,23 @@ s.section("Scenario A: authoritative-mode lane admits a no-event disk file");
 	const createdIdx = fx.events.findIndex(
 		(e) => e.kind === "crdt.file.created" && e.path === fx.path,
 	);
+	const createdEvent = fx.events[createdIdx];
 	s.check(createdIdx >= 0, "Scenario A: crdt.file.created fires for test path");
-	if (createdIdx >= 0) {
-		assertEq(fx.events[createdIdx].scope, "file", "crdt.file.created scope === 'file'");
+	if (createdEvent) {
+		assertEq(createdEvent.scope, "file", "crdt.file.created scope === 'file'");
 		s.check(
-			typeof fx.events[createdIdx].fileId === "string" &&
-				(fx.events[createdIdx].fileId as string).length > 0,
+			typeof createdEvent.fileId === "string" && createdEvent.fileId.length > 0,
 			"crdt.file.created carries a non-empty fileId",
 		);
 	}
 
 	// 5.iv — reconcile.complete
 	const completeIdx = fx.events.findIndex((e) => e.kind === "reconcile.complete");
+	const completeEvent = fx.events[completeIdx];
 	s.check(completeIdx >= 0, "Scenario A: reconcile.complete fires");
-	if (completeIdx >= 0) {
+	if (completeEvent) {
 		assertEq(
-			fx.events[completeIdx].scope,
+			completeEvent.scope,
 			"vault",
 			"reconcile.complete scope === 'vault'",
 		);
@@ -526,9 +532,9 @@ s.section("Scenario A: authoritative-mode lane admits a no-event disk file");
 	}
 
 	// 3.7 — shared opId between decision and crdt.file.created
-	if (decisionIdx >= 0 && createdIdx >= 0) {
-		const decisionOpId = fx.events[decisionIdx].opId;
-		const createdOpId = fx.events[createdIdx].opId;
+	if (decisionEvent && createdEvent) {
+		const decisionOpId = decisionEvent.opId;
+		const createdOpId = createdEvent.opId;
 		s.check(
 			typeof decisionOpId === "string" && decisionOpId.length > 0,
 			"decision opId is a non-empty string",
@@ -607,9 +613,10 @@ s.section("Scenario B: conservative-mode reconcile emits skip-untracked");
 	const completeIdx = eventsB.findIndex((e) => e.kind === "reconcile.complete");
 	s.check(startIdx >= 0, "Scenario B: reconcile.start fires");
 	s.check(skipIdx >= 0, "Scenario B: reconcile.file.decision (skip-untracked) fires");
-	if (skipIdx >= 0) {
+	const skipEvent = eventsB[skipIdx];
+	if (skipEvent) {
 		assertEq(
-			eventsB[skipIdx].data.reason,
+			skipEvent.data.reason,
 			"conservative-mode-no-auto-seed",
 			"Scenario B: skip-untracked reason === 'conservative-mode-no-auto-seed'",
 		);
@@ -660,7 +667,7 @@ s.section("Scenario B: conservative-mode reconcile emits skip-untracked");
 	);
 	assertEq(createdInC.length, 1, "Scenario C: exactly one crdt.file.created during this scenario");
 	if (createdInC.length === 1) {
-		const importOpId = createdInC[0].opId;
+		const importOpId = createdInC[0]?.opId;
 		s.check(
 			typeof importOpId === "string" && importOpId.length > 0,
 			"Scenario C: crdt.file.created opId is non-empty",
@@ -677,7 +684,7 @@ s.section("Scenario B: conservative-mode reconcile emits skip-untracked");
 			eventsB.map((e) => e.opId).filter((v): v is string => typeof v === "string"),
 		);
 		s.check(
-			!scenarioBOpIds.has(importOpId as string),
+			!(typeof importOpId === "string" && scenarioBOpIds.has(importOpId)),
 			"Scenario C: opId is distinct from any Scenario B opId",
 		);
 	}
@@ -832,7 +839,7 @@ s.section("Scenario D: preserved-unresolved guard blocks admission");
 		"Scenario E: exactly one crdt.file.created during this scenario",
 	);
 	if (createdInE.length === 1) {
-		const readmitOpId = createdInE[0].opId;
+		const readmitOpId = createdInE[0]?.opId;
 		s.check(
 			typeof readmitOpId === "string" && readmitOpId.length > 0,
 			"Scenario E: crdt.file.created opId is non-empty",

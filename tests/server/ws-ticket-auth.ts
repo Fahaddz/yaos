@@ -26,16 +26,13 @@ import { json } from "../../server/src/routes/http";
 import { isTicketEndpointUnsupported, SocketTicketHttpError, patchTicketInUrl } from "../../src/sync/socketTicket";
 import { getGetServerByNameCallCount, resetGetServerByNameCallCount } from "../mocks/partyserver";
 import type { AuthState, Env } from "../../server/src/routes/types";
-import {
-	SERVER_MAX_SCHEMA_VERSION,
-	SERVER_MIN_SCHEMA_VERSION,
-} from "../../server/src/version";
+import { SERVER_SCHEMA_VERSION } from "../../server/src/version";
 import { suite } from "../harness.ts";
 
 // The single schema version the server admits. Every request in this suite that
 // is meant to reach the room must declare it, or it is refused at admission
 // before the Durable Object is ever touched.
-const PINNED_SCHEMA_VERSION = SERVER_MAX_SCHEMA_VERSION;
+const PINNED_SCHEMA_VERSION = SERVER_SCHEMA_VERSION;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,7 +48,7 @@ function assertEqual(actual: unknown, expected: unknown, msg: string): void {
 }
 
 /** Auth state for env-token mode. */
-const ENV_AUTH: AuthState = { mode: "env", claimed: true, envToken: "test-secret-token" };
+const ENV_AUTH = { mode: "env", claimed: true, envToken: "test-secret-token" } satisfies AuthState;
 /** Auth state for claim mode (tokenHash is sha256 of "test-secret-token", pre-computed as dummy hex). */
 const CLAIM_AUTH: AuthState = { mode: "claim", claimed: true, tokenHash: "a".repeat(64) };
 const VAULT_ID = "test-vault-abc";
@@ -332,12 +329,6 @@ s.section("WS route: no ticket and no token → rejected before DO wake");
 
 s.section("WS route: the pinned schema is enforced by equality and never probes a Durable Object");
 {
-	assertEqual(
-		SERVER_MIN_SCHEMA_VERSION,
-		SERVER_MAX_SCHEMA_VERSION,
-		"the server publishes a single pinned schema version (min === max)",
-	);
-
 	for (const schemaVersion of [PINNED_SCHEMA_VERSION - 1, PINNED_SCHEMA_VERSION + 1]) {
 		const { ticket } = await createTicket(ENV_AUTH, VAULT_ID);
 		const authenticatedRequests = [
@@ -360,8 +351,7 @@ s.section("WS route: the pinned schema is enforced by equality and never probes 
 			assertEqual(body.error, "update_required", `${label}, schema v${schemaVersion} uses update_required`);
 			assertEqual(body.reason, "client_schema_unsupported", `${label}, schema v${schemaVersion} reports an explicit reason`);
 			assertEqual(body.clientSchemaVersion, schemaVersion, `${label}, schema v${schemaVersion} is echoed safely`);
-			assertEqual(body.minSchemaVersion, SERVER_MIN_SCHEMA_VERSION, "response includes the pinned minimum");
-			assertEqual(body.maxSchemaVersion, SERVER_MAX_SCHEMA_VERSION, "response includes the pinned maximum");
+			assertEqual(body.serverSchemaVersion, SERVER_SCHEMA_VERSION, "response includes the pinned server schema version");
 			assertEqual(
 				getGetServerByNameCallCount(),
 				0,

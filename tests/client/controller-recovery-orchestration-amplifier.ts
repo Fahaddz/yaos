@@ -121,12 +121,14 @@ function buildFixture(initial: {
 	ytext.insert(0, initial.crdt);
 
 	const file = makeTFile(path);
-	const view = new MarkdownView() as MarkdownView & {
-		file: TFile;
-		editor: { getValue(): string };
-	};
-	view.file = file;
-	view.editor = { getValue: () => editorContent };
+	// `new MarkdownView()` needs a WorkspaceLeaf this fixture has no way to
+	// build, and the recovery paths under test only read `view.file` and
+	// `view.editor.getValue()` — so the view is a prototype instance (instanceof
+	// still holds for the runtime mock) carrying exactly those two members.
+	const view = Object.assign(Object.create(MarkdownView.prototype) as MarkdownView, {
+		file,
+		editor: { getValue: (): string => editorContent },
+	});
 
 	const captured: CapturedEvent[] = [];
 	const repairCalls: Array<{ deviceName: string; reason: string }> = [];
@@ -549,7 +551,7 @@ s.section("Scenario 5: unhealthy binding triggers editor.repair.applied");
 	const health = decision?.data.bindingHealth as Array<{ healthy: boolean; reasons: string[] }>;
 	s.check(Array.isArray(health) && health.length === 1, "bindingHealth array has one entry");
 	s.check(health[0]?.healthy === false, "bindingHealth[0].healthy === false");
-	s.check(health[0]?.reasons.length > 0, "bindingHealth[0].reasons populated");
+	s.check((health[0]?.reasons.length ?? 0) > 0, "bindingHealth[0].reasons populated");
 
 	// Now flip to healthy and force another recovery — repair must NOT
 	// be called this time even though content recovery applies.

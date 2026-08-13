@@ -15,9 +15,9 @@
  *   5. server/src/version.ts exists (a missing server contract is a hard
  *      failure, never a warning — it is the only place the admitted schema
  *      version is declared to clients)
- *   6. server/src/version.ts pins a single schema version:
- *      SERVER_MIN_SCHEMA_VERSION === SERVER_MAX_SCHEMA_VERSION === plugin
- *      SCHEMA_VERSION. There is no supported range.
+ *   6. server/src/version.ts pins the plugin's schema version:
+ *      SERVER_SCHEMA_VERSION === plugin SCHEMA_VERSION. There is no
+ *      supported range.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -76,27 +76,24 @@ if (!existsSync("src/sync/vaultSync.ts")) {
 	}
 }
 
-// 5 & 6. The server must pin exactly one schema version, equal to the plugin's.
+// 5 & 6. The server must pin exactly the plugin's schema version.
 if (!existsSync("server/src/version.ts")) {
 	fail("server/src/version.ts is missing — server schema compatibility cannot be validated. Restore it.");
 } else {
 	const serverContent = readFileSync("server/src/version.ts", "utf8");
-	const minMatch = serverContent.match(/SERVER_MIN_SCHEMA_VERSION\s*=\s*(\d+)/);
-	const maxMatch = serverContent.match(/SERVER_MAX_SCHEMA_VERSION\s*=\s*(\d+)/);
+	const pinMatch = serverContent.match(/SERVER_SCHEMA_VERSION\s*=\s*(\d+)/);
 
-	if (!minMatch || !maxMatch) {
-		fail("server/src/version.ts is missing SERVER_MIN_SCHEMA_VERSION or SERVER_MAX_SCHEMA_VERSION");
+	if (!pinMatch) {
+		fail("server/src/version.ts is missing SERVER_SCHEMA_VERSION");
 	} else {
-		const min = Number(minMatch[1]);
-		const max = Number(maxMatch[1]);
-		if (min !== EXPECTED_SCHEMA_VERSION || max !== EXPECTED_SCHEMA_VERSION) {
+		const pinned = Number(pinMatch[1]);
+		if (pinned !== EXPECTED_SCHEMA_VERSION) {
 			fail(
-				`server/src/version.ts must pin a single schema version: ` +
-				`SERVER_MIN_SCHEMA_VERSION = ${min}, SERVER_MAX_SCHEMA_VERSION = ${max}, ` +
-				`both expected ${EXPECTED_SCHEMA_VERSION}`,
+				`server/src/version.ts must pin the plugin's schema version: ` +
+				`SERVER_SCHEMA_VERSION = ${pinned}, expected ${EXPECTED_SCHEMA_VERSION}`,
 			);
 		} else {
-			pass(`server/src/version.ts pins schema v${EXPECTED_SCHEMA_VERSION} (min === max === plugin SCHEMA_VERSION)`);
+			pass(`server/src/version.ts pins schema v${EXPECTED_SCHEMA_VERSION} (SERVER_SCHEMA_VERSION === plugin SCHEMA_VERSION)`);
 		}
 	}
 }
@@ -104,7 +101,7 @@ if (!existsSync("server/src/version.ts")) {
 if (failures > 0) {
 	console.error(`\nFAIL: ${failures} schema-version guard violation(s).`);
 	console.error("  SCHEMA_VERSION must be in src/sync/schema.ts, imported into vaultSync.ts,");
-	console.error("  and server/src/version.ts must pin that same single version as min === max.");
+	console.error("  and server/src/version.ts must pin that same single version as SERVER_SCHEMA_VERSION.");
 	process.exit(1);
 } else {
 	console.log("\nPASS: schema version guard — all checks passed.");

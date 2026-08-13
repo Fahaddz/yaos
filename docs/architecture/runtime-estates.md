@@ -37,7 +37,7 @@ records and exports a trace exactly like desktop. There is no platform gate.
 
 It must not contain mutation harness code, scenario controls, or Engine control
 capabilities. `scripts/guard-production-bundles.mjs` enforces that against the
-built bundle; run `npm run verify:bundles` after a build.
+built bundle; run `npm run build && npm run guard:production-bundles` after a change.
 
 ### Puppeteer — `qa/` (not shipped)
 
@@ -155,9 +155,7 @@ it any more; delete it.
 
 ```
 npm run build                                  build main.js
-npm run verify:bundles                         build + run the local transitional bundle guard
-npm run guard:production-bundles:strict        fail on any forbidden symbol (used by CI and release)
-npm run guard:production-bundles:transitional  allow only explicitly deferred symbols for local checks
+npm run guard:production-bundles               fail on any forbidden symbol (used by CI and release)
 npm run guard:no-tracked-generated-artifacts   fail if generated bundles, QA output, or QA run artifacts are tracked
 npm run guard:qa-isolation                     confirm src/ does not import from qa/
 ```
@@ -167,7 +165,7 @@ QA or mutation capability reached the shipped bundle. It cannot prove the
 read-only boundary; that is the `SyncReadPort` type's job, and `tsc` is what
 enforces it.
 
-The P2 cleanup removed the former `__qaOnly*Unsafe` Engine seams. The strict
+The P2 cleanup removed the former `__qaOnly*Unsafe` Engine seams. The
 production-bundle guard permanently rejects those symbols if they reappear.
 
 ## Known debt

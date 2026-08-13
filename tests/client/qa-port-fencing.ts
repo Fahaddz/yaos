@@ -37,19 +37,21 @@ const mockDebugPort: YaosDebugPort = {
 	getConnectionState: () => "connected",
 	getServerReceiptState: () => "confirmed",
 	getReceiptSnapshot: () => ({
-		serverAppliedLocalState: true,
-		lastServerReceiptEchoAt: 1,
-		lastKnownServerReceiptEchoAt: 1,
-		hasCandidateSv: false,
+		candidateId: "candidate-1",
+		capturedAt: 1,
+		lastConfirmedCandidateId: "candidate-1",
+		lastConfirmedAt: 1,
 	}),
 	getActiveMarkdownPaths: () => [],
 	getDiskMarkdownPaths: () => [],
 	getEditorBindingHealth: () => ({
-		path: "x.md",
-		hasCm6Extension: true,
-		hasYjsBinding: true,
-		isQaPaused: false,
-		editorViewExists: true,
+		leafOpen: true,
+		bound: true,
+		hasSyncFacet: true,
+		yTextMatchesExpected: true,
+		healthy: true,
+		settling: false,
+		issues: [],
 	}),
 	getRuntimeState: () => "foreground",
 	getDiskHash: async () => null,
@@ -65,19 +67,20 @@ const mockDebugPort: YaosDebugPort = {
 	forceReconnect: () => {},
 	disconnectProvider: () => {},
 	connectProvider: () => {},
-	startFlightTrace: async () => {},
-	stopFlightTrace: async () => {},
 	exportFlightTrace: async () => "",
 	getActiveTraceInfo: () => null,
 };
 
-const portKeys = Object.keys(mockDebugPort);
+// A spread copy, because an interface has no index signature to read members
+// off of by name. Own enumerable keys are identical either way.
+const portMembers: Record<string, unknown> = { ...mockDebugPort };
+const portKeys = Object.keys(portMembers);
 
 s.section("Test 1: the port is populated and callable");
 {
 	s.check(portKeys.length > 0, "port exposes at least one member");
 	s.check(
-		portKeys.every((k) => typeof (mockDebugPort as Record<string, unknown>)[k] === "function"),
+		portKeys.every((k) => typeof portMembers[k] === "function"),
 		"every port member is a function",
 	);
 }

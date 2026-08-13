@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import { gzipSync } from "fflate";
-import { mapWithConcurrency } from "./concurrency";
+import { mapWithConcurrency } from "./shared/concurrency";
 import { sha256Hex, bytesToHex } from "./hex";
 
 // -------------------------------------------------------------------
@@ -484,7 +484,7 @@ export function dayFromSnapshotId(snapshotId: string): string | null {
 	const match = /^([0-9a-z]+)-([0-9a-f]{8,})$/.exec(snapshotId);
 	if (!match) return null;
 
-	const tsMs = Number.parseInt(match[1], 36);
+	const tsMs = Number.parseInt(match[1]!, 36);
 	// Number.isSafeInteger guards against overflow values that parseInt
 	// would accept but that lose precision as IEEE-754 doubles.
 	if (!Number.isSafeInteger(tsMs) || tsMs <= 0) return null;
@@ -571,7 +571,7 @@ export function selectRetention(
 	const keepSet = new Set<string>();
 
 	// Always keep latest
-	keepSet.add(snapshots[0].snapshotId);
+	keepSet.add(snapshots[0]!.snapshotId);
 
 	// Always keep pinned
 	for (const s of snapshots) {

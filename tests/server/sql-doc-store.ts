@@ -74,10 +74,10 @@ class FakeSqlStorage {
 
 		// CREATE TABLE IF NOT EXISTS
 		if (trimmed.startsWith("CREATE TABLE IF NOT EXISTS")) {
-			const match = trimmed.match(/CREATE TABLE IF NOT EXISTS (\w+)/);
-			if (match && !this.tables.has(match[1])) {
-				this.tables.set(match[1], []);
-				this.autoIncrements.set(match[1], 1);
+			const table = trimmed.match(/CREATE TABLE IF NOT EXISTS (\w+)/)?.[1];
+			if (table !== undefined && !this.tables.has(table)) {
+				this.tables.set(table, []);
+				this.autoIncrements.set(table, 1);
 			}
 			return new FakeSqlCursor<T>([]);
 		}
@@ -221,7 +221,7 @@ s.section("Test 2: append and load");
 
 	// Apply to a new doc and check content
 	const doc2 = new Y.Doc();
-	Y.applyUpdate(doc2, state.journalUpdates[0]);
+	Y.applyUpdate(doc2, state.journalUpdates[0]!);
 	const meta2 = doc2.getMap("meta");
 	s.check(meta2.size === 10, `loaded doc has 10 entries (got ${meta2.size})`);
 	doc.destroy();

@@ -31,7 +31,6 @@ export type UpdateState = {
 	pluginVersion: string;
 	latestPluginVersion: string | null;
 	pluginUpdateRecommended: boolean;
-	migrationRequired: boolean;
 	updateProvider: ServerCapabilities["updateProvider"] | "unknown";
 	updateRepoUrl: string | null;
 	updateActionUrl: string | null;
@@ -84,9 +83,7 @@ export function isServerCapabilities(value: unknown): value is ServerCapabilitie
 		typeof candidate.serverVersion === "string" &&
 		(candidate.minPluginVersion === null || typeof candidate.minPluginVersion === "string") &&
 		(candidate.recommendedPluginVersion === null || typeof candidate.recommendedPluginVersion === "string") &&
-		(candidate.minSchemaVersion === null || typeof candidate.minSchemaVersion === "number") &&
-		(candidate.maxSchemaVersion === null || typeof candidate.maxSchemaVersion === "number") &&
-		typeof candidate.migrationRequired === "boolean" &&
+		(candidate.schemaVersion === null || typeof candidate.schemaVersion === "number") &&
 		(candidate.updateProvider === null ||
 			candidate.updateProvider === "github" ||
 			candidate.updateProvider === "gitlab" ||
@@ -296,14 +293,13 @@ export class CapabilityUpdateService {
 			pluginCompatibilityWarning =
 				`This server requires YAOS plugin ${minPluginVersion} or newer.`;
 		} else {
-			const minSchemaVersion = this.serverCapabilities?.minSchemaVersion ?? null;
-			const maxSchemaVersion = this.serverCapabilities?.maxSchemaVersion ?? null;
-			if (minSchemaVersion !== null && this.deps.schemaVersion < minSchemaVersion) {
+			const serverSchemaVersion = this.serverCapabilities?.schemaVersion ?? null;
+			if (serverSchemaVersion !== null && this.deps.schemaVersion < serverSchemaVersion) {
 				pluginCompatibilityWarning =
-					`This server requires schema version ${minSchemaVersion} or newer.`;
-			} else if (maxSchemaVersion !== null && this.deps.schemaVersion > maxSchemaVersion) {
+					`This server requires schema version ${serverSchemaVersion}.`;
+			} else if (serverSchemaVersion !== null && this.deps.schemaVersion > serverSchemaVersion) {
 				pluginCompatibilityWarning =
-					`This plugin uses schema version ${this.deps.schemaVersion}, but the server currently supports up to ${maxSchemaVersion}.`;
+					`This plugin uses schema version ${this.deps.schemaVersion}, but the server supports ${serverSchemaVersion}.`;
 			}
 		}
 
@@ -314,7 +310,6 @@ export class CapabilityUpdateService {
 			pluginVersion: this.deps.pluginVersion,
 			latestPluginVersion,
 			pluginUpdateRecommended,
-			migrationRequired: this.updateManifest?.migrationRequired ?? this.serverCapabilities?.migrationRequired ?? false,
 			updateProvider: effectiveProvider,
 			updateRepoUrl: effectiveRepoUrl,
 			updateActionUrl: this.buildServerUpdateUrl(),
@@ -412,14 +407,12 @@ export class CapabilityUpdateService {
 			return `This server requires YAOS plugin ${minPluginVersion} or newer. Update this plugin before syncing.`;
 		}
 
-		const minSchemaVersion = this.serverCapabilities.minSchemaVersion;
-		if (minSchemaVersion !== null && this.deps.schemaVersion < minSchemaVersion) {
-			return `This server requires schema version ${minSchemaVersion} or newer. Update this plugin before syncing.`;
+		const serverSchemaVersion = this.serverCapabilities.schemaVersion;
+		if (serverSchemaVersion !== null && this.deps.schemaVersion < serverSchemaVersion) {
+			return `This server requires schema version ${serverSchemaVersion}. Update this plugin before syncing.`;
 		}
-
-		const maxSchemaVersion = this.serverCapabilities.maxSchemaVersion;
-		if (maxSchemaVersion !== null && this.deps.schemaVersion > maxSchemaVersion) {
-			return `This plugin uses schema version ${this.deps.schemaVersion}, but this server supports up to ${maxSchemaVersion}. Update server first.`;
+		if (serverSchemaVersion !== null && this.deps.schemaVersion > serverSchemaVersion) {
+			return `This plugin uses schema version ${this.deps.schemaVersion}, but this server supports ${serverSchemaVersion}. Update server first.`;
 		}
 
 		const minCompatibleServer = this.updateManifest?.minCompatibleServerVersionForPlugin ?? null;
@@ -494,7 +487,6 @@ export class CapabilityUpdateService {
 			attachments: this.serverCapabilities?.attachments ?? null,
 			snapshots: this.serverCapabilities?.snapshots ?? null,
 			serverVersion: this.serverCapabilities?.serverVersion ?? null,
-			migrationRequired: this.serverCapabilities?.migrationRequired ?? null,
 			updateProvider: this.serverCapabilities?.updateProvider ?? null,
 		});
 	}
@@ -514,7 +506,6 @@ export class CapabilityUpdateService {
 			previous?.authMode !== next?.authMode ||
 			previous?.claimed !== next?.claimed ||
 			previous?.serverVersion !== next?.serverVersion ||
-			previous?.migrationRequired !== next?.migrationRequired ||
 			previous?.maxBlobUploadBytes !== next?.maxBlobUploadBytes ||
 			previous?.updateProvider !== next?.updateProvider ||
 			previous?.updateRepoUrl !== next?.updateRepoUrl ||
@@ -536,7 +527,7 @@ export class CapabilityUpdateService {
 			`Server capabilities updated (${reason}): ` +
 			`claimed=${next?.claimed ?? "unknown"} auth=${next?.authMode ?? "unknown"} ` +
 			`attachments=${nextAttachments ?? "unknown"} snapshots=${nextSnapshots ?? "unknown"} ` +
-			`serverVersion=${next?.serverVersion ?? "unknown"} migrationRequired=${next?.migrationRequired ?? "unknown"} ` +
+			`serverVersion=${next?.serverVersion ?? "unknown"} ` +
 			`updateProvider=${next?.updateProvider ?? "unknown"} updateBranch=${next?.updateRepoBranch ?? "unknown"}`,
 		);
 		void this.deps.persistPluginState();
@@ -686,9 +677,7 @@ export class CapabilityUpdateService {
 				} else {
 					const actionLabel = updateState.updateActionLabel;
 					new Notice(
-						updateState.migrationRequired
-							? `YAOS: a server migration update (${updateState.latestServerVersion}) is available. Open ${actionLabel} before updating.`
-							: `YAOS: a server update (${updateState.latestServerVersion}) is available. Open ${actionLabel} to update when ready.`,
+						`YAOS: a server update (${updateState.latestServerVersion}) is available. Open ${actionLabel} to update when ready.`,
 						10000,
 					);
 				}

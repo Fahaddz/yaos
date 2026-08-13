@@ -1,4 +1,5 @@
 import type { PathIdentity } from "./flightEvents";
+import { fnv1a32, toHex8 } from "../../utils/fnv1a";
 
 /**
  * Local path normalizer — replaces backslashes, collapses repeated slashes,
@@ -145,12 +146,7 @@ export class PathIdentityResolver {
 	 * Callers must check hasDegraded and emit path.identity.degraded.
 	 */
 	private fallbackPathId(normalized: string): string {
-		let h = 0x811c9dc5;
 		const seed = `${this.salt}${HASH_SEPARATOR}${normalized}`;
-		for (let i = 0; i < seed.length; i++) {
-			h ^= seed.charCodeAt(i);
-			h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
-		}
-		return `${DEGRADED_PREFIX}${h.toString(16).padStart(8, "0")}`;
+		return `${DEGRADED_PREFIX}${toHex8(fnv1a32(seed))}`;
 	}
 }

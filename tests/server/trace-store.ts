@@ -113,7 +113,11 @@ s.section("Test 2: trace store cleanup removes old backlog in one pass");
 
 	const allKeys = [...storage.data.keys()].sort((a, b) => a.localeCompare(b));
 	s.check(allKeys.length === 100, "cleanup collapses oversized historical backlog down to the bound");
-	s.check(allKeys[0]?.includes("0000000000901"), "cleanup keeps only the newest bounded key range");
+	const [oldestKey] = allKeys;
+	s.check(
+		oldestKey !== undefined && oldestKey.includes("0000000000901"),
+		"cleanup keeps only the newest bounded key range",
+	);
 }
 
 s.section("Test 3: oversized trace entries are truncated to a safe size");
@@ -351,7 +355,7 @@ s.section("Test 10: interleaved rare events all survive thousands of high-volume
 {
 	const storage = new CountingStorage();
 	const ring = new TraceRing(MAX_PER_CLASS);
-	const rareEvents = ["checkpoint-load", "server.save.append_succeeded", "tombstone-reap"];
+	const rareEvents = ["checkpoint-load", "server.save.append_succeeded", "tombstone-reap"] as const;
 	for (let i = 0; i < 3000; i++) {
 		await ring.append(storage as never, traced(HOT_EVENT));
 		// Scattered early, mid and late: each one is far older than the tail of
@@ -424,7 +428,7 @@ s.section("Test 13: the merged read is newest-first and honours limit");
 	s.check(recent.length === 10, `the merged read honours limit (${recent.length})`);
 	const timestamps = recent.map((entry) => Date.parse(entry.ts));
 	s.check(
-		timestamps.every((ts, i) => i === 0 || timestamps[i - 1] > ts),
+		timestamps.every((ts, i) => i === 0 || timestamps[i - 1]! > ts),
 		"merged entries come back newest-first across both classes",
 	);
 	// Neither class exceeds its share here, so the merge is literally the
