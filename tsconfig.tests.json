@@ -8,12 +8,21 @@
 	//
 	//   npx tsc -noEmit -p tsconfig.tests.json
 	//
-	// `lib` is deliberately pinned to ES2023, NOT ESNext: it is the ceiling of
-	// what Node 20 implements, and CI runs Node 20 (.github/workflows/ci.yml).
-	// Raising it to ESNext would make this project accept exactly the class of
-	// API that broke CI. The target/module bump to ES2022 is unavoidable —
-	// suites legitimately use top-level await, which the plugin's ES6 target
-	// forbids — but that only affects syntax, not the available API surface.
+	// `lib` is deliberately pinned to ES2023, NOT ESNext. The rule is that it
+	// tracks the FLOOR of runtimes this repo supports (package.json engines.node
+	// = ">=20"), not whatever CI happens to run — CI is on Node 24, and pinning
+	// lib to CI's version would let an API land that breaks a contributor on the
+	// oldest supported Node. ES2023 is Node 20's ceiling, so ES2024 additions
+	// like Promise.withResolvers are a compile error here. If engines.node ever
+	// rises, raise this with it and not before.
+	//
+	// Note this only constrains contributors and CI: the plugin ships into
+	// Obsidian's bundled Electron runtime and the server runs on Cloudflare
+	// Workers, so there is no production Node to stay compatible with.
+	//
+	// The target/module bump to ES2022 is unavoidable — suites legitimately use
+	// top-level await, which the plugin's ES6 target forbids — but that affects
+	// syntax only, not the available API surface.
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"target": "ES2022",
