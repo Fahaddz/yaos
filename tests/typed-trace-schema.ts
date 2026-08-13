@@ -158,11 +158,11 @@ console.log("\n--- Test 3: source-grep static guard for recovery.skipped frontma
 		`recordFrontmatterIngestBlocked invoked exactly six times in controller (got ${helperInvocations.length})`,
 	);
 
-	// FLIGHT_TAXONOMY_VERSION is at 11 (bumped by the Layer 4 witness removal;
+	// FLIGHT_TAXONOMY_VERSION is at 12 (bumped by the qa.trace.* -> debug.trace.* rename;
 	// amplifier guard for recovery.amplification.quarantined).
 	assert(
-		flight.includes("export const FLIGHT_TAXONOMY_VERSION = 11"),
-		"FLIGHT_TAXONOMY_VERSION at 11",
+		flight.includes("export const FLIGHT_TAXONOMY_VERSION = 12"),
+		"FLIGHT_TAXONOMY_VERSION at 12",
 	);
 }
 

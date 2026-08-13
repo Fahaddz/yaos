@@ -1,5 +1,5 @@
 export const FLIGHT_EVENT_SCHEMA_VERSION = 1;
-export const FLIGHT_TAXONOMY_VERSION = 11; // bumped: Layer 4 device-state diagnostic kinds and qa.scenario.step removed
+export const FLIGHT_TAXONOMY_VERSION = 12; // bumped: qa.trace.* renamed to debug.trace.*
 
 export type FlightSeverity = "debug" | "info" | "warn" | "error";
 export type FlightScope =
@@ -44,9 +44,10 @@ export type FlightPriority = "critical" | "important" | "verbose";
 // -----------------------------------------------------------------------
 
 export const FLIGHT_KIND = {
-	// QA / diagnostics
-	qaTraceStarted: "qa.trace.started",
-	qaTraceStopped: "qa.trace.stopped",
+	// Debug-trace lifecycle (emitted when settings.debug arms/disarms the recorder)
+	debugTraceStarted: "debug.trace.started",
+	debugTraceStopped: "debug.trace.stopped",
+	// QA harness only
 	qaCheckpoint: "qa.checkpoint",
 	/**
 	 * Emitted at the start of each QA scenario phase (setup/run/assert/cleanup).

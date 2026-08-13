@@ -289,7 +289,7 @@ function buildFixture(initial: {
 
 console.log("\n--- Test 0: taxonomy bumped to 10, recovery.amplification.quarantined defined ---");
 {
-	assertEq(FLIGHT_TAXONOMY_VERSION, 11, "FLIGHT_TAXONOMY_VERSION === 11");
+	assertEq(FLIGHT_TAXONOMY_VERSION, 12, "FLIGHT_TAXONOMY_VERSION === 12");
 	assertEq(
 		FLIGHT_KIND.recoveryAmplificationQuarantined,
 		"recovery.amplification.quarantined",

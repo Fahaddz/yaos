@@ -121,7 +121,7 @@ export class FlightTraceController {
 		this.startCheckpointLoop();
 		this.record({
 			priority: "important",
-			kind: FLIGHT_KIND.qaTraceStarted,
+			kind: FLIGHT_KIND.debugTraceStarted,
 			severity: "info",
 			scope: "diagnostics",
 			source: "diagnostics",
@@ -150,7 +150,7 @@ export class FlightTraceController {
 		if (!this.enabled) return;
 		this.record({
 			priority: "important",
-			kind: FLIGHT_KIND.qaTraceStopped,
+			kind: FLIGHT_KIND.debugTraceStopped,
 			severity: "info",
 			scope: "diagnostics",
 			source: "diagnostics",

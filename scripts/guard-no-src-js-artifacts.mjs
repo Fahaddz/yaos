@@ -14,16 +14,13 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-const BLOCKED_DIRS = ["src/sync", "src/settings", "src/runtime", "src/debug", "src/diagnostics"];
+const ROOT = "src";
 const offenders = [];
 
 function walk(dir) {
-	let entries;
-	try {
-		entries = readdirSync(dir);
-	} catch {
-		return; // dir doesn't exist, skip
-	}
+	// No try/catch: a missing directory means the tree moved and this guard is
+	// silently checking nothing. Fail loudly instead.
+	const entries = readdirSync(dir);
 	for (const name of entries) {
 		const path = join(dir, name);
 		const st = statSync(path);
@@ -35,7 +32,7 @@ function walk(dir) {
 	}
 }
 
-for (const dir of BLOCKED_DIRS) walk(dir);
+walk(ROOT);
 
 if (offenders.length > 0) {
 	console.error("FAIL: stale compiled JS artifacts found under src/.");

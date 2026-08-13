@@ -411,12 +411,12 @@ function buildFixture(opts: {
 
 console.log("\n--- Taxonomy: FLIGHT_TAXONOMY_VERSION ---");
 {
-	// Bumped to 11 by the Layer 4 device-witness removal (device.witness.*
-	// and qa.scenario.step deleted). This spec does not bump.
+	// Bumped to 12 by the qa.trace.* -> debug.trace.* rename (recorder
+	// lifecycle vocabulary). This spec does not bump.
 	assertEq(
 		FLIGHT_TAXONOMY_VERSION,
-		11,
-		"FLIGHT_TAXONOMY_VERSION === 11 (no bump for this spec)",
+		12,
+		"FLIGHT_TAXONOMY_VERSION === 12 (no bump for this spec)",
 	);
 }
 

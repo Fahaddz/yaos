@@ -10,7 +10,7 @@ if (!file || !pathId) {
 }
 
 const KEEP = new Set([
-	"qa.trace.started",
+	"debug.trace.started",
 	"provider.connected",
 	"provider.sync.complete",
 	"reconcile.start",
